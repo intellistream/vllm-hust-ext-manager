@@ -126,6 +126,12 @@ explicit and stored in the user configuration. Discovery reads installed
 distribution metadata and the static bundle manifest without importing its
 implementation modules.
 
+For enabled in-process vLLM extensions, activation entries in the official
+`vllm.general_plugins` or `vllm.platform_plugins` groups are merged into
+`VLLM_PLUGINS` at launch. Existing selections such as `ascend` are preserved
+and duplicate names are removed; entry points in unrelated groups are not
+projected into vLLM's plugin allowlist.
+
 Lifecycle states are independent: `installed`, `configured`, and `enabled`
 describe artifacts and saved launch intent. `runtime_effective` requires a
 process-owned observer to prove that the selected implementation was invoked

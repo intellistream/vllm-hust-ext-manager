@@ -63,6 +63,28 @@ def _detect_protocol_versions() -> dict[str, str]:
     else:
         if admission_version.startswith("1."):
             detected["vllm.batch-admission-policy"] = admission_version
+    try:
+        request_processing = import_module("vllm.plugins.request_processing")
+        request_processing_version = (
+            request_processing.REQUEST_PROCESSING_HOOK_API_VERSION
+        )
+    except (AttributeError, ImportError):
+        pass
+    else:
+        if request_processing_version.startswith("1."):
+            detected["vllm.request-processing-hook"] = request_processing_version
+    try:
+        kv_materialization = import_module("vllm.v1.core.kv_materialization")
+        kv_materialization_version = (
+            kv_materialization.KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION
+        )
+    except (AttributeError, ImportError):
+        pass
+    else:
+        if kv_materialization_version.startswith("1."):
+            detected["vllm.kv-materialization-runtime-control"] = (
+                kv_materialization_version
+            )
     return detected
 
 

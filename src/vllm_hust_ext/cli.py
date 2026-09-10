@@ -27,6 +27,15 @@ from vllm_hust_ext.process_supervisor import (
 )
 from vllm_hust_ext.providers.base import ProviderPlan
 
+_VLLM_PLUGIN_ENTRY_POINT_GROUPS = {
+    "vllm.general_plugins",
+    "vllm.platform_plugins",
+}
+
+
+def _comma_separated_names(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
 
 def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object]:
     blocker = activation_blocker(bundle.manifest)
@@ -66,6 +75,20 @@ def _activation_environment(bundles: Sequence[InstalledBundle]) -> dict[str, str
                     f"enabled Bundles disagree on environment variable {key}"
                 )
             environment[key] = value
+
+    activated_plugins = [
+        entry_point.name
+        for bundle in bundles
+        for entry_point in bundle.manifest.activation.entry_points
+        if entry_point.group in _VLLM_PLUGIN_ENTRY_POINT_GROUPS
+    ]
+    if activated_plugins:
+        plugin_names = _comma_separated_names(os.getenv("VLLM_PLUGINS"))
+        plugin_names.extend(
+            _comma_separated_names(environment.pop("VLLM_PLUGINS", None))
+        )
+        plugin_names.extend(activated_plugins)
+        environment["VLLM_PLUGINS"] = ",".join(dict.fromkeys(plugin_names))
     environment["VLLMHUST_EXT_ENABLED_BUNDLES"] = ",".join(
         bundle.bundle_id for bundle in bundles
     )

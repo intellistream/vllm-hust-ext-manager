@@ -15,6 +15,7 @@ from vllm_hust_ext.cli import (
 from vllm_hust_ext.config import ExtensionConfig, UserConfig
 from vllm_hust_ext.core import LifecycleState
 from vllm_hust_ext.manifest import (
+    ActivationEntryPoint,
     BundleActivation,
     HostSpec,
     ImplementationCarrier,
@@ -39,6 +40,47 @@ def test_activation_does_not_replace_vllm_plugin_allowlist() -> None:
         "VLLMHUST_EXT_ENABLED_BUNDLES": "org.vllm-hust.bidkv",
     }
     assert "VLLM_PLUGINS" not in environment
+
+
+def test_activation_merges_vllm_plugin_entry_points_with_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_PLUGINS", "ascend,existing")
+    bundle = SimpleNamespace(
+        bundle_id="org.vllm-hust.kv-materialization-arrival-control",
+        manifest=SimpleNamespace(
+            activation=BundleActivation(
+                entry_points=(
+                    ActivationEntryPoint("vllm.general_plugins", "kv_materialization"),
+                    ActivationEntryPoint("unrelated.group", "ignored"),
+                )
+            )
+        ),
+    )
+
+    environment = _activation_environment((bundle,))
+
+    assert environment["VLLM_PLUGINS"] == "ascend,existing,kv_materialization"
+
+
+def test_activation_deduplicates_explicit_plugin_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_PLUGINS", "ascend,kv_materialization")
+    bundle = SimpleNamespace(
+        bundle_id="org.vllm-hust.kv-materialization-arrival-control",
+        manifest=SimpleNamespace(
+            activation=BundleActivation(
+                entry_points=(
+                    ActivationEntryPoint("vllm.general_plugins", "kv_materialization"),
+                )
+            )
+        ),
+    )
+
+    environment = _activation_environment((bundle,))
+
+    assert environment["VLLM_PLUGINS"] == "ascend,kv_materialization"
 
 
 def test_inspection_exposes_import_only_activation_blocker() -> None:

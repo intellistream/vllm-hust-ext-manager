@@ -148,6 +148,24 @@ def test_vllm_detects_batch_admission_policy_from_versioned_module(
     }
 
 
+def test_vllm_detects_request_and_kv_materialization_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def imported(name: str) -> SimpleNamespace:
+        if name == "vllm.plugins.request_processing":
+            return SimpleNamespace(REQUEST_PROCESSING_HOOK_API_VERSION="1.0")
+        if name == "vllm.v1.core.kv_materialization":
+            return SimpleNamespace(KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION="1.0")
+        raise ImportError(name)
+
+    monkeypatch.setattr(vllm_provider, "import_module", imported)
+
+    assert vllm_provider._detect_protocol_versions() == {
+        "vllm.request-processing-hook": "1.0",
+        "vllm.kv-materialization-runtime-control": "1.0",
+    }
+
+
 def test_vllm_provider_uses_manifest_host_distribution_for_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
