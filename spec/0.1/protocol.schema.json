@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/spec/ecpa/0.1/protocol.schema.json",
+  "definitions": {
+    "plugin_identity": {"type": "object", "required": ["namespace", "name", "version", "artifact_sha256"], "properties": {"namespace": {"type": "string"}, "name": {"type": "string"}, "version": {"type": "string"}, "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "additionalProperties": false},
+    "process_identity": {"type": "object", "required": ["host", "role", "ordinal", "start_id", "epoch"], "properties": {"host": {"type": "string"}, "role": {"type": "string"}, "ordinal": {"type": "integer", "minimum": 0}, "start_id": {"type": "string"}, "epoch": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+    "obligation": {"type": "object", "required": ["obligation_id", "role", "event", "required_ordinals"], "properties": {"obligation_id": {"type": "string"}, "role": {"type": "string"}, "event": {"enum": ["loaded", "invoked", "traffic-admitted", "lease-valid", "health-observed"]}, "required_ordinals": {"type": "array", "items": {"type": "integer", "minimum": 0}, "uniqueItems": true}}, "additionalProperties": false},
+    "attestation": {"type": "object", "required": ["plan_id", "launch_id", "process", "obligation_id", "event", "nonce", "issued_at", "expires_at", "artifact_id", "authority"], "properties": {"plan_id": {"type": "string"}, "launch_id": {"type": "string"}, "process": {"$ref": "#/definitions/process_identity"}, "obligation_id": {"type": "string"}, "event": {"type": "string"}, "nonce": {"type": "string"}, "issued_at": {"type": "integer"}, "expires_at": {"type": "integer"}, "artifact_id": {"type": "string"}, "authority": {"enum": ["host-runtime", "external-service"]}}, "additionalProperties": false},
+    "predecessor": {"type": "object", "required": ["generation", "plan_id", "rendered_inputs"], "properties": {"generation": {"type": "integer", "minimum": 0}, "plan_id": {"type": ["string", "null"]}, "rendered_inputs": {"type": "object"}}, "additionalProperties": false}
+  },
+  "type": "object",
+  "required": ["schema", "states", "errors"],
+  "properties": {
+    "schema": {"const": "ecpa-protocol/0.1-draft"},
+    "states": {"type": "array", "items": {"enum": ["Intent", "Resolved", "Planned", "Preparing", "Prepared", "Launching", "Observing", "CommitReady", "Effective", "Degraded", "Reconcile", "Rollback", "RolledBack", "FailedSafe"]}, "uniqueItems": true},
+    "errors": {"type": "array", "items": {"enum": ["UNKNOWN_RESOURCE", "AMBIGUOUS_RESOURCE", "RESOURCE_CONFLICT", "INCOMPATIBLE_HOST", "MISSING_PROCESS_EVIDENCE", "STALE_EVIDENCE", "REPLAYED_NONCE", "CAS_MISMATCH", "EXTERNAL_LEASE_INVALID", "AUTHORITY_VIOLATION"]}, "uniqueItems": true}
+  },
+  "additionalProperties": false
+}

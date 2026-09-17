@@ -10,6 +10,12 @@ drift, and runtime effects that cannot be proved statically.
 
 - [Research charter](docs/research-charter.md)
 - [Falsifiable evaluation plan](docs/evaluation-plan.md)
+- [Executable ECPA architecture](docs/design/ecpa-architecture.md)
+- [Protocol state machine](docs/design/protocol-state-machine.md)
+- [Threat model](docs/design/threat-model.md)
+- [Failure semantics](docs/design/failure-semantics.md)
+- [Frozen core decisions](docs/adr/0001-ecpa-frozen-core-decisions.md)
+- [ECPA 0.1 candidate specification](spec/0.1/README.md)
 
 `vllm-hust-ext` is a provider-neutral control point for discovering, validating,
 configuring, enabling, planning, rendering, and checking vLLM-HUST extensions.

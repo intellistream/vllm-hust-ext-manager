@@ -1,0 +1,5 @@
+{
+  "schema": "ecpa-protocol/0.1-draft",
+  "states": ["Intent", "Resolved", "Planned", "Preparing", "Prepared", "Launching", "Observing", "CommitReady", "Effective", "Degraded", "Reconcile", "Rollback", "RolledBack", "FailedSafe"],
+  "errors": ["UNKNOWN_RESOURCE", "AMBIGUOUS_RESOURCE", "RESOURCE_CONFLICT", "INCOMPATIBLE_HOST", "MISSING_PROCESS_EVIDENCE", "STALE_EVIDENCE", "REPLAYED_NONCE", "CAS_MISMATCH", "EXTERNAL_LEASE_INVALID", "AUTHORITY_VIOLATION"]
+}

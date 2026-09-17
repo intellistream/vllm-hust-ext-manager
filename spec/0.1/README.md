@@ -45,3 +45,11 @@ runtime tuple and unverified for another.
 See `manifest.schema.json`, `conformance.md`, and `roadmap.md`. The checked-in
 CLI skeleton validates L0/L1 artifacts and negative fixtures; L2--L4 remain
 experimental gates.
+
+The executable 0.1 protocol vocabulary is in `protocol.schema.json`, with a
+checked instance in `protocol-instance.json`. Identifiers are SHA-256 content
+IDs over UTF-8 JSON with sorted keys and no insignificant whitespace. Runtime
+attestations bind the plan ID, launch ID, artifact ID, process identity and
+epoch, obligation, event, validity interval, and a replay-fenced nonce. WAL
+intent precedes each manager-owned side effect; receipts follow it. This is
+logical-once recovery with generation CAS, not physical exactly-once execution.

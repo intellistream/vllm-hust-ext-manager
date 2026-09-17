@@ -460,6 +460,19 @@ if runtime intent cannot be separated from process effect, conflict thresholds
 remain unmet after one correction cycle, rollback loses the predecessor plan,
 or overhead exceeds the frozen bounds.
 
+The frozen executable model makes these limits precise.  Intent authority,
+planning authority, host-runtime evidence authority, provider translation,
+and external-service authority are distinct.  Activation proceeds through
+Intent, Resolved, Planned, Preparing, Prepared, Launching, Observing,
+CommitReady, and Effective; failures may enter Degraded, Reconcile, Rollback,
+RolledBack, or FailedSafe.  Append-only WAL intent and receipts support fenced
+logical-once replay, while generation compare-and-swap prevents stale commits.
+Attestations bind plan, launch, artifact, process epoch, obligation, validity,
+and nonce.  Rollback is conditional on manager ownership and may fail safe.
+This pure executable reference model and its adversarial traces are a design
+oracle, not a production control plane, distributed side-effect transaction,
+physical exactly-once guarantee, or completed performance evaluation.
+
 \section{Conclusion}
 Inference plugin systems need a truth model stronger than successful
 installation or saved enablement.  \system treats activation as a typed,
