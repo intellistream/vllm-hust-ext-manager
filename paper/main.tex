@@ -1,0 +1,407 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[letterpaper,margin=0.72in,columnsep=0.24in]{geometry}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\system}{\textsc{ECPA}}
+\newcommand{\tbd}{\textcolor{red!70!black}{\textbf{TBD}}}
+\newcommand{\code}[1]{\texttt{#1}}
+\setlist{nosep,leftmargin=*}
+\raggedbottom
+\setlength{\emergencystretch}{2em}
+\def\UrlBreaks{\do\/\do-\do\_}
+\sloppy
+\hbadness=10000
+\title{Evidence-Carrying Plugin Architecture for LLM Inference Systems}
+\author{Anonymous Authors}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+LLM inference engines increasingly expose plugins for schedulers, KV-cache
+connectors, policies, and control-plane integrations.  Existing plugin loaders
+answer whether a package can be found and imported, but operators need a
+stronger answer: did a compatible implementation acquire the intended
+capability in every relevant process, without conflicting with another plugin,
+and can the system return to a known-good configuration?  This distinction is
+easy to lose under version skew, heterogeneous providers, multi-process
+loading, and external services.  We present \system, an evidence-carrying
+architecture that separates typed static discovery, capability negotiation,
+conflict planning, saved activation intent, and process-owned runtime evidence.
+Its central invariant is that no lifecycle state may claim more than its
+evidence proves: installed, configured, enabled, and runtime-effective are
+independent predicates.  Activation fails closed on missing or contradictory
+evidence, while deterministic plans retain an explicit rollback target and
+providers never inherit authority over the runtime or external services.
+
+This paper is an implementation-grounded design and evaluation draft.  The
+current prototype validates manifests and plans across several provider types,
+passes 66 CPU tests, and exposes a concrete namespace regression in which all
+unit tests pass while a real installed plugin becomes undiscoverable.  Formal
+multi-process, composability, version-skew, rollback, and overhead campaigns
+are preregistered but not yet complete; their results are marked \tbd{} rather
+than inferred from existing integration evidence.  The proposed evaluation
+tests whether evidence-carrying activation eliminates false-effective claims,
+detects resource conflicts, survives upgrades and rollback, and remains off
+the request critical path at bounded cost.
+\end{abstract}
+
+\section{Introduction}
+Plugins are becoming the de facto change boundary for fast-moving inference
+systems.  A scheduler policy may be delivered as a Python entry point; a KV
+connector may depend on an external service; a production-stack adapter may
+translate intent into Kubernetes configuration; and a provider may map a
+portable capability to a host-specific command-line flag.  This modularity is
+valuable, but it creates a gap between packaging facts and runtime facts.
+
+Consider an operator who installs a plugin distribution, sees its configuration
+saved, enables it, and launches an engine with multiple worker processes.  The
+parent process may discover the distribution while one worker imports a
+different version, never invokes the hook, or lacks the provider.  Two plugins
+may independently validate yet both claim the same KV connector option.  An
+external service may fail after intent is persisted.  Conventional loaders
+often collapse these cases into an ``enabled'' bit.  That bit is useful intent,
+but it is not evidence that the plugin changed the running system.
+
+The repository that motivated this work contains a smaller but revealing
+incident.  Its documented static bundle namespace is
+\code{vllm\_hust.extension\_bundles}.  A one-line ``bugfix'' changed discovery
+to \code{vllm.extension\_bundles}.  Sixty-six unit tests still passed.  Yet an
+installed Mooncake example registered one bundle in the documented namespace,
+the modified manager selected zero entries, and discovery returned no bundles.
+Installation succeeded; the code imported; runtime intent could still exist;
+the plugin was nevertheless absent from the activation path.  The incident is
+not important because of the spelling error itself.  It demonstrates that
+tests and static state can agree while authority and runtime effect disagree.
+
+We ask: \emph{how can a plugin architecture make extensions discoverable,
+composable, verifiable, and rollback-safe when runtime effectiveness cannot be
+proved statically?}  Our answer is \system, an evidence-carrying activation
+architecture.  A decision is not ``enable plugin $p$'' but an activation plan
+for a concrete host version, provider set, plugin set, process topology, and
+resource-ownership graph.  The plan records evidence obligations.  Processes
+that actually invoke implementations satisfy those obligations; a manager
+cannot manufacture runtime effectiveness from configuration.
+
+This paper makes four intended contributions, with claim strength bounded by
+the evidence available today:
+\begin{itemize}
+  \item a typed manifest and capability model that keeps discovery static and
+  separates project namespaces from delegated upstream hooks;
+  \item a compositional planner that negotiates capabilities and detects
+  multiply owned resources before launch;
+  \item an explicit lifecycle and evidence protocol in which process-owned
+  attestations, fail-closed activation, and deterministic rollback prevent
+  false-effective state; and
+  \item a provider/runtime authority model and falsifiable evaluation contract
+  spanning correctness, conflicts, skew, recovery, multi-process consistency,
+  and overhead.
+\end{itemize}
+The first and parts of the second are implemented.  Process-owned evidence and
+the full formal evaluation remain work in progress; we do not present the
+existing provider demonstrations as proof of the full paper claim.
+
+\section{Motivation and Problem}
+\subsection{Why Existing State Is Ambiguous}
+A package manager proves that files exist.  Entry-point discovery proves that
+metadata contains a name.  Configuration proves that an operator supplied
+parameters.  An enabled bit proves desired intent.  None proves that the
+selected implementation executed in every process that matters.  Conversely,
+an external service can become unreachable while enabled intent should remain
+for diagnosis and later recovery.  A linear state machine both overclaims
+success and destroys useful failure context.
+
+Vanilla entry points provide a deliberately lightweight extension mechanism
+\cite{vllm-plugin}.  Manual integration can add flags, environment variables,
+and operator checks.  Both are legitimate baselines.  Their limitation is not
+that they can never be made safe; it is that evidence obligations, ownership,
+and rollback are convention rather than a common machine-checkable contract.
+
+\subsection{System Model}
+We model a host runtime $H$, providers $P$, plugins $G$, processes $W$, and
+resources $R$.  A plugin manifest declares required and provided capabilities,
+version predicates, claimed resources, provider needs, and evidence
+obligations.  A provider translates an accepted plan into host-specific
+configuration, but it does not supervise the host or acquire authority over an
+external service.  Each launch has a unique identity $\ell$ and an expected
+process set $W_\ell$.
+
+An activation plan $A=(H,P,G,W,R,V)$ is admissible only if capability
+requirements resolve, version predicates hold, resource ownership is
+conflict-free or explicitly mediated, and every non-optional evidence
+obligation has an authority.  Runtime effectiveness is:
+\begin{align*}
+effective(A) \iff{}& \forall w \in W_A^{required},\\
+                   & evidence(w,A,\ell)\text{ is valid and fresh}.
+\end{align*}
+Quorum or optional-process semantics must be declared by capability type; the
+manager may not silently weaken the quantifier.
+
+\subsection{Threat Model}
+We address accidental incompatibility, stale or replayed evidence, conflicting
+ownership, provider ambiguity, parent/worker version mismatch, partial rollout,
+observer loss, process crashes, and interrupted rollback.  Plugins and
+providers may be buggy and may report inconsistent metadata.  We assume the
+host, package database, and process identity channel are administratively
+trusted.  We do \emph{not} sandbox malicious Python, defend a compromised host,
+or claim that signed metadata makes arbitrary plugin code safe.  This boundary
+follows the upstream warning that plugins execute with application authority
+\cite{vllm-security}.
+
+\subsection{Invariants and Failure Semantics}
+\system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger
+state requires new evidence and cannot be inferred from a weaker state.
+\textbf{I2, single explicit ownership:} every exclusive resource has one owner
+or a declared mediator.  \textbf{I3, authority locality:} evidence is accepted
+only from the component that can observe the claimed event.  \textbf{I4,
+rollback preservation:} no new plan destroys the last committed valid plan
+before the replacement satisfies its commit gate.
+
+Failures are structured outcomes, not booleans.  A missing provider or
+unsupported version makes a plan inadmissible.  A service outage can preserve
+\emph{enabled} intent while marking health degraded and refusing a new launch.
+A missing worker attestation leaves the activation partial, never globally
+effective.  Stale evidence is rejected by launch, process, host, manifest, and
+runtime-version identity.  Rollback either restores the recorded predecessor
+or reports a bounded operator action; it never invents success.
+
+\section{Design}
+\subsection{Typed Static Manifests}
+Discovery reads distribution metadata and a static manifest without importing
+implementation modules.  The schema distinguishes bundle identity, component
+kind, semantic capability, host/API range, provider, required service, resource
+claims, and activation/evidence contracts.  Static discovery avoids executing
+plugin code merely to decide whether it is eligible.  Namespace ownership is
+typed: the project owns \code{vllm\_hust.*}; a provider may delegate to an
+official \code{vllm.*} hook but may not mint an upstream-looking group.
+
+The namespace incident becomes a schema fixture: package metadata must contain
+exactly the declared group and bundle identity, and a clean installed-package
+probe must observe it.  This closes the test gap that allowed a constant to
+change while mock-based tests continued to pass.
+
+\subsection{Capability Negotiation}
+Capabilities name semantics rather than package names.  A plugin can require a
+versioned preemption-policy interface, a connector contract, or process-owned
+invocation evidence.  The host and providers advertise concrete capabilities
+with provenance.  Negotiation produces a graph whose edges explain which
+authority satisfies each requirement.  Missing, ambiguous, or incompatible
+edges reject activation.  Untested version tuples remain \emph{unverified}, not
+implicitly compatible.
+
+\subsection{Conflict Planning}
+Plugins claim resources such as a command-line/configuration key, hook slot,
+scheduler policy, connector, service endpoint, or deployment field.  The
+planner constructs an ownership graph and detects duplicate exclusive claims,
+incompatible values, and conditional conflicts.  For example, two plugins that
+both write \code{--kv-transfer-config} conflict even if their package names and
+providers differ.  Two plugins sharing a read-only health provider need not
+conflict.  The output is a deterministic, reviewable plan rather than an
+order-dependent sequence of mutations.
+
+\subsection{Explicit Lifecycle}
+The state vector is not a scalar:
+\begin{center}
+\code{installed, configured, enabled, runtime\_effective}.
+\end{center}
+Installed is distribution evidence; configured is validated saved input;
+enabled is durable operator intent; runtime-effective is launch-scoped evidence
+that the selected implementation ran.  Reachability, health, degradation, and
+compatibility are orthogonal projections.  Thus an external outage does not
+erase intent, and saved intent does not certify a running process.
+
+\subsection{Process-Owned Runtime Evidence}
+Each activation plan emits obligations keyed by launch identity, process role,
+plugin/component digest, host/runtime version, and capability.  A worker (or an
+observer in its authority domain) records load and invocation events.  The
+aggregator verifies identity, freshness, expected process membership, and the
+declared completion predicate.  Parent-process import is insufficient for a
+worker-side hook.  Evidence is compact lifecycle telemetry, not prompt content.
+
+In the running example, the static probe rejects the wrong namespace before
+launch.  If static discovery succeeds but one worker never invokes the hook,
+the plan may remain enabled and partially loaded, but cannot become globally
+runtime-effective.  This same distinction covers inert imports and mixed
+worker versions without special-case status strings.
+
+\subsection{Fail-Closed Activation and Deterministic Rollback}
+Planning is side-effect free.  Activation proceeds through prepare, launch,
+observe, and commit.  Missing required services, contradictory capabilities,
+or incomplete evidence stop before commit.  The manager stores the canonical
+predecessor plan, rendered inputs, version identities, and authority owners.
+Rollback re-renders that predecessor and requires its own evidence gate.
+External-service lifecycle remains operator-owned; rollback can restore client
+configuration without pretending to downgrade a service it does not control.
+
+\subsection{Authority Separation}
+Core owns manifests, intent, planning, and evidence validation.  Providers own
+translation and provider-specific checks.  The runtime owns process execution
+and invocation facts.  External operators own services, clusters, drivers, and
+data.  A provider protocol exposing plan/render/check therefore cannot silently
+apply, delete, or restart infrastructure.  This separation limits both failure
+blast radius and the claims that status may make.
+
+\section{Implementation}
+The prototype is implemented in Python as \code{vllm-hust-ext}.  Core modules
+parse manifests, discover installed bundles, maintain user configuration,
+resolve compatibility, reject duplicate registrations and resource conflicts,
+and dispatch to host providers.  The CLI exposes list, inspect, configure,
+enable, check, and run-oriented paths.  Providers currently cover vLLM-native
+policies, Mooncake connectors/services, and rendered production-stack inputs.
+
+The implementation already keeps static bundle discovery separate from
+implementation entry points and distinguishes persistent intent from provider
+health.  It rejects mutating provider plans and documents that only a
+process-owned observer can establish runtime effectiveness.  Existing evidence
+includes provider-specific integration campaigns, but those campaigns were not
+designed as the matched experiment required by this paper.
+
+Two important pieces are incomplete.  First, capability and conflict data need
+one frozen machine-readable taxonomy with an independently labeled oracle.
+Second, process-owned evidence needs a common launch identity and aggregation
+protocol across parent/worker topologies.  Consequently we claim an
+implementation foundation and a verified namespace failure, not a completed
+end-to-end \system evaluation.
+
+\section{Evaluation Methodology}
+The evaluation is organized around four falsifiable hypotheses aligned with
+issues M0--M3.  \textbf{H1:} in preregistered failure cells, \system has zero
+false-effective outcomes and at least 99\% required-event coverage.
+\textbf{H2:} conflict precision and recall each reach 0.95 against an
+independent oracle, without rejecting all compositions.  \textbf{H3:} every
+unsupported tested tuple fails before serving and at least 95\% of injected
+upgrade/rollback failures meet the declared recovery objective or bounded
+operator action.  \textbf{H4:} relative to manual integration, added median
+startup cost is at most 5\% or 250\,ms, throughput regression at most 1\%, and
+p99 request-latency regression at most 2\% in every supported formal cell.
+
+\subsection{Baselines and Workloads}
+We compare (1) vanilla vLLM entry-point discovery/loading
+\cite{vllm-plugin,vllm-arch}, (2) manual integration using documented flags,
+configuration, and operator checks, and (3) \system.  Arms pin identical host,
+plugin, provider, model, workload, hardware, process topology, and warm/cold
+state.  Formal cells use at least three independent service starts and
+alternating arm order.  Agent, repeated-prefix, and online chat workloads cover
+different lifecycle and connector behavior; CPU-only fixtures isolate planner
+correctness.
+
+\subsection{Matrices and Metrics}
+The failure matrix injects missing distributions, malformed manifests,
+unsupported versions, provider ambiguity, parent/worker mismatch, inert hooks,
+service outage, replayed evidence, partial rollout, process crash, and
+interrupted rollback.  The composability matrix covers single plugins,
+compatible and incompatible pairs, and three-plugin sets across flags, hooks,
+schedulers, connectors, services, and provider translations.  The version
+matrix crosses current, previous, and next host versions with below/in/above
+plugin ranges, old manifests, and mixed workers.
+
+Primary metrics are activation-event coverage, false-effective rate, conflict
+precision/recall, rollback success and recovery time, unsupported-tuple
+admission, and cross-process agreement.  Costs include phase-separated startup
+time, throughput, latency quantiles, CPU time, memory, process messages, and
+evidence bytes.  Raw observations follow the checked-in JSON schema; failures
+remain rows rather than being removed from aggregates.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Current evidence and formal-evaluation status.  No planned value is a
+result.}
+\begin{tabularx}{\columnwidth}{@{}lXl@{}}
+\toprule
+Claim area & Current evidence & Status \\
+\midrule
+Static contracts & 66 CPU tests on main & observed \\
+Namespace safety & installed entry: expected 1; changed lookup: 0 & negative \\
+Conflict P/R & preregistered labeled matrix & \tbd{} \\
+False-effective & process failure matrix & \tbd{} \\
+Rollback & upgrade/rollback injection & \tbd{} \\
+Overhead & matched three-arm experiment & \tbd{} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Preliminary Evidence and Missing Results}
+On repository main, 66 CPU tests pass.  On commit
+\code{3201e133}, those tests also pass despite the namespace change.  A clean
+installed-package probe then observes one Mooncake entry point in the documented
+group, zero in the changed group, and zero discovered bundles.  This is a real
+counterexample to ``unit tests plus installation imply activation,'' and it has
+been retained as the M0 negative fixture rather than merged.
+
+All quantitative claims beyond this counterexample are planned.  Table and
+figure generators must refuse to replace missing values with zero.  The final
+paper will include per-cell confidence intervals and raw failure counts.  Until
+H1--H4 are measured, the strongest defensible claim is that the architecture
+makes evidence obligations explicit and catches a class of namespace errors
+that the previous unit suite missed.
+
+\section{Related Work}
+vLLM documents a plugin system and a multi-process engine architecture
+\cite{vllm-plugin,vllm-arch}.  \system does not replace those mechanisms; it
+adds planning and evidence semantics around them.  Python packaging entry
+points support extensible discovery \cite{python-entrypoints}, but package
+metadata does not establish runtime invocation.  Dependency solvers reason
+about version constraints, while \system also reasons about semantic
+capabilities, exclusive runtime resources, and process evidence.
+
+Service meshes, operators, and deployment controllers provide health and
+rollout mechanisms.  Our provider boundary deliberately consumes such evidence
+without becoming their control plane.  Feature-flag systems separate intent
+from rollout but usually do not prove that a specific inference worker invoked
+a selected implementation.  Software attestation and provenance systems bind
+artifacts to identities; \system uses a narrower, operational notion of
+launch-scoped evidence and does not claim cryptographic remote attestation.
+
+Plugin isolation and supply-chain security are complementary.  Because vLLM
+plugins execute in application processes, typed manifests are not a sandbox.
+Our security contribution is limited to explicit activation authority,
+provenance, conflict visibility, and fail-closed state projection.
+
+\section{Discussion and Limitations}
+Evidence has cost and can itself fail.  A synchronous per-request proof would
+be unacceptable; the design therefore targets lifecycle and sampled invocation
+events, but H4 must show that this does not move meaningful work onto the
+request path.  Process membership is also subtle under elastic workers.  The
+plan must declare whether membership is fixed, epoch-based, or quorum-based;
+otherwise a disappearing worker could make success vacuous.
+
+Conflict taxonomies can be incomplete.  Precision and recall are measured
+against an independently labeled oracle, but that oracle may miss semantic
+interactions.  We mitigate this with explicit unknown/unverified outcomes and
+negative cells, not a universal composability claim.  Deterministic rollback
+can restore manager-owned inputs, not external data or services; bounded
+operator action is therefore a first-class outcome.
+
+The current implementation predates the complete evidence protocol.  Its
+provider demonstrations establish feasibility in selected cells, not general
+correctness.  The paper should be stopped or reframed as an engineering report
+if runtime intent cannot be separated from process effect, conflict thresholds
+remain unmet after one correction cycle, rollback loses the predecessor plan,
+or overhead exceeds the frozen bounds.
+
+\section{Conclusion}
+Inference plugin systems need a truth model stronger than successful
+installation or saved enablement.  \system treats activation as a typed,
+conflict-checked plan with explicit authorities and evidence obligations.  It
+separates lifecycle predicates, requires runtime facts from the processes that
+own them, fails closed, and preserves a deterministic rollback target.  A real
+namespace regression already demonstrates the value of installed-package
+evidence over mock-only tests.  The broader systems claim remains contingent on
+the preregistered multi-process, composability, version-skew, recovery, and
+overhead evaluation.  This evidence boundary is intentional: the architecture
+is useful only if its own status claims are as disciplined as those it imposes
+on plugins.
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
