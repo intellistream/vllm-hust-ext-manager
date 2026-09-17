@@ -16,3 +16,9 @@ Corpus paths were verified against shallow read-only clones on 2026-09-17.
 Unavailable or unverified fields use the literal `unknown`. Ownership is copied
 only from the authoritative llm-optimizations ledger; an empty/unknown owner is
 not inferred from commit authorship.
+
+Audit limitation: the read-only shallow clones for
+`Qixin-Gaoke/kvdelta-plugin` and `Qixin-Gaoke/adaptive-selector-plugin` did not
+complete during this pass. They are therefore not admitted from repository
+names or workspace labels; a later corpus revision may add them only after an
+entry point, manifest, hook, or adapter implementation is inspected.
