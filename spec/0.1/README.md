@@ -57,3 +57,9 @@ attestations bind the plan ID, launch ID, artifact ID, process identity and
 epoch, obligation, event, validity interval, and a replay-fenced nonce. WAL
 intent precedes each manager-owned side effect; receipts follow it. This is
 logical-once recovery with generation CAS, not physical exactly-once execution.
+
+An implementation must durably represent enough logical information to audit
+plan identity, predecessor, launch/process epochs, transition intent and
+receipt, accepted evidence/nonces, committed generation, and rollback outcome.
+The storage engine and schema are implementation choices. The reference MVP
+uses SQLite; ECPA does not require SQLite or prescribe a database product.

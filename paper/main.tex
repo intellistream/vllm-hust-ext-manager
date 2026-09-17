@@ -457,7 +457,13 @@ negative cells, not a universal composability claim.  Deterministic rollback
 can restore manager-owned inputs, not external data or services; bounded
 operator action is therefore a first-class outcome.
 
-The current implementation predates the complete evidence protocol.  Its
+The current implementation now includes a single-host, single-manager SQLite
+reference coordinator with durable plans, WAL/receipts, process epochs,
+replay-fenced evidence, generation CAS, predecessor gating, crash recovery,
+and fail-safe rollback outcomes.  Deterministic adapters and adversarial traces
+exercise these semantics; no real vLLM host, attestation trust root, traffic
+gate, elastic membership, or external provider is integrated yet.  SQLite is a
+reference implementation choice rather than a protocol requirement.  Earlier
 provider demonstrations establish feasibility in selected cells, not general
 correctness.  The paper should be stopped or reframed as an engineering report
 if runtime intent cannot be separated from process effect, conflict thresholds

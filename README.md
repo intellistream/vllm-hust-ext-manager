@@ -21,6 +21,8 @@ drift, and runtime effects that cannot be proved statically.
 - [Threat model](docs/design/threat-model.md)
 - [Failure semantics](docs/design/failure-semantics.md)
 - [Frozen core decisions](docs/adr/0001-ecpa-frozen-core-decisions.md)
+- [Durable coordinator MVP](docs/design/durable-coordinator.md)
+- [Cross-implementation open questions](docs/design/open-questions.md)
 - [ECPA 0.1 candidate specification](spec/0.1/README.md)
 
 `vllm-hust-ext` is a provider-neutral control point for discovering, validating,
