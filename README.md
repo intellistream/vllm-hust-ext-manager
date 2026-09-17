@@ -1,5 +1,16 @@
 # vLLM-HUST Extension Manager
 
+## Research charter
+
+The research line **Evidence-Carrying Plugin Architecture for LLM Inference
+Systems / 大模型推理插件体系结构** studies whether plugin activation can remain
+discoverable, composable, verifiable, and reversible under version skew,
+multi-process loading, heterogeneous providers, composition conflicts, lifecycle
+drift, and runtime effects that cannot be proved statically.
+
+- [Research charter](docs/research-charter.md)
+- [Falsifiable evaluation plan](docs/evaluation-plan.md)
+
 `vllm-hust-ext` is a provider-neutral control point for discovering, validating,
 configuring, enabling, planning, rendering, and checking vLLM-HUST extensions.
 It is not a vLLM distribution, deployment system, or control plane.
