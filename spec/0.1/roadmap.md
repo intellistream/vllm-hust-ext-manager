@@ -1,5 +1,8 @@
 # Standardization roadmap
 
+Roadmap owner: `ShuhaoZhangTony` (张书豪). Execution is PI-led/self-driven and
+does not depend on a student owner or student delivery milestone.
+
 1. **Internal contract:** stabilize names, schema, negative fixtures, and M0
    oracle in this repository.
 2. **Multi-plugin validation:** migrate diverse policy, connector, provider,

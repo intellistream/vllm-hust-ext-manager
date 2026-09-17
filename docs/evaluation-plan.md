@@ -1,5 +1,8 @@
 # Falsifiable evaluation plan
 
+Execution accountability belongs to `ShuhaoZhangTony` (张书豪). The plan is
+PI-led/self-driven; no student is required to execute or unblock a gate.
+
 This plan evaluates the architecture in
 [the research charter](research-charter.md). It does not treat package
 installation, command success, or the number of integrations as evidence of

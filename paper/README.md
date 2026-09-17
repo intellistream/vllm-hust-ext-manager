@@ -1,5 +1,9 @@
 # Paper build and evidence contract
 
+Paper lead and accountable owner: `ShuhaoZhangTony` (张书豪). Research,
+artifact, and submission decisions are PI-led/self-driven; student
+contributions are optional and non-blocking.
+
 This is a venue-neutral, two-column systems-paper draft. It intentionally does
 not claim compliance with an unconfirmed OSDI, SOSP, EuroSys, ACM, or USENIX
 submission year. Adapt the class and anonymity requirements only after the

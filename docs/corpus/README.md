@@ -1,5 +1,8 @@
 # Evidence-backed plugin corpus
 
+Corpus and paper-case accountability belongs to `ShuhaoZhangTony` (张书豪).
+Student input is optional collaboration and is not a maintenance dependency.
+
 The registry contains 11 extensions with a concrete entry point or static
 bundle registration and five adaptation candidates with hook/adapter/policy
 code but no verified registration surface. Repository names are not evidence.

@@ -1,5 +1,9 @@
 # ECPA Interoperability Specification 0.1-draft
 
+Specification lead and accountable owner: `ShuhaoZhangTony` (张书豪). The
+draft is maintained as a PI-led/self-driven project; student participation is
+optional and non-blocking.
+
 Status: **research prototype / candidate interoperability specification**. It
 is not an industry standard and does not claim adoption outside the listed
 experiments.

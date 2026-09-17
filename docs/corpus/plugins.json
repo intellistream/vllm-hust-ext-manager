@@ -21,7 +21,7 @@
       "evidence": ["pyproject.toml:76", "README.md:27-46", "README.md:125-137", "bidkv/manifests/vllm-hust-extension-v0.2.json"]
     },
     {
-      "id": "mooncake-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": "unknown",
+      "id": "mooncake-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": ["ShuhaoZhangTony"],
       "host_runtime": ["vLLM", "Mooncake"], "extension_point": "vllm_hust.extension_bundles; official vLLM KV connector configuration", "type": "connector_provider",
       "capabilities": ["KV transfer connector planning", "external service health evidence"], "resources": ["vllm.kv-transfer-config", "external.mooncake-service"], "process_topology": "vLLM parent/workers plus external service",
       "external_dependencies": ["Mooncake service and wheel variant"], "lifecycle_support": ["discover", "configure", "enable intent", "health check", "disable"], "runtime_effectiveness_evidence": "real connector save/load evidence exists; common ECPA attestations not implemented",
@@ -29,7 +29,7 @@
       "evidence": ["examples/mooncake-provider/pyproject.toml:12", "examples/mooncake-provider/src/vllm_hust_mooncake_provider/manifests/vllm-hust-extension-v0.2.json", "docs/evidence/mooncake-store-vllm-ascend-180-2026-09-01.md"]
     },
     {
-      "id": "production-stack-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": "unknown",
+      "id": "production-stack-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": ["ShuhaoZhangTony"],
       "host_runtime": ["vLLM Production Stack", "Kubernetes"], "extension_point": "vllm_hust.extension_bundles provider render/check", "type": "connector_provider",
       "capabilities": ["Helm/Kubernetes plan rendering", "rollout evidence checking"], "resources": ["deployment.spec.replicas", "router configuration"], "process_topology": "manager plus external controllers/router/backend",
       "external_dependencies": ["Kubernetes", "Production Stack controller and router"], "lifecycle_support": ["plan", "render", "check", "operator-owned rollback"], "runtime_effectiveness_evidence": "structured controller/router/autoscaler evidence; manager does not own apply", "version_constraints": "pinned evidence commits; general range unknown",

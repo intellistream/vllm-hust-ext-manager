@@ -1,5 +1,11 @@
 # vLLM-HUST Extension Manager
 
+Project accountability: `ShuhaoZhangTony` (张书豪) is the primary owner,
+project lead, accountable owner, and current executor. ECPA is PI-led and
+self-driven; student participation is optional and non-blocking. `Apei-520`
+is credited only for documented historical contributions and is not an owner
+or critical-path dependency.
+
 ## Research charter
 
 The research line **Evidence-Carrying Plugin Architecture for LLM Inference

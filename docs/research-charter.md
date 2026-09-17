@@ -1,5 +1,9 @@
 # Evidence-Carrying Plugin Architecture for LLM Inference Systems
 
+Accountable owner and project lead: `ShuhaoZhangTony` (张书豪). This is a
+PI-led, self-driven research line. Student contributions may be accepted as
+optional collaboration but are not ownership or delivery dependencies.
+
 ## 大模型推理插件体系结构
 
 ## Research question
