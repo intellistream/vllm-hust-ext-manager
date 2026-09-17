@@ -1,0 +1,18 @@
+# Evidence-backed plugin corpus
+
+The registry contains 11 extensions with a concrete entry point or static
+bundle registration and five adaptation candidates with hook/adapter/policy
+code but no verified registration surface. Repository names are not evidence.
+Independent services, benchmarks, papers, and ordinary optimization repos are
+excluded unless code establishes an extension boundary.
+
+Representative paper cases are BidKV, Mooncake Provider, Production Stack
+Provider, KV Admission, and Request Lifecycle Profiler. Together they span a
+typed policy bundle, external KV connector, infrastructure provider, private
+scheduler patch, and multi-process observer. The remaining entries are artifact
+generality evidence; they are not all claimed to conform to ECPA 0.1.
+
+Corpus paths were verified against shallow read-only clones on 2026-09-17.
+Unavailable or unverified fields use the literal `unknown`. Ownership is copied
+only from the authoritative llm-optimizations ledger; an empty/unknown owner is
+not inferred from commit authorship.

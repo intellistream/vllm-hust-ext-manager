@@ -1,0 +1,11 @@
+{
+  "schema": "ecpa-manifest/0.1-draft",
+  "id": "org.vllm-hust.example-policy",
+  "version": "0.1.0",
+  "host": {"runtime": "vllm", "version": ">=0.11,<0.12"},
+  "capabilities": {"provides": [{"name": "org.vllm-hust.scheduler-policy", "version": "1"}], "requires": []},
+  "resources": [{"name": "org.vllm-hust.scheduler.policy-slot", "mode": "exclusive", "mediator": null}],
+  "process_obligations": [{"role": "scheduler", "event": "invoked", "completion": "all"}],
+  "rollback": {"manager_owned": ["enabled intent", "rendered policy selection"], "external_operator_owned": []},
+  "authority": {"provider": ["render policy selection"], "runtime": ["load and invocation evidence"], "external": []}
+}

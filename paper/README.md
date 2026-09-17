@@ -43,3 +43,5 @@ Alignment:
 
 `artifacts/results.schema.json` is the machine contract. The example is planned,
 not a measured result. Run `make validate-results` before admitting artifacts.
+The ECPA interoperability contract is versioned under `../spec/`; the Manager
+is a reference implementation rather than the standard itself.

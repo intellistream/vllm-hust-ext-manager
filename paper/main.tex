@@ -85,8 +85,10 @@ tests and static state can agree while authority and runtime effect disagree.
 
 We ask: \emph{how can a plugin architecture make extensions discoverable,
 composable, verifiable, and rollback-safe when runtime effectiveness cannot be
-proved statically?}  Our answer is \system, an evidence-carrying activation
-architecture.  A decision is not ``enable plugin $p$'' but an activation plan
+proved statically?}  We build \system, a plugin management system centered on
+an evidence-carrying interoperability contract.  The Extension Manager is its
+reference implementation; the contract, corpus, and conformance suite define
+what another implementation must reproduce.  A decision is not ``enable plugin $p$'' but an activation plan
 for a concrete host version, provider set, plugin set, process topology, and
 resource-ownership graph.  The plan records evidence obligations.  Processes
 that actually invoke implementations satisfy those obligations; a manager
@@ -251,7 +253,10 @@ apply, delete, or restart infrastructure.  This separation limits both failure
 blast radius and the claims that status may make.
 
 \section{Implementation}
-The prototype is implemented in Python as \code{vllm-hust-ext}.  Core modules
+The reference implementation is written in Python as \code{vllm-hust-ext}.
+\system is not synonymous with that repository: it comprises the contract,
+planner/evidence semantics, reference implementation, corpus, and conformance
+tests.  Core modules
 parse manifests, discover installed bundles, maintain user configuration,
 resolve compatibility, reject duplicate registrations and resource conflicts,
 and dispatch to host providers.  The CLI exposes list, inspect, configure,
@@ -271,6 +276,48 @@ Second, process-owned evidence needs a common launch identity and aggregation
 protocol across parent/worker topologies.  Consequently we claim an
 implementation foundation and a verified namespace failure, not a completed
 end-to-end \system evaluation.
+
+\section{Plugin Corpus and Generality Cases}
+We audited the authoritative workspace and accessible repositories by reading
+packaging metadata, manifests, registration functions, implementation paths,
+and evidence documents.  Names containing ``plugin'' were insufficient.  The
+resulting machine-readable corpus contains 11 registered extensions and five
+adaptation candidates.  Candidates contain relevant hook, adapter, policy, or
+schema code but lack a verified registration surface; ordinary services and
+unrelated optimization repositories are excluded.
+
+\begin{table}[t]
+\centering\small
+\caption{Representative cases selected from the full artifact corpus.}
+\begin{tabularx}{\columnwidth}{@{}lXX@{}}
+\toprule
+Case & Extension/authority & ECPA obligation \\
+\midrule
+BidKV & scheduler policy & scheduler-owned invocation; exclusive policy slot \\
+Mooncake & KV connector + external service & worker invocation + provider operation evidence \\
+Production Stack & render/check provider & controller, router, and autoscaler evidence; no apply \\
+KV Admission & general plugin/private scheduler seam & exact-version registration and decision event \\
+Lifecycle Profiler & multi-process observer & all required roles emit launch-bound events \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The cases exercise distinct failure semantics.  BidKV can be selected without
+the scheduler invoking the policy.  Mooncake can be configured while a worker
+has the wrong connector or wheel variant.  Production Stack can render valid
+inputs while an external rollout is absent, and an HPA can conflict with a
+controller over replicas.  KV Admission can import while its private scheduler
+seam drifts.  A lifecycle profiler can run in the parent while one worker emits
+no events.  For each, the corpus records resources, process topology, external
+authority, version knowledge, evidence, and rollback boundary.  Unknown fields
+remain unknown; none is promoted to ECPA L3 merely because repository-local
+tests pass.
+
+These cases become fixtures rather than anecdotes: each needs a positive cell,
+an inert-import or missing-process cell, an identity/version mismatch, and a
+conflict or authority-boundary cell.  The corpus therefore supplies generality
+pressure to the contract while the conformance suite prevents the reference
+implementation from defining correctness by itself.
 
 \section{Evaluation Methodology}
 The evaluation is organized around four falsifiable hypotheses aligned with
@@ -366,6 +413,30 @@ Plugin isolation and supply-chain security are complementary.  Because vLLM
 plugins execute in application processes, typed manifests are not a sandbox.
 Our security contribution is limited to explicit activation authority,
 provenance, conflict visibility, and fail-closed state projection.
+
+\section{Interoperability and Standardization Path}
+ECPA 0.1 is a candidate interoperability specification, not an industry
+standard.  Its cumulative levels distinguish static discovery (L0), schema and
+namespace validity (L1), conflict-free negotiated plans (L2), process-owned
+runtime evidence (L3), and injected rollback verification (L4).  Conformance
+is always for a pinned runtime/plugin/process cell; passing L1 cannot be
+advertised as runtime compatibility.
+
+The contract is versioned independently of the Extension Manager.  Reverse-DNS
+capability and resource namespaces identify ownership.  Optional additive
+fields may evolve within a compatible revision, whereas removal, semantic
+change, or tighter accepted values require a major change and a deprecation
+window.  Providers remain translators and observers; adopting the manifest
+does not transfer runtime or external-service authority.
+
+The standardization path is deliberately evidence-gated: stabilize the
+internal contract; validate diverse plugins; obtain maintained adoption in
+both vLLM-HUST and intellistream; submit an upstream RFC and incorporate public
+feedback; demonstrate interoperability between independently written
+implementations; and only then establish neutral governance and evolution.
+A de-facto-standard claim additionally requires external users, public
+conformance results, compatibility history, and governance beyond one
+repository.  Until then, ``standardizable contract'' is the strongest claim.
 
 \section{Discussion and Limitations}
 Evidence has cost and can itself fail.  A synchronous per-request proof would

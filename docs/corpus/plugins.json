@@ -1,0 +1,89 @@
+{
+  "schema": "ecpa-plugin-corpus/v1",
+  "generated_at": "2026-09-17",
+  "authority": "evidence paths plus llm-optimizations portfolio ledger 2026-09-15",
+  "counts": {"registered_extensions": 11, "adaptation_candidates": 5},
+  "taxonomy": {
+    "policy": "scheduler, admission, budget, quality, or placement decision hook",
+    "connector_provider": "connector or provider translating to an external/runtime-owned service",
+    "runtime_observer": "request/process lifecycle observation hook",
+    "platform_adapter": "host/platform selection or configuration adapter",
+    "state_cache": "KV/state sharing, tiering, or cache lifecycle hook",
+    "research_candidate": "implementation evidence exists but no conforming registration surface is verified"
+  },
+  "plugins": [
+    {
+      "id": "bidkv", "repository": "vLLM-HUST/vllm-hust-bidkv", "owners": ["cybber695", "MingqiWang-coder"],
+      "host_runtime": ["vLLM-HUST", "SGLang"], "extension_point": "vllm_hust.extension_bundles plus vllm.preemption-policy.v1 delegation", "type": "policy",
+      "capabilities": ["scheduler-local victim selection"], "resources": ["scheduler.preemption-policy"], "process_topology": "scheduler process; exact worker scope unknown",
+      "external_dependencies": [], "lifecycle_support": ["discover", "enable", "disable", "restart rollback"], "runtime_effectiveness_evidence": "repository evidence records policy invocation; formal ECPA process evidence not migrated",
+      "version_constraints": "manifest-backed; exact supported range is evidence-cell specific", "conflict_potential": ["another preemption-policy owner"], "maturity": "registered-bundle; adaptation-required-for-ECPA-0.1", "paper_case": true,
+      "evidence": ["pyproject.toml:76", "README.md:27-46", "README.md:125-137", "bidkv/manifests/vllm-hust-extension-v0.2.json"]
+    },
+    {
+      "id": "mooncake-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": "unknown",
+      "host_runtime": ["vLLM", "Mooncake"], "extension_point": "vllm_hust.extension_bundles; official vLLM KV connector configuration", "type": "connector_provider",
+      "capabilities": ["KV transfer connector planning", "external service health evidence"], "resources": ["vllm.kv-transfer-config", "external.mooncake-service"], "process_topology": "vLLM parent/workers plus external service",
+      "external_dependencies": ["Mooncake service and wheel variant"], "lifecycle_support": ["discover", "configure", "enable intent", "health check", "disable"], "runtime_effectiveness_evidence": "real connector save/load evidence exists; common ECPA attestations not implemented",
+      "version_constraints": ">=0.3.11.post1,<0.4 experimental profile", "conflict_potential": ["exclusive kv-transfer-config", "mutually exclusive wheel variants"], "maturity": "registered-example; experimental", "paper_case": true,
+      "evidence": ["examples/mooncake-provider/pyproject.toml:12", "examples/mooncake-provider/src/vllm_hust_mooncake_provider/manifests/vllm-hust-extension-v0.2.json", "docs/evidence/mooncake-store-vllm-ascend-180-2026-09-01.md"]
+    },
+    {
+      "id": "production-stack-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": "unknown",
+      "host_runtime": ["vLLM Production Stack", "Kubernetes"], "extension_point": "vllm_hust.extension_bundles provider render/check", "type": "connector_provider",
+      "capabilities": ["Helm/Kubernetes plan rendering", "rollout evidence checking"], "resources": ["deployment.spec.replicas", "router configuration"], "process_topology": "manager plus external controllers/router/backend",
+      "external_dependencies": ["Kubernetes", "Production Stack controller and router"], "lifecycle_support": ["plan", "render", "check", "operator-owned rollback"], "runtime_effectiveness_evidence": "structured controller/router/autoscaler evidence; manager does not own apply", "version_constraints": "pinned evidence commits; general range unknown",
+      "conflict_potential": ["HPA and controller co-owning replicas"], "maturity": "registered-example; experimental", "paper_case": true,
+      "evidence": ["examples/production-stack-provider/pyproject.toml:12", "examples/production-stack-provider/src/vllm_hust_production_stack_provider/manifests/vllm-hust-extension-v0.2.json", "docs/evidence/production-stack-real-model-180-2026-09-01.md"]
+    },
+    {
+      "id": "kv-admission", "repository": "Qixin-Gaoke/kv-admission-plugin", "owners": ["ShuhaoZhangTony"],
+      "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_kv_admission.plugin:register_plugin", "type": "policy", "capabilities": ["KV pressure admission policy"],
+      "resources": ["scheduler admission/patch seam"], "process_topology": "scheduler process", "external_dependencies": [], "lifecycle_support": ["load", "configuration"], "runtime_effectiveness_evidence": "tests exercise registration; formal process evidence unknown",
+      "version_constraints": "private scheduler seam; exact range unknown", "conflict_potential": ["other scheduler monkey patches"], "maturity": "registered-general-plugin; adaptation-required-for-ECPA-0.1", "paper_case": true,
+      "evidence": ["pyproject.toml:28-29", "src/vllm_kv_admission/plugin.py", "tests/test_plugin.py"]
+    },
+    {
+      "id": "request-lifecycle-profiler", "repository": "intellistream/vllm-request-lifecycle-profiler-plugin", "owners": ["Remygred"],
+      "host_runtime": ["vLLM-HUST"], "extension_point": "vllm.general_plugins -> vllm_request_lifecycle_profiler.plugin:register_plugin", "type": "runtime_observer", "capabilities": ["request lifecycle and recovery profiling"],
+      "resources": ["runtime lifecycle observation hook"], "process_topology": "parent and runtime processes; exact obligation mapping unknown", "external_dependencies": [], "lifecycle_support": ["load", "explicit activation"], "runtime_effectiveness_evidence": "tests verify registration/configuration; cross-process evidence is not ECPA-conforming",
+      "version_constraints": "pinned vLLM/vLLM-HUST source checks", "conflict_potential": ["another observer patching the same lifecycle seam"], "maturity": "registered-general-plugin; adaptation-required-for-ECPA-0.1", "paper_case": true,
+      "evidence": ["pyproject.toml:26-27", "README.md:4", "src/vllm_request_lifecycle_profiler/plugin.py", "scripts/verify_g0_pinned_pair.py"]
+    },
+    {
+      "id": "prefixweave", "repository": "Qixin-Gaoke/kv-prefix-sharing-plugin", "owners": ["ShuhaoZhangTony"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_kv_prefix_sharing.plugin:register_plugin", "type": "state_cache",
+      "capabilities": ["prefix publish/attach/wait policy"], "resources": ["KV prefix-sharing runtime seam"], "process_topology": "scheduler/cache process; exact workers unknown", "external_dependencies": [], "lifecycle_support": ["load", "configuration"], "runtime_effectiveness_evidence": "real-hook tests and bounded online evidence; no ECPA attestation", "version_constraints": "unknown", "conflict_potential": ["other prefix/cache ownership policies"], "maturity": "registered-general-plugin; adaptation-required", "paper_case": false,
+      "evidence": ["pyproject.toml:22-23", "README.md:24", "src/vllm_kv_prefix_sharing/plugin.py", "tests/test_native_runtime_contract.py"]
+    },
+    {
+      "id": "tiered-kv-cache", "repository": "Qixin-Gaoke/tiered-kv-cache-plugin", "owners": ["ShuhaoZhangTony"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_tiered_kv_cache.plugin:register_plugin", "type": "state_cache",
+      "capabilities": ["tiered KV cache policy"], "resources": ["KV cache tiering seam"], "process_topology": "unknown", "external_dependencies": "unknown", "lifecycle_support": ["load"], "runtime_effectiveness_evidence": "unknown", "version_constraints": "unknown", "conflict_potential": ["KV connector/tiering owner"], "maturity": "registered-general-plugin; evidence-incomplete", "paper_case": false,
+      "evidence": ["pyproject.toml:18-19", "src/vllm_tiered_kv_cache/plugin.py"]
+    },
+    {
+      "id": "platform-backend-control", "repository": "Qixin-Gaoke/platform-backend-plugin", "owners": ["ShuhaoZhangTony"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_platform_backend.plugin:register", "type": "platform_adapter",
+      "capabilities": ["platform/backend selection control"], "resources": ["platform/backend selection seam"], "process_topology": "unknown", "external_dependencies": "unknown", "lifecycle_support": ["load"], "runtime_effectiveness_evidence": "unknown", "version_constraints": "unknown", "conflict_potential": ["another platform selector"], "maturity": "registered-general-plugin; evidence-incomplete", "paper_case": false,
+      "evidence": ["pyproject.toml:11-12", "src/vllm_platform_backend/plugin.py"]
+    },
+    {
+      "id": "state-scheduler", "repository": "Qixin-Gaoke/state-scheduler-plugin", "owners": ["ShuhaoZhangTony"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_state_scheduler.plugin:register_plugin", "type": "policy", "capabilities": ["state-aware scheduling"], "resources": ["scheduler policy seam"], "process_topology": "scheduler process", "external_dependencies": [], "lifecycle_support": ["load"], "runtime_effectiveness_evidence": "unknown", "version_constraints": "unknown", "conflict_potential": ["other scheduler policy owners"], "maturity": "registered-general-plugin; evidence-incomplete", "paper_case": false,
+      "evidence": ["pyproject.toml:21-22", "src/vllm_state_scheduler/plugin.py"]
+    },
+    {
+      "id": "token-budget-governor", "repository": "Qixin-Gaoke/vllm-token-budget-governor-plugin", "owners": ["ShuhaoZhangTony"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_token_budget_governor.plugin:register_plugin", "type": "policy", "capabilities": ["token budget governance"], "resources": ["request token budget policy"], "process_topology": "unknown", "external_dependencies": [], "lifecycle_support": ["load"], "runtime_effectiveness_evidence": "unknown", "version_constraints": "unknown", "conflict_potential": ["other request budget policy"], "maturity": "registered-general-plugin; evidence-incomplete", "paper_case": false,
+      "evidence": ["pyproject.toml:19-20", "src/vllm_token_budget_governor/plugin.py"]
+    },
+    {
+      "id": "quality-bounded-inference", "repository": "intellistream/quality-bounded-inference-plugin", "owners": ["Tkhkrnx"], "host_runtime": ["vLLM"], "extension_point": "vllm.general_plugins -> vllm_quality_bounded_inference.plugin:register_plugin", "type": "policy", "capabilities": ["quality-bounded runtime policy/adapters"], "resources": ["request/runtime policy seams"], "process_topology": "unknown", "external_dependencies": "unknown", "lifecycle_support": ["load", "adapter rollback receipts"], "runtime_effectiveness_evidence": "source-backed adapters distinguish applied from proven effective; common ECPA evidence absent", "version_constraints": "unknown", "conflict_potential": ["other request/runtime policy owners"], "maturity": "registered-general-plugin; adaptation-required", "paper_case": false,
+      "evidence": ["pyproject.toml:19-20", "src/vllm_quality_bounded_inference/plugin.py", "src/vllm_quality_bounded_inference/source_backed_candidate_adapters.py"]
+    }
+  ],
+  "candidates": [
+    {"repository": "intellistream/memory-evolution-plugin", "owners": ["ShuhaoZhangTony"], "reason": "runtime hook/adapter code exists but no packaging entry point was found", "evidence": ["src/", "README.md"], "status": "candidate/adaptation-required"},
+    {"repository": "intellistream/vllm-agent-state-tiering", "owners": ["fw1688"], "reason": "state schema, adapters, and policy replay exist; no runtime plugin registration was found", "evidence": ["schemas/common_schema.json", "src/agent_state_tiering/policy/"], "status": "candidate/adaptation-required"},
+    {"repository": "intellistream/adapter-serving-plugin", "owners": "unknown", "reason": "repository is an adapter-serving research line but no verified registration surface was found", "evidence": ["README.md", "src/"], "status": "candidate/adaptation-required"},
+    {"repository": "Qixin-Gaoke/compilation-plugin", "owners": ["ShuhaoZhangTony"], "reason": "compile-policy implementation and evidence exist; no runtime plugin entry point was found", "evidence": ["src/vllm_compilation/", "manifests/compilation_failure_quarantine_gate.json"], "status": "candidate/adaptation-required"},
+    {"repository": "Qixin-Gaoke/attention-kernel-plugin", "owners": ["ShuhaoZhangTony"], "reason": "attention runtime probes and action gates exist; no runtime plugin entry point was found", "evidence": ["src/vllm_attention_kernel/attention_kernel_probe.py", "evidence/attention_dispatch_action_gate_manifest.json"], "status": "candidate/adaptation-required"}
+  ],
+  "excluded_rule": "Independent services, benchmarks, papers, and optimization repositories without a verified extension registration or hook/adapter implementation are not corpus entries."
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "ecpa-manifest/0.1-draft", "id": "ExamplePolicy", "version": "0.1.0",
+  "host": {"runtime": "vllm", "version": "unknown"},
+  "capabilities": {"provides": [], "requires": []}, "resources": [],
+  "process_obligations": [{"role": "scheduler", "event": "invoked", "completion": "all"}],
+  "rollback": {"manager_owned": [], "external_operator_owned": []},
+  "authority": {"provider": [], "runtime": [], "external": []}
+}

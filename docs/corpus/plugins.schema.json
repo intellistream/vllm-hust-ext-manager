@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema", "counts", "taxonomy", "plugins", "candidates", "excluded_rule"],
+  "properties": {
+    "schema": {"const": "ecpa-plugin-corpus/v1"},
+    "counts": {"type": "object", "required": ["registered_extensions", "adaptation_candidates"]},
+    "taxonomy": {"type": "object", "minProperties": 5},
+    "plugins": {"type": "array", "items": {"type": "object", "required": ["id", "repository", "owners", "host_runtime", "extension_point", "type", "capabilities", "resources", "process_topology", "external_dependencies", "lifecycle_support", "runtime_effectiveness_evidence", "version_constraints", "conflict_potential", "maturity", "paper_case", "evidence"]}},
+    "candidates": {"type": "array", "items": {"type": "object", "required": ["repository", "owners", "reason", "evidence", "status"]}},
+    "excluded_rule": {"type": "string"}
+  },
+  "additionalProperties": true
+}

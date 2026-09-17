@@ -6,6 +6,8 @@
 - typed manifest、capability negotiation、conflict planner、四态生命周期、process-owned evidence、fail-closed activation、deterministic rollback 和 provider/runtime authority separation 已形成统一叙事。
 - H1--H4、三类 baseline、failure/composability/version-skew matrix、指标和 stop/go 门槛已进入正文。
 - 已建立结果 JSON Schema、planned 示例和校验入口；缺失结果必须为 `null`，不能伪装为零。
+- 已建立 11 个真实注册扩展、5 个 adaptation candidate 的证据语料库，并选出 BidKV、Mooncake、Production Stack、KV Admission、Request Lifecycle 五个差异化案例。
+- 已建立 ECPA 0.1 contract 草案、manifest JSON Schema、有效/无效 fixture、L0--L4 分级和 conformance 骨架。Extension Manager 明确为 reference implementation，不等同于规范本身。
 
 ## 已有实现证据
 
@@ -21,6 +23,7 @@
 - 将 conflict planner 扩展到 conditional ownership、同资源异名和三插件组合。
 - 实现 prepare/launch/observe/commit 的事务边界，以及可验证 predecessor plan rollback。
 - 将真实安装包 namespace probe 纳入持续测试，防止 mock-only 回归。
+- 将 11 个注册扩展逐步迁移为 ECPA manifest；当前 corpus 证明扩展面存在，不证明 L2--L4 符合性。
 
 ## 必须补实验
 
@@ -38,3 +41,4 @@
 - deterministic rollback 只能覆盖 Manager-owned intent/config；不得暗示能够回滚外部服务、数据或集群。
 - 相关工作仍需系统性补充论文级引用，目前官方文档引用只足以界定 upstream 行为。
 - venue 未确定，当前模板仅为通用双栏；投稿前必须切换到当年官方模板并重新检查页数、匿名和 artifact 规则。
+- “行业标准”仍无外部采用证据；必须先有独立实现互操作、上游 RFC、跨组织维护、公开符合性结果和中立治理，当前只能主张 candidate interoperability specification。
