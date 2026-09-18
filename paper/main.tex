@@ -317,6 +317,16 @@ distributed consensus service.  A production coordinator must additionally
 measure database contention, multi-host partitions, and high-availability
 failover.
 
+The implementation also includes an ECPA 0.1 candidate attestation profile:
+an encoding-independent statement is serialized with RFC 8785 JCS and signed
+as detached compact JWS using Ed25519/EdDSA.  Shared positive and negative
+vectors are accepted consistently by the Python producer/verifier and an
+independent Go verifier.  A coordinator adapter verifies signature and binding
+before ingestion, while SQLite retains nonce replay fencing and the coordinator
+retains epoch, obligation, coverage, and commit authority.  This milestone uses
+test keys; a real vLLM-HUST issuer, production trust root/key lifecycle, and
+formal performance measurements remain future work.
+
 \section{Case Studies}
 We audited the authoritative workspace and accessible repositories by reading
 packaging metadata, manifests, registration functions, implementation paths,

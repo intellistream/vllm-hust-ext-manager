@@ -11,12 +11,14 @@ requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "vLLM-HUST"}]
 dependencies = [
+  "cryptography>=3.4",
+  "jcs==0.2.1",
   "packaging>=24.0",
   "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "ruff>=0.12"]
+test = ["jsonschema>=4.0", "pytest>=8.0", "ruff>=0.12"]
 
 [project.scripts]
 vllm-hust-ext = "vllm_hust_ext.cli:main"

@@ -8,6 +8,14 @@ Status: **research prototype / candidate interoperability specification**. It
 is not an industry standard and does not claim adoption outside the listed
 experiments.
 
+The candidate [Attestation Profile 0.1](../../docs/design/attestation-profile-0.1.md)
+defines encoding-independent statement semantics plus an RFC 8785 JCS,
+detached-JWS, Ed25519/EdDSA interoperability profile. Its
+[`attestation.schema.json`](attestation.schema.json) and shared
+[`attestation-vectors.json`](attestation-vectors.json) are consumed by Python
+and an independent Go verifier. This is a candidate profile, not an industry
+standard or production trust-root/key-management design.
+
 An ECPA manifest describes identity, semantic capabilities, exclusive/shared
 resources, host/provider compatibility, process evidence obligations, and a
 rollback boundary. Project namespaces are reverse-DNS strings. Capability and

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -27,11 +28,20 @@ def main() -> int:
     jsonschema.Draft7Validator(load(spec / "protocol.schema.json")).validate(
         load(spec / "protocol-instance.json")
     )
+    attestation_schema = load(spec / "attestation.schema.json")
+    vectors = load(spec / "attestation-vectors.json")
+    for case in vectors["cases"]:
+        if case["expected"] == "OK":
+            payload = base64.urlsafe_b64decode(
+                case["payload_b64"] + "=" * (-len(case["payload_b64"]) % 4)
+            )
+            jsonschema.Draft7Validator(attestation_schema).validate(json.loads(payload))
     assert corpus["counts"]["registered_extensions"] == len(corpus["plugins"])
     assert corpus["counts"]["adaptation_candidates"] == len(corpus["candidates"])
     print(
         "ECPA 0.1 draft: manifest and protocol examples valid, "
-        "2 invalid examples rejected, corpus valid"
+        f"2 invalid examples rejected, corpus valid, "
+        f"{len(vectors['cases'])} attestation vectors indexed"
     )
     return 0
 

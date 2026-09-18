@@ -24,6 +24,7 @@ drift, and runtime effects that cannot be proved statically.
 - [Durable coordinator MVP](docs/design/durable-coordinator.md)
 - [Cross-implementation open questions](docs/design/open-questions.md)
 - [ECPA 0.1 candidate specification](spec/0.1/README.md)
+- [ECPA Attestation Profile 0.1 candidate](docs/design/attestation-profile-0.1.md)
 
 `vllm-hust-ext` is a provider-neutral control point for discovering, validating,
 configuring, enabling, planning, rendering, and checking vLLM-HUST extensions.
@@ -38,6 +39,13 @@ authority:
   operated Mooncake services;
 - the Production Stack Provider renders Helm/Kubernetes inputs and dry-run
   plans without applying them.
+
+The ECPA 0.1 candidate attestation profile now has a Python producer/verifier,
+an independent Go clean-room verifier, shared positive/negative vectors, and a
+signed-evidence adapter for the durable coordinator. It uses RFC 8785 JCS,
+detached compact JWS, and Ed25519/EdDSA. This milestone does not supply a real
+vLLM-HUST issuer, production trust root/key management, or formal overhead
+result, and a valid signature alone never implies `runtime_effective`.
 
 A plugin, KV connector, external KV system, and control-plane policy remain
 different kinds. Installing or enabling an adapter never gives this manager
