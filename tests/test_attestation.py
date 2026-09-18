@@ -148,6 +148,32 @@ def test_two_key_rotation_and_wrong_kid():
     assert caught.value.code is AttestationErrorCode.UNKNOWN_KEY
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        TrustEntry("", "kid", KEY.public_key(), frozenset({"host-runtime"})),
+        TrustEntry("issuer", "", KEY.public_key(), frozenset({"host-runtime"})),
+        TrustEntry("issuer", "kid", KEY.public_key(), frozenset()),
+        TrustEntry("issuer", "kid", KEY.public_key(), frozenset({""})),
+        TrustEntry(
+            "issuer", "kid", KEY.public_key(), frozenset({"host-runtime"}), 2, 1
+        ),
+    ],
+)
+def test_trust_store_rejects_invalid_entries_with_stable_code(entry):
+    with pytest.raises(AttestationError) as caught:
+        TrustStore([entry])
+    assert caught.value.code is AttestationErrorCode.TRUST_STORE_CONFIG
+
+
+def test_trust_store_rejects_duplicate_identity_and_wrong_entry_type():
+    entry = TrustEntry("issuer", "kid", KEY.public_key(), frozenset({"host-runtime"}))
+    for entries in ([entry, entry], [object()]):
+        with pytest.raises(AttestationError) as caught:
+            TrustStore(entries)
+        assert caught.value.code is AttestationErrorCode.TRUST_STORE_CONFIG
+
+
 def test_signed_adapter_binds_before_coordinator_and_store_fences_replay(tmp_path):
     plan = Plan(
         (PLUGIN,),
@@ -236,6 +262,77 @@ def test_signature_does_not_override_binding_or_coverage(tmp_path):
     with pytest.raises(AttestationError) as caught:
         verifier.verify(logical, NOW, type("Plan", (), {"plugins": (PLUGIN,)})())
     assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "issuer",
+        "kid",
+        "observed_at",
+        "evidence_digest",
+        "artifact_digest",
+        "plan_artifact_source",
+    ],
+)
+def test_each_persisted_binding_mutation_is_rejected_without_insert(tmp_path, mutation):
+    plan = Plan(
+        (PLUGIN,),
+        HostCompatibility("vllm-hust", "0.28", "vllm", "1"),
+        (ResourceClaim("urn:ecpa:resource:org.vllm-hust.signed", PLUGIN.id),),
+        (OBLIGATION,),
+        PredecessorSnapshot(0, "old", {"route": "old"}),
+    )
+    signed = statement(plan_id=plan.plan_id, challenge_nonce=f"nonce-{mutation}")
+    logical = Attestation(
+        plan.plan_id,
+        signed.launch_id,
+        PROCESS,
+        signed.obligation,
+        signed.event,
+        signed.challenge_nonce,
+        signed.issued_at,
+        signed.expires_at,
+        signed.plugin_id,
+        signed.subject,
+        signed.issuer,
+        signed.kid,
+        signed.observed_at,
+        signed.evidence_digest,
+        signed.artifact_digest,
+    )
+    if mutation == "plan_artifact_source":
+        signed = replace(signed, artifact_digest="sha256:" + "d" * 64)
+        logical = replace(logical, artifact_digest=signed.artifact_digest)
+    else:
+        replacements = {
+            "issuer": {"issuer": "urn:ecpa:issuer:other"},
+            "kid": {"kid": "other-kid"},
+            "observed_at": {"observed_at": signed.observed_at - 1},
+            "evidence_digest": {"evidence_digest": "sha256:" + "d" * 64},
+            "artifact_digest": {"artifact_digest": "sha256:" + "d" * 64},
+        }
+        logical = replace(logical, **replacements[mutation])
+    verifier = SignedAttestationVerifier(
+        {logical.nonce: sign(signed, KEY)}, trust_store()
+    )
+    store = SQLiteActivationStore(tmp_path / f"binding-{mutation}.db")
+    coordinator = ActivationCoordinator(
+        store,
+        FakeHostAdapter((PROCESS,)),
+        verifier,
+        FakeTrafficGate(),
+        FakeExternalServiceAdapter(),
+        clock=lambda: NOW,
+    )
+    plan_id = coordinator.plan(plan)
+    coordinator.prepare(plan_id)
+    coordinator.launch(plan_id, signed.launch_id)
+    with pytest.raises(AttestationError) as caught:
+        coordinator.observe(plan_id, logical, NOW)
+    assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
+    assert store.connection.execute("SELECT count(*) FROM evidence").fetchone()[0] == 0
+    store.close()
 
 
 def test_statement_json_shape_is_stable():

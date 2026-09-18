@@ -35,6 +35,9 @@ seeds. They are public test material and must never be used in production.
 Multiple key IDs demonstrate overlap during rotation. Revocation distribution,
 issuer enrollment, secure private-key custody, and production trust roots are
 deployment-policy work outside this milestone.
+Revocation policy epochs and distribution remain explicitly deferred; an
+enabled flag and validity interval are boundaries, not a production revocation
+mechanism.
 
 Each trust-store entry binds `(issuer, kid)` to allowed subjects/authorities,
 an enabled state, and a validity interval. The verifier also enforces

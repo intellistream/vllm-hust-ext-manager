@@ -49,6 +49,7 @@ class AttestationErrorCode(str, Enum):
     INVALID_STATEMENT = "ATTESTATION_INVALID_STATEMENT"
     INVALID_TIME = "ATTESTATION_INVALID_TIME"
     TRUST_POLICY = "ATTESTATION_TRUST_POLICY"
+    TRUST_STORE_CONFIG = "ATTESTATION_TRUST_STORE_CONFIG"
 
 
 class AttestationError(ValueError):
@@ -173,7 +174,37 @@ class TrustEntry:
 
 class TrustStore:
     def __init__(self, entries: list[TrustEntry]):
-        self._entries = {(item.issuer, item.kid): item for item in entries}
+        self._entries: dict[tuple[str, str], TrustEntry] = {}
+        for item in entries:
+            if not isinstance(item, TrustEntry):
+                raise AttestationError(
+                    AttestationErrorCode.TRUST_STORE_CONFIG,
+                    "entry must be TrustEntry",
+                )
+            if (
+                not item.issuer
+                or not item.kid
+                or not isinstance(item.public_key, Ed25519PublicKey)
+                or not item.subjects
+                or any(not isinstance(x, str) or not x for x in item.subjects)
+                or isinstance(item.not_before, bool)
+                or isinstance(item.not_after, bool)
+                or not isinstance(item.not_before, int)
+                or not isinstance(item.not_after, int)
+                or item.not_before < 0
+                or item.not_before > item.not_after
+            ):
+                raise AttestationError(
+                    AttestationErrorCode.TRUST_STORE_CONFIG,
+                    "invalid trust entry",
+                )
+            identity = (item.issuer, item.kid)
+            if identity in self._entries:
+                raise AttestationError(
+                    AttestationErrorCode.TRUST_STORE_CONFIG,
+                    f"duplicate trust entry: {item.issuer}/{item.kid}",
+                )
+            self._entries[identity] = item
 
     def lookup(self, issuer: str, kid: str, subject: str, now: int) -> TrustEntry:
         try:
