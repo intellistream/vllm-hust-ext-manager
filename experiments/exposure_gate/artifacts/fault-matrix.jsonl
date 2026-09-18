@@ -1,0 +1,10 @@
+{"classification":"synthetic/reference","expected":"PASS","observed":"PASS","scenario":"happy-open-drain"}
+{"classification":"synthetic/reference","expected":"FAILED_SAFE","observed":"FAILED_SAFE","scenario":"crash-after-open-intent"}
+{"classification":"synthetic/reference","expected":"CANDIDATE_OPEN","observed":"CANDIDATE_OPEN","reconciled_by":"actual-generation-and-route-fence-query","scenario":"crash-after-open-side-effect"}
+{"classification":"synthetic/reference","expected":"REJECT","observed":"REJECT","scenario":"stale-generation-cas"}
+{"classification":"synthetic/reference","expected":"REJECT","observed":"REJECT","scenario":"lease-loss"}
+{"classification":"synthetic/reference","expected":"REJECT","observed":"REJECT","scenario":"partial-worker-evidence-2-of-4"}
+{"classification":"synthetic/reference","expected":"REJECT","observed":"REJECT","scenario":"old-epoch-or-replay"}
+{"classification":"synthetic/reference","expected":"RESTORED_STRONG","observed":"RESTORED_STRONG","scenario":"rollback-strong"}
+{"classification":"synthetic/reference","expected":"BEHAVIORAL","observed":"BEHAVIORAL","scenario":"rollback-behavioral"}
+{"classification":"synthetic/reference","expected":"FAILED_SAFE","observed":"FAILED_SAFE","scenario":"rollback-failure"}

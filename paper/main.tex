@@ -435,6 +435,15 @@ Overhead & matched three-arm experiment & \tbd{} \\
 \end{tabularx}
 \end{table}
 
+\subsection{Reference ExposureGate Artifact}
+The current gate artifact is a deterministic, single-host state machine backed
+by SQLite and an in-process scheduler-admission model.  It exercises
+evidence-gated opening, per-request generation attribution, crash recovery,
+draining, and rollback classification with synthetic signed receipts.  It is
+not a production proxy, Kubernetes readiness evidence, or a production
+performance result.  Real plugin receipts may replace the synthetic inputs in
+the planned evaluation without changing the gate protocol.
+
 \subsection{Preliminary Evidence and Missing Results}
 On repository main, 66 CPU tests pass.  On commit
 \code{3201e133}, those tests also pass despite the namespace change.  A clean

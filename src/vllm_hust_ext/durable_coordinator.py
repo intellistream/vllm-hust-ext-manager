@@ -346,7 +346,10 @@ class ActivationCoordinator:
                 ),
             )
             self._journal(db, plan.plan_id, "transition", "plan", {"state": "Planned"})
-        self.traffic.hold_predecessor(plan.predecessor)
+        if hasattr(self.traffic, "stage"):
+            self.traffic.stage(plan.plan_id, plan.predecessor)
+        else:
+            self.traffic.hold_predecessor(plan.predecessor)
         return plan.plan_id
 
     def prepare(self, plan_id: str) -> None:
@@ -360,6 +363,8 @@ class ActivationCoordinator:
         with self.store.connection as db:
             self._journal(db, plan_id, "receipt", "prepare", receipt)
             self._transition(db, plan_id, State.PREPARED)
+        if hasattr(self.traffic, "close"):
+            self.traffic.close(plan.predecessor.generation + 1)
 
     def launch(self, plan_id: str, launch_id: str) -> None:
         plan = _plan_from_json(self._row(plan_id)["plan_json"])
@@ -524,7 +529,27 @@ class ActivationCoordinator:
             if changed != 1 or plan.predecessor.generation != expected_generation:
                 raise ContractError(ErrorCode.CAS_MISMATCH, str(expected_generation))
         self.faults.hit("commit.after_wal")
-        self.traffic.activate(plan)
+        if hasattr(self.traffic, "open"):
+            from .attestation import SignedAttestationVerifier
+
+            if not isinstance(self.verifier, SignedAttestationVerifier):
+                raise ContractError(
+                    ErrorCode.MISSING_PROCESS_EVIDENCE,
+                    "ExposureGate requires signed receipt verification",
+                )
+            self.traffic.open(
+                expected_generation + 1,
+                {
+                    "signed_receipts_verified": True,
+                    "required_process_coverage": True,
+                    "lease_valid": True,
+                    "generation_cas": True,
+                    "lease_token": self.traffic.lease_token,
+                    "plan_id": plan_id,
+                },
+            )
+        else:
+            self.traffic.activate(plan)
         self.faults.hit("commit.after_side_effect")
         with self.store.connection as db:
             generation = int(
@@ -540,7 +565,42 @@ class ActivationCoordinator:
         row = self._row(plan_id)
         state = State(row["state"])
         plan = _plan_from_json(row["plan_json"])
-        if state in {State.PREPARING, State.LAUNCHING, State.COMMIT_READY}:
+        if state is State.COMMIT_READY and hasattr(self.traffic, "reconcile"):
+            from .exposure_gate import GateState
+
+            gate_state = self.traffic.reconcile()
+            if gate_state is GateState.CANDIDATE_OPEN:
+                with self.store.connection as db:
+                    self._journal(
+                        db, plan_id, "receipt", "commit.reconcile", {"queried": True}
+                    )
+                    self._transition(db, plan_id, State.EFFECTIVE)
+                return State.EFFECTIVE
+            if gate_state is GateState.CANDIDATE_CLOSED:
+                self.traffic.rollback(plan.predecessor.generation + 1)
+            with self.store.connection as db:
+                self._transition(db, plan_id, State.RECONCILE)
+                self._journal(
+                    db,
+                    plan_id,
+                    "recovery",
+                    "gate-not-open",
+                    {"gate_state": gate_state.value},
+                )
+        elif state in {State.PREPARING, State.LAUNCHING, State.OBSERVING} and hasattr(
+            self.traffic, "reconcile"
+        ):
+            self.traffic.rollback(plan.predecessor.generation + 1)
+            with self.store.connection as db:
+                self._transition(db, plan_id, State.RECONCILE)
+                self._journal(
+                    db,
+                    plan_id,
+                    "recovery",
+                    "pre-open-rollback",
+                    {"state": state.value},
+                )
+        elif state in {State.PREPARING, State.LAUNCHING, State.COMMIT_READY}:
             self.traffic.restore(plan.predecessor)
             with self.store.connection as db:
                 self._transition(db, plan_id, State.RECONCILE)
@@ -563,7 +623,15 @@ class ActivationCoordinator:
             self._journal(db, plan_id, "wal", "rollback", {"reason": reason})
         try:
             outcome = self.host.rollback(plan.predecessor)
-            self.traffic.restore(plan.predecessor)
+            if hasattr(self.traffic, "reconcile"):
+                from .exposure_gate import RollbackClass
+
+                gate_outcome = self.traffic.rollback(plan.predecessor.generation + 1)
+                if gate_outcome is RollbackClass.FAILED_SAFE:
+                    raise RuntimeError("ExposureGate rollback failed safe")
+                outcome = {**outcome, "exposure_gate": gate_outcome.value}
+            else:
+                self.traffic.restore(plan.predecessor)
         except Exception as exc:
             with self.store.connection as db:
                 db.execute(
