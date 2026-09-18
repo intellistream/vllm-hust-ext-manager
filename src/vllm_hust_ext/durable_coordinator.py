@@ -616,6 +616,71 @@ class ActivationCoordinator:
         state = State(row["state"])
         plan = _plan_from_json(row["plan_json"])
         gate = self._exposure_gate()
+        if state is State.ROLLBACK:
+            if gate is None:
+                with self.store.connection as db:
+                    self._transition(db, plan_id, State.FAILED_SAFE)
+                return State.FAILED_SAFE
+            from .exposure_gate import GateState
+
+            host_receipt = self.store.connection.execute(
+                "SELECT detail_json FROM journal WHERE plan_id=? "
+                "AND operation='rollback.host' ORDER BY sequence DESC LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            gate_state = gate.reconcile()
+            if host_receipt is None:
+                gate_state = {
+                    "FAILED_SAFE": GateState.FAILED_SAFE,
+                    "SAFETY_UNKNOWN": GateState.SAFETY_UNKNOWN,
+                }[
+                    gate.fail_close(
+                        plan.predecessor.generation + 1,
+                        "host rollback outcome missing during recovery",
+                    ).classification.value
+                ]
+                host_detail = {"outcome": None, "error": "missing host receipt"}
+            else:
+                host_detail = json.loads(host_receipt["detail_json"])
+            if gate_state is GateState.SAFETY_UNKNOWN:
+                target = State.SAFETY_UNKNOWN
+            elif (
+                gate_state is GateState.FAILED_SAFE
+                or host_detail.get("error") is not None
+                or host_detail.get("outcome") is None
+            ):
+                target = State.FAILED_SAFE
+            elif gate_state is GateState.ROLLED_BACK:
+                target = State.ROLLED_BACK
+            else:
+                outcome = gate.fail_close(
+                    plan.predecessor.generation + 1,
+                    f"unexpected gate recovery state {gate_state.value}",
+                )
+                target = (
+                    State.FAILED_SAFE
+                    if outcome.classification.value == "FAILED_SAFE"
+                    else State.SAFETY_UNKNOWN
+                )
+            with self.store.connection as db:
+                detail = {
+                    "recovered": True,
+                    "host": host_detail,
+                    "gate_state": gate_state.value,
+                }
+                db.execute(
+                    "INSERT INTO rollback_outcome"
+                    "(plan_id,success,detail_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        plan_id,
+                        int(target is State.ROLLED_BACK),
+                        canonical_bytes(detail),
+                        self._now(),
+                    ),
+                )
+                self._journal(db, plan_id, "receipt", "rollback.recover", detail)
+                self._transition(db, plan_id, target)
+            return target
         if state is State.COMMIT_READY and gate is not None:
             from .exposure_gate import GateState
 
@@ -708,6 +773,7 @@ class ActivationCoordinator:
                 except Exception as close_exc:
                     gate_error = f"{gate_error}; fail-close: {close_exc}"
                     gate_outcome = RollbackClass.SAFETY_UNKNOWN
+            self.faults.hit("rollback.after_traffic_side_effect")
             with self.store.connection as db:
                 self._journal(
                     db,

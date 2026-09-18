@@ -10,6 +10,33 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from vllm_hust_ext.attestation import (
+    AttestationStatement,
+    ProcessStatement,
+    SignedAttestationVerifier,
+    TrustEntry,
+    TrustStore,
+    sign,
+)
+from vllm_hust_ext.attestation.model import PROFILE, SCHEMA
+from vllm_hust_ext.durable_coordinator import (
+    ActivationCoordinator,
+    FakeExternalServiceAdapter,
+    FakeHostAdapter,
+    SQLiteActivationStore,
+)
+from vllm_hust_ext.ecpa_model import (
+    Attestation,
+    ContractError,
+    EvidenceObligation,
+    HostCompatibility,
+    Plan,
+    PluginIdentity,
+    PredecessorSnapshot,
+    ProcessIdentity,
+)
 from vllm_hust_ext.exposure_gate import (
     AdmissionRequest,
     AdmissionResult,
@@ -54,7 +81,183 @@ def prepare(gate: ReferenceExposureGate) -> None:
     gate.close(1)
 
 
+def coordinator_rejection(scenario: str, root: Path) -> str:
+    root.mkdir(parents=True, exist_ok=True)
+    key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    plugin = PluginIdentity("org.vllm-hust", "scenario", "1", "a" * 64)
+    obligation = EvidenceObligation("workers", "worker", "invoked", (0, 1, 2, 3))
+    predecessor = PredecessorSnapshot(0, "old", {"route": "old"})
+    plan = Plan(
+        (plugin,),
+        HostCompatibility("vllm-hust", "0.28", "vllm", "1"),
+        (),
+        (obligation,),
+        predecessor,
+    )
+    processes = tuple(
+        ProcessIdentity("host-a", "worker", ordinal, f"start-{ordinal}", 7)
+        for ordinal in range(4)
+    )
+    envelopes = {}
+    attestations = []
+    for process in processes:
+        nonce = f"scenario-{process.ordinal}"
+        statement = AttestationStatement(
+            SCHEMA,
+            PROFILE,
+            "urn:ecpa:issuer:scenario",
+            "key-1",
+            "host-runtime",
+            plan.plan_id,
+            "launch-1",
+            plugin.id,
+            "sha256:" + plugin.artifact_sha256,
+            ProcessStatement(
+                process.host,
+                process.role,
+                process.ordinal,
+                process.start_id,
+                process.epoch,
+            ),
+            obligation.obligation_id,
+            obligation.event,
+            NOW - 2,
+            NOW - 1,
+            NOW + 60,
+            nonce,
+            "sha256:" + f"{process.ordinal + 1:064x}",
+        )
+        envelopes[nonce] = sign(statement, key)
+        attestations.append(
+            Attestation(
+                plan.plan_id,
+                "launch-1",
+                process,
+                obligation.obligation_id,
+                obligation.event,
+                nonce,
+                NOW - 1,
+                NOW + 60,
+                plugin.id,
+                "host-runtime",
+                statement.issuer,
+                statement.kid,
+                statement.observed_at,
+                statement.evidence_digest,
+                statement.artifact_digest,
+            )
+        )
+    old_process = ProcessIdentity("host-a", "worker", 0, "old-start", 6)
+    old_statement = AttestationStatement(
+        SCHEMA,
+        PROFILE,
+        "urn:ecpa:issuer:scenario",
+        "key-1",
+        "host-runtime",
+        plan.plan_id,
+        "launch-1",
+        plugin.id,
+        "sha256:" + plugin.artifact_sha256,
+        ProcessStatement("host-a", "worker", 0, "old-start", 6),
+        obligation.obligation_id,
+        obligation.event,
+        NOW - 2,
+        NOW - 1,
+        NOW + 60,
+        "old-epoch",
+        "sha256:" + "f" * 64,
+    )
+    envelopes["old-epoch"] = sign(old_statement, key)
+    old_attestation = Attestation(
+        plan.plan_id,
+        "launch-1",
+        old_process,
+        obligation.obligation_id,
+        obligation.event,
+        "old-epoch",
+        NOW - 1,
+        NOW + 60,
+        plugin.id,
+        "host-runtime",
+        old_statement.issuer,
+        old_statement.kid,
+        old_statement.observed_at,
+        old_statement.evidence_digest,
+        old_statement.artifact_digest,
+    )
+    verifier = SignedAttestationVerifier(
+        envelopes,
+        TrustStore(
+            [
+                TrustEntry(
+                    "urn:ecpa:issuer:scenario",
+                    "key-1",
+                    key.public_key(),
+                    frozenset({"host-runtime"}),
+                )
+            ]
+        ),
+    )
+    adapter = DeterministicTrafficAdapter(0, predecessor.__dict__)
+    gate = ReferenceExposureGate(root / "gate.db", adapter, clock=lambda: NOW)
+    coordinator = ActivationCoordinator(
+        SQLiteActivationStore(root / "coordinator.db"),
+        FakeHostAdapter(processes),
+        verifier,
+        gate,
+        FakeExternalServiceAdapter(),
+        clock=lambda: NOW,
+    )
+    plan_id = coordinator.plan(plan)
+    coordinator.prepare(plan_id)
+    coordinator.launch(plan_id, "launch-1")
+    try:
+        if scenario == "partial-worker-evidence-2-of-4":
+            for item in attestations[:2]:
+                coordinator.observe(plan_id, item, NOW)
+            coordinator.commit(plan_id, 0)
+        elif scenario == "stale-generation-cas":
+            for item in attestations:
+                coordinator.observe(plan_id, item, NOW)
+            with coordinator.store.connection:
+                coordinator.store.connection.execute(
+                    "UPDATE meta SET generation=1 WHERE singleton=1"
+                )
+            coordinator.commit(plan_id, 0)
+        elif scenario == "old-epoch-or-replay":
+            old_epoch_rejected = False
+            try:
+                coordinator.observe(plan_id, old_attestation, NOW)
+            except ContractError:
+                old_epoch_rejected = True
+            coordinator.observe(plan_id, attestations[0], NOW)
+            replay_rejected = False
+            try:
+                coordinator.observe(plan_id, attestations[0], NOW)
+            except ContractError:
+                replay_rejected = True
+            if old_epoch_rejected and replay_rejected and adapter.route.generation == 0:
+                return "REJECT"
+            raise AssertionError("old epoch or nonce replay was accepted")
+        else:
+            raise ValueError(scenario)
+    except ContractError:
+        if adapter.route.generation == 0:
+            return "REJECT"
+        raise
+    raise AssertionError(f"coordinator scenario unexpectedly opened: {scenario}")
+
+
 def execute(scenario: str, path: Path) -> tuple[str, dict[str, Any] | None]:
+    if scenario in {
+        "stale-generation-cas",
+        "partial-worker-evidence-2-of-4",
+        "old-epoch-or-replay",
+    }:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        root = path.parent / f"{scenario}-coordinator"
+        observed = coordinator_rejection(scenario, root)
+        return observed, {"oracle": evaluate_trace(root / "gate.db")}
     options: dict[str, Any] = {}
     if scenario == "rollback-behavioral":
         options["behavioral_restore"] = True
@@ -94,35 +297,9 @@ def execute(scenario: str, path: Path) -> tuple[str, dict[str, Any] | None]:
             return gate.reconcile().value, {
                 "reconciled_by": "actual-generation-and-route-fence-query"
             }
-        if scenario == "stale-generation-cas":
-            gate.open(2, PROOF)
-        elif scenario == "lease-loss":
+        if scenario == "lease-loss":
             adapter.authority.grant = LeaseGrant("other", 2, NOW + 60)
             gate.open(1, PROOF)
-        elif scenario == "partial-worker-evidence-2-of-4":
-            gate.open(
-                1,
-                OpenProof(
-                    "candidate",
-                    1,
-                    0,
-                    PROOF.evidence_digest,
-                    PROOF.coverage_digest,
-                    GRANT,
-                ),
-            )
-        elif scenario == "old-epoch-or-replay":
-            gate.open(
-                1,
-                OpenProof(
-                    "wrong-plan",
-                    1,
-                    1,
-                    PROOF.evidence_digest,
-                    PROOF.coverage_digest,
-                    GRANT,
-                ),
-            )
         elif scenario.startswith("rollback-"):
             gate.open(1, PROOF)
             oracle = None
@@ -151,19 +328,29 @@ def generate(output: Path) -> dict[str, Any]:
         for item in definition["scenarios"]:
             path = root / f"{item['id']}.db"
             observed, detail = execute(item["id"], path)
+            scenario_oracle = (
+                detail["oracle"]
+                if detail is not None and "oracle" in detail
+                else evaluate_trace(path)
+            )
             row = {
                 "classification": "synthetic/reference",
                 "expected": item["expected"],
                 "observed": observed,
                 "scenario": item["id"],
+                "oracle_verdict": scenario_oracle["verdict"],
+                "oracle_errors": scenario_oracle["errors"],
             }
             if detail and "reconciled_by" in detail:
                 row.update(detail)
             rows.append(row)
             if item["id"] == "happy-open-drain":
                 happy_trace = export_trace(path)
-                oracle = detail
-    if any(row["expected"] != row["observed"] for row in rows):
+                oracle = scenario_oracle
+    if any(
+        row["expected"] != row["observed"] or row["oracle_verdict"] != "PASS"
+        for row in rows
+    ):
         raise SystemExit("scenario verdict mismatch")
     trace_text = "".join(
         json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"

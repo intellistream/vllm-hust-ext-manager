@@ -26,6 +26,8 @@ signed-receipt verification and complete required-process coverage. Discovery,
 readiness, load, or resolution do not satisfy these fields.
 
 Every adapter side effect has an earlier intent row and a later receipt row.
+Each pair carries an explicit `operation_id`; recovery suboperations use their
+own IDs rather than deriving identity by splitting an operation name.
 If the process dies after actual open but before its receipt, recovery queries
 the adapter's actual generation and exact route fence. An exact match records a
 reconciliation receipt; any unknown or predecessor-only result closes both
@@ -56,11 +58,20 @@ claim safety it could not observe.
 ## Persistence and authority boundary
 
 The database schema is explicitly versioned as `2` and unknown versions are
-rejected. SQLite connections use `BEGIN IMMEDIATE` for writes and state updates
+rejected. Schema 2 is intentionally one-shot and requires a new database; this
+reference artifact does not provide an in-place schema-1 migration. SQLite
+connections use `BEGIN IMMEDIATE` for writes and state updates
 also use a revision CAS. This is a one-process/single-writer reference contract,
 not multi-manager coordination. Database commit and external routing cannot be
 atomic; intent-before-effect, receipt-after-effect, exact route queries, and
 terminal unknown outcomes are the recovery mechanism.
+
+Open reconciliation reloads the persisted proof and typed lease and checks the
+current authority grant, fencing token, and expiry before ratifying an observed
+candidate route. Superseded or expired grants trigger fail-close. Pending
+fail-close is reconciled before open or rollback: only an observed doubly closed
+route becomes `FAILED_SAFE`; failed queries and still-open routes become
+`SAFETY_UNKNOWN`.
 
 Staging validates the adapter's actual predecessor generation, canonical
 snapshot, and route fence before accepting a candidate. Coordinator staging is
@@ -78,3 +89,5 @@ summary; a test byte-compares fresh output with checked artifacts. They use a
 fixed clock and request IDs and are explicitly synthetic/reference. This proves
 reference state-machine behavior only. It does not prove a real vLLM data path,
 distributed leases, throughput, latency, or production rollback.
+`BEHAVIORAL` rollback in the matrix is also synthetic: it exercises the typed
+oracle boundary but is not an independently measured equivalence result.

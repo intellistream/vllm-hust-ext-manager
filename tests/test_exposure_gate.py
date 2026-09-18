@@ -19,6 +19,7 @@ from vllm_hust_ext.durable_coordinator import (
     ActivationCoordinator,
     FakeExternalServiceAdapter,
     FakeHostAdapter,
+    FaultInjector,
     SQLiteActivationStore,
 )
 from vllm_hust_ext.ecpa_model import (
@@ -173,6 +174,17 @@ def test_incomplete_proof_stale_generation_and_lease_loss_never_open(tmp_path):
     assert adapter.route.generation == 0
 
 
+@pytest.mark.parametrize(
+    "digest", ["sha256:1", "sha256:" + "A" * 64, "md5:" + "1" * 64]
+)
+def test_open_proof_requires_exact_lowercase_sha256_digest(tmp_path, digest):
+    gate, _adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    malformed = OpenProof("candidate", 1, 1, digest, PROOF.coverage_digest, GRANT)
+    with pytest.raises(GateError, match="no durable evidence"):
+        gate.open(1, malformed)
+
+
 def test_stage_close_open_and_drain_are_idempotent(tmp_path):
     gate, _adapter = make_gate(tmp_path)
     assert gate.stage({"plan_id": "candidate"}, PREDECESSOR) == 1
@@ -265,6 +277,20 @@ def test_rollback_wrong_generation_never_classifies_strong(tmp_path):
         gate.rollback(99)
 
 
+def test_rollback_actual_generation_99_never_classifies_strong(tmp_path):
+    gate, adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    gate.open(1, PROOF)
+
+    def wrong_generation(_generation, fence, snapshot):
+        adapter.route = adapter.route.__class__(99, fence, snapshot)
+        return adapter.route
+
+    adapter.restore = wrong_generation
+    assert gate.rollback(1) is RollbackClass.FAILED_SAFE
+    assert adapter.route.generation is None
+
+
 def test_failed_closure_is_honestly_safety_unknown(tmp_path):
     gate, adapter = make_gate(tmp_path)
     stage_closed(gate)
@@ -286,6 +312,70 @@ def test_rollback_restore_and_closure_failure_is_safety_unknown(tmp_path):
     assert gate.rollback(1) is RollbackClass.SAFETY_UNKNOWN
     assert GateState(gate._row()["state"]) is GateState.SAFETY_UNKNOWN
     assert adapter.route.generation == 1
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        ("fail_close.before_effect", GateState.SAFETY_UNKNOWN),
+        ("fail_close.after_effect", GateState.FAILED_SAFE),
+    ],
+)
+def test_hard_crash_during_fail_close_reconciles_from_actual_route(
+    tmp_path, fault, expected
+):
+    gate, adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    gate.open(1, PROOF)
+    gate.faults.add(fault)
+    with pytest.raises(InjectedCrash):
+        gate.fail_close(1, "injected")
+    gate.close_store()
+    restarted = ReferenceExposureGate(tmp_path / "gate.db", adapter, clock=lambda: NOW)
+    assert restarted.reconcile() is expected
+    with pytest.raises(GateError, match="admission blocked"):
+        restarted.observe(AdmissionRequest("never-admit", NOW + 1))
+    assert evaluate_trace(tmp_path / "gate.db")["verdict"] == "PASS"
+
+
+def test_fail_close_route_query_failure_is_safety_unknown(tmp_path):
+    gate, adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    gate.open(1, PROOF)
+    adapter.faults.update({"close_all", "route.query"})
+    outcome = gate.fail_close(1, "query unavailable")
+    assert outcome.classification is RollbackClass.SAFETY_UNKNOWN
+
+
+def test_open_recovery_rejects_superseded_lease(tmp_path):
+    gate, adapter = make_gate(tmp_path, faults={"open.after"})
+    stage_closed(gate)
+    with pytest.raises(InjectedCrash):
+        gate.open(1, PROOF)
+    adapter.authority.grant = LeaseGrant("new-manager", 2, NOW + 120)
+    gate.close_store()
+    restarted = ReferenceExposureGate(tmp_path / "gate.db", adapter, clock=lambda: NOW)
+    assert restarted.reconcile() is GateState.FAILED_SAFE
+    assert adapter.route.generation is None
+
+
+def test_open_recovery_rejects_expired_persisted_lease(tmp_path):
+    gate, adapter = make_gate(tmp_path, faults={"open.after"})
+    stage_closed(gate)
+    with pytest.raises(InjectedCrash):
+        gate.open(1, PROOF)
+    gate.close_store()
+    restarted = ReferenceExposureGate(
+        tmp_path / "gate.db", adapter, clock=lambda: GRANT.expires_at + 1
+    )
+    assert restarted.reconcile() is GateState.FAILED_SAFE
+
+
+def test_pre_open_rollback_is_a_legal_oracle_trace(tmp_path):
+    gate, _adapter = make_gate(tmp_path)
+    gate.stage({"plan_id": "candidate"}, PREDECESSOR)
+    assert gate.rollback(1) is RollbackClass.RESTORED_STRONG
+    assert evaluate_trace(tmp_path / "gate.db")["verdict"] == "PASS"
 
 
 @pytest.mark.parametrize(
@@ -509,10 +599,16 @@ def test_signed_receipt_coverage_is_wired_to_coordinator_open(tmp_path):
     assert coordinator.commit(plan_id, 0) == 1
     assert adapter.route.generation == 1
     assert coordinator._row(plan_id)["state"] == State.EFFECTIVE.value
-    coordinator.host.rollback_succeeds = False
-    assert coordinator.rollback(plan_id, "host failure") is State.FAILED_SAFE
-    assert adapter.route.generation is None
-    traffic_receipt = coordinator.store.connection.execute(
-        "SELECT detail_json FROM journal WHERE operation='rollback.traffic'"
-    ).fetchone()[0]
-    assert json.loads(traffic_receipt)["outcome"] == RollbackClass.FAILED_SAFE.value
+    coordinator.faults = FaultInjector({"rollback.after_traffic_side_effect"})
+    with pytest.raises(RuntimeError, match="injected fault"):
+        coordinator.rollback(plan_id, "crash after traffic restore")
+    assert coordinator._row(plan_id)["state"] == State.ROLLBACK.value
+    restarted = ActivationCoordinator(
+        coordinator.store,
+        coordinator.host,
+        verifier,
+        gate,
+        coordinator.external,
+        clock=lambda: NOW,
+    )
+    assert restarted.recover(plan_id) is State.ROLLED_BACK

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from contextlib import suppress
@@ -167,12 +168,17 @@ class DeterministicTrafficAdapter:
     def lease_valid(self, grant: LeaseGrant, now: int) -> bool:
         return self.authority.current() == grant and grant.expires_at >= now
 
+    def query_route(self) -> RouteState:
+        self._hit("route.query")
+        return self.route
+
 
 class ReferenceExposureGate:
     """Durable reference gate; not a proxy or Kubernetes readiness check."""
 
     exposure_gate_capability = "ecpa.reference-exposure-gate/0.2"
     schema_version = 2
+    _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
     _ALLOWED = {
         GateState.PREDECESSOR_OPEN: {
@@ -246,7 +252,8 @@ class ReferenceExposureGate:
               proof_digest TEXT);
             CREATE TABLE IF NOT EXISTS gate_transition(
               seq INTEGER PRIMARY KEY AUTOINCREMENT, generation INTEGER NOT NULL,
-              kind TEXT NOT NULL, operation TEXT NOT NULL, from_state TEXT,
+              kind TEXT NOT NULL, operation TEXT NOT NULL,
+              operation_id TEXT NOT NULL, from_state TEXT,
               to_state TEXT, fence TEXT, at INTEGER NOT NULL,
               detail_json BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS admission(
@@ -295,14 +302,17 @@ class ReferenceExposureGate:
         to_state: GateState | None,
         fence: str | None,
         detail: dict[str, Any],
+        operation_id: str | None = None,
     ) -> int:
+        correlation = operation_id or f"{operation.split('.')[0]}:{generation}"
         cursor = db.execute(
-            "INSERT INTO gate_transition(generation,kind,operation,from_state,"
-            "to_state,fence,at,detail_json) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO gate_transition(generation,kind,operation,operation_id,"
+            "from_state,to_state,fence,at,detail_json) VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 generation,
                 kind,
                 operation,
+                correlation,
                 None if from_state is None else from_state.value,
                 None if to_state is None else to_state.value,
                 fence,
@@ -321,13 +331,22 @@ class ReferenceExposureGate:
         kind: str,
         detail: dict[str, Any],
         fence: str | None = None,
+        operation_id: str | None = None,
     ) -> int:
         row = self._row()
         current = GateState(row["state"])
         if target != current and target not in self._ALLOWED[current]:
             raise GateError(f"invalid gate transition {current.value}->{target.value}")
         seq = self._append(
-            db, generation, kind, operation, current, target, fence, detail
+            db,
+            generation,
+            kind,
+            operation,
+            current,
+            target,
+            fence,
+            detail,
+            operation_id,
         )
         changed = db.execute(
             "UPDATE gate_state SET state=?,transition_seq=?,revision=revision+1 "
@@ -424,8 +443,8 @@ class ReferenceExposureGate:
             raise GateError("open proof plan mismatch")
         if (
             proof.evidence_count < 1
-            or not proof.evidence_digest.startswith("sha256:")
-            or not proof.coverage_digest.startswith("sha256:")
+            or self._SHA256.fullmatch(proof.evidence_digest) is None
+            or self._SHA256.fullmatch(proof.coverage_digest) is None
         ):
             raise GateError("open proof has no durable evidence coverage")
         staged_lease = LeaseGrant(**json.loads(row["lease_json"]))
@@ -607,6 +626,59 @@ class ReferenceExposureGate:
     def reconcile(self) -> GateState:
         row = self._row()
         state = GateState(row["state"])
+        fail_close_intent = self.connection.execute(
+            "SELECT * FROM gate_transition WHERE operation='fail_close' "
+            "AND kind='intent' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        fail_close_receipt = self.connection.execute(
+            "SELECT * FROM gate_transition WHERE operation='fail_close' "
+            "AND kind='receipt' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if fail_close_intent is not None and (
+            fail_close_receipt is None
+            or fail_close_receipt["seq"] < fail_close_intent["seq"]
+        ):
+            try:
+                actual = self.traffic.query_route()
+                error = None
+            except Exception as exc:
+                actual = None
+                error = str(exc)
+            closed = (
+                actual is not None
+                and actual.generation is None
+                and actual.fence == "closed"
+            )
+            target = GateState.FAILED_SAFE if closed else GateState.SAFETY_UNKNOWN
+            classification = (
+                RollbackClass.FAILED_SAFE
+                if closed
+                else RollbackClass.SAFETY_UNKNOWN
+            )
+            with self.connection as db:
+                self._transition(
+                    db,
+                    int(row["candidate_generation"]),
+                    target,
+                    "fail_close",
+                    "receipt",
+                    {
+                        "classification": classification.value,
+                        "reconciled": True,
+                        "actual_route": None if actual is None else asdict(actual),
+                        "error": error,
+                    },
+                    operation_id=fail_close_intent["operation_id"],
+                )
+                db.execute(
+                    "UPDATE gate_state SET route_generation=?,route_fence=? "
+                    "WHERE singleton=1",
+                    (
+                        None if actual is None else actual.generation,
+                        "unknown" if actual is None else actual.fence,
+                    ),
+                )
+            return target
         rollback_intent = self.connection.execute(
             "SELECT * FROM gate_transition WHERE operation='rollback' "
             "AND kind='intent' ORDER BY seq DESC LIMIT 1"
@@ -620,15 +692,23 @@ class ReferenceExposureGate:
         ):
             predecessor = json.loads(row["predecessor_json"])
             expected_fence = f"fence-{row['predecessor_generation']}"
-            actual = self.traffic.route
+            try:
+                actual = self.traffic.query_route()
+            except Exception:
+                actual = None
             if (
-                actual.generation == row["predecessor_generation"]
+                actual is not None
+                and actual.generation == row["predecessor_generation"]
                 and actual.fence == expected_fence
                 and self._json(actual.snapshot) == self._json(predecessor)
             ):
                 target = GateState.ROLLED_BACK
                 classification = RollbackClass.RESTORED_STRONG
-            elif actual.generation is None and actual.fence == "closed":
+            elif (
+                actual is not None
+                and actual.generation is None
+                and actual.fence == "closed"
+            ):
                 target = GateState.FAILED_SAFE
                 classification = RollbackClass.FAILED_SAFE
             else:
@@ -644,8 +724,9 @@ class ReferenceExposureGate:
                     {
                         "classification": classification.value,
                         "reconciled": True,
-                        "actual_route": asdict(actual),
+                        "actual_route": None if actual is None else asdict(actual),
                     },
+                    operation_id=rollback_intent["operation_id"],
                 )
             return target
         if state is not GateState.OPENING:
@@ -655,7 +736,59 @@ class ReferenceExposureGate:
             "SELECT * FROM gate_transition WHERE operation='open' AND kind='intent' "
             "ORDER BY seq DESC LIMIT 1"
         ).fetchone()
-        actual = self.traffic.route
+        detail = json.loads(intent["detail_json"])
+        proof = OpenProof(
+            detail["plan_id"],
+            detail["generation"],
+            detail["evidence_count"],
+            detail["evidence_digest"],
+            detail["coverage_digest"],
+            LeaseGrant(**detail["lease"]),
+        )
+        if (
+            proof.digest != detail["proof_digest"]
+            or proof.lease != LeaseGrant(**json.loads(row["lease_json"]))
+            or not self.traffic.lease_valid(proof.lease, self.clock())
+        ):
+            with self.connection as db:
+                self._append(
+                    db,
+                    generation,
+                    "receipt",
+                    "open",
+                    GateState.OPENING,
+                    None,
+                    intent["fence"],
+                    {"cancelled": "persisted open lease is stale"},
+                    operation_id=intent["operation_id"],
+                )
+            outcome = self.fail_close(generation, "persisted open lease is stale")
+            return (
+                GateState.FAILED_SAFE
+                if outcome.classification is RollbackClass.FAILED_SAFE
+                else GateState.SAFETY_UNKNOWN
+            )
+        try:
+            actual = self.traffic.query_route()
+        except Exception:
+            with self.connection as db:
+                self._append(
+                    db,
+                    generation,
+                    "receipt",
+                    "open",
+                    GateState.OPENING,
+                    None,
+                    intent["fence"],
+                    {"cancelled": "open recovery route query failed"},
+                    operation_id=intent["operation_id"],
+                )
+            outcome = self.fail_close(generation, "open recovery route query failed")
+            return (
+                GateState.FAILED_SAFE
+                if outcome.classification is RollbackClass.FAILED_SAFE
+                else GateState.SAFETY_UNKNOWN
+            )
         if actual.generation == generation and actual.fence == intent["fence"]:
             with self.connection as db:
                 seq = self._transition(
@@ -666,6 +799,7 @@ class ReferenceExposureGate:
                     "receipt",
                     {"queried_actual_route": generation},
                     actual.fence,
+                    intent["operation_id"],
                 )
                 db.execute(
                     "UPDATE gate_state SET route_generation=?,route_fence=?,"
@@ -683,16 +817,53 @@ class ReferenceExposureGate:
                 None,
                 "closed",
                 {"queried_actual_generation": actual.generation},
+                operation_id=f"open-reconcile-close:{generation}",
             )
-        self.traffic.close_all()
+        close_error = None
+        try:
+            self.traffic.close_all()
+        except Exception as exc:
+            close_error = str(exc)
+        with self.connection as db:
+            self._append(
+                db,
+                generation,
+                "receipt",
+                "open.reconcile.close_all",
+                GateState.OPENING,
+                None,
+                "closed",
+                {"actual_generation": actual.generation, "error": close_error},
+                operation_id=f"open-reconcile-close:{generation}",
+            )
+        if close_error is not None:
+            with self.connection as db:
+                self._append(
+                    db,
+                    generation,
+                    "receipt",
+                    "open",
+                    GateState.OPENING,
+                    None,
+                    intent["fence"],
+                    {"cancelled": "open recovery close failed"},
+                    operation_id=intent["operation_id"],
+                )
+            outcome = self.fail_close(generation, "open recovery close failed")
+            return (
+                GateState.FAILED_SAFE
+                if outcome.classification is RollbackClass.FAILED_SAFE
+                else GateState.SAFETY_UNKNOWN
+            )
         with self.connection as db:
             self._transition(
                 db,
                 generation,
                 GateState.FAILED_SAFE,
-                "open.reconcile",
+                "open",
                 "receipt",
                 {"actual_generation": actual.generation, "action": "close_all"},
+                operation_id=intent["operation_id"],
             )
             db.execute(
                 "UPDATE gate_state SET route_generation=NULL,route_fence='closed' "
@@ -741,7 +912,11 @@ class ReferenceExposureGate:
                 else RollbackClass.SAFETY_UNKNOWN
             )
         else:
-            if actual.snapshot == predecessor and actual.fence == predecessor_fence:
+            if (
+                actual.generation == predecessor_generation
+                and actual.snapshot == predecessor
+                and actual.fence == predecessor_fence
+            ):
                 outcome = RollbackClass.RESTORED_STRONG
             elif (
                 behavioral_oracle is not None
@@ -806,13 +981,15 @@ class ReferenceExposureGate:
                 "closed",
                 {"reason": reason},
             )
+        self._hit("fail_close.before_effect")
         error = None
         try:
             self.traffic.close_all()
         except Exception as exc:
             error = str(exc)
+        self._hit("fail_close.after_effect")
         try:
-            actual = self.traffic.route
+            actual = self.traffic.query_route()
         except Exception as exc:
             actual = None
             error = f"{error}; route query: {exc}" if error else str(exc)
@@ -879,9 +1056,23 @@ def evaluate_trace(path: str | Path) -> dict[str, Any]:
     expected_seq = 1
     replay_state = GateState.PREDECESSOR_OPEN.value
     allowed = {
-        GateState.PREDECESSOR_OPEN.value: {GateState.CANDIDATE_STAGED.value},
-        GateState.CANDIDATE_STAGED.value: {GateState.CANDIDATE_CLOSED.value},
-        GateState.CANDIDATE_CLOSED.value: {GateState.OPENING.value},
+        GateState.PREDECESSOR_OPEN.value: {
+            GateState.CANDIDATE_STAGED.value,
+            GateState.FAILED_SAFE.value,
+            GateState.SAFETY_UNKNOWN.value,
+        },
+        GateState.CANDIDATE_STAGED.value: {
+            GateState.CANDIDATE_CLOSED.value,
+            GateState.ROLLED_BACK.value,
+            GateState.FAILED_SAFE.value,
+            GateState.SAFETY_UNKNOWN.value,
+        },
+        GateState.CANDIDATE_CLOSED.value: {
+            GateState.OPENING.value,
+            GateState.ROLLED_BACK.value,
+            GateState.FAILED_SAFE.value,
+            GateState.SAFETY_UNKNOWN.value,
+        },
         GateState.OPENING.value: {
             GateState.CANDIDATE_OPEN.value,
             GateState.FAILED_SAFE.value,
@@ -901,7 +1092,7 @@ def evaluate_trace(path: str | Path) -> dict[str, Any]:
             errors.append(f"transition sequence gap at {expected_seq}")
             expected_seq = row["seq"]
         expected_seq += 1
-        operation_id = (row["generation"], row["operation"].split(".")[0])
+        operation_id = row["operation_id"]
         if row["from_state"] != replay_state:
             errors.append(
                 f"transition source mismatch at {row['seq']}: "
