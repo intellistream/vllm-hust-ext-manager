@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -20,12 +22,14 @@ class GateState(str, Enum):
     DRAINING = "DRAINING"
     ROLLED_BACK = "ROLLED_BACK"
     FAILED_SAFE = "FAILED_SAFE"
+    SAFETY_UNKNOWN = "SAFETY_UNKNOWN"
 
 
 class RollbackClass(str, Enum):
     RESTORED_STRONG = "RESTORED_STRONG"
     BEHAVIORAL = "BEHAVIORAL"
     FAILED_SAFE = "FAILED_SAFE"
+    SAFETY_UNKNOWN = "SAFETY_UNKNOWN"
 
 
 class GateError(RuntimeError):
@@ -56,6 +60,50 @@ class RouteState:
     snapshot: dict[str, Any] | None
 
 
+@dataclass(frozen=True)
+class LeaseGrant:
+    holder: str
+    fencing_token: int
+    expires_at: int
+
+
+class LeaseAuthority:
+    def __init__(self, grant: LeaseGrant):
+        self.grant = grant
+
+    def current(self) -> LeaseGrant:
+        return self.grant
+
+
+@dataclass(frozen=True)
+class OpenProof:
+    plan_id: str
+    generation: int
+    evidence_count: int
+    evidence_digest: str
+    coverage_digest: str
+    lease: LeaseGrant
+
+    @property
+    def digest(self) -> str:
+        raw = json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+@dataclass(frozen=True)
+class BehavioralOracleResult:
+    equivalent: bool
+    observations_digest: str
+    oracle: str
+
+
+@dataclass(frozen=True)
+class FailCloseResult:
+    classification: RollbackClass
+    actual_route: RouteState | None
+    error: str | None
+
+
 class DeterministicTrafficAdapter:
     """In-process scheduler admission model with deterministic fault points."""
 
@@ -64,7 +112,7 @@ class DeterministicTrafficAdapter:
         predecessor_generation: int,
         predecessor_snapshot: dict[str, Any],
         *,
-        lease_token: str = "lease-1",
+        authority: LeaseAuthority | None = None,
         faults: set[str] | None = None,
         behavioral_restore: bool = False,
         rollback_fails: bool = False,
@@ -74,7 +122,7 @@ class DeterministicTrafficAdapter:
             f"fence-{predecessor_generation}",
             predecessor_snapshot,
         )
-        self.lease_token = lease_token
+        self.authority = authority or LeaseAuthority(LeaseGrant("manager", 1, 2**62))
         self.faults = set() if faults is None else faults
         self.behavioral_restore = behavioral_restore
         self.rollback_fails = rollback_fails
@@ -87,12 +135,22 @@ class DeterministicTrafficAdapter:
     def close(self, generation: int) -> None:
         self._hit("close")
 
-    def open(self, generation: int, fence: str, snapshot: dict[str, Any]) -> None:
+    def open(
+        self,
+        generation: int,
+        fence: str,
+        snapshot: dict[str, Any],
+        grant: LeaseGrant,
+        now: int,
+    ) -> None:
         self._hit("open.before")
+        if self.authority.current() != grant or grant.expires_at < now:
+            raise GateError("lease changed or expired before traffic open")
         self.route = RouteState(generation, fence, snapshot)
         self._hit("open.after")
 
     def close_all(self) -> None:
+        self._hit("close_all")
         self.route = RouteState(None, "closed", None)
 
     def restore(
@@ -106,36 +164,54 @@ class DeterministicTrafficAdapter:
         self.route = RouteState(generation, fence, restored)
         return self.route
 
-    def lease_valid(self, token: str) -> bool:
-        return token == self.lease_token
+    def lease_valid(self, grant: LeaseGrant, now: int) -> bool:
+        return self.authority.current() == grant and grant.expires_at >= now
 
 
 class ReferenceExposureGate:
     """Durable reference gate; not a proxy or Kubernetes readiness check."""
 
+    exposure_gate_capability = "ecpa.reference-exposure-gate/0.2"
+    schema_version = 2
+
     _ALLOWED = {
-        GateState.PREDECESSOR_OPEN: {GateState.CANDIDATE_STAGED},
+        GateState.PREDECESSOR_OPEN: {
+            GateState.CANDIDATE_STAGED,
+            GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
+        },
         GateState.CANDIDATE_STAGED: {
             GateState.CANDIDATE_CLOSED,
             GateState.ROLLED_BACK,
+            GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
         },
-        GateState.CANDIDATE_CLOSED: {GateState.OPENING, GateState.ROLLED_BACK},
+        GateState.CANDIDATE_CLOSED: {
+            GateState.OPENING,
+            GateState.ROLLED_BACK,
+            GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
+        },
         GateState.OPENING: {
             GateState.CANDIDATE_OPEN,
             GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
         },
         GateState.CANDIDATE_OPEN: {
             GateState.DRAINING,
             GateState.ROLLED_BACK,
             GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
         },
         GateState.DRAINING: {
             GateState.CANDIDATE_OPEN,
             GateState.ROLLED_BACK,
             GateState.FAILED_SAFE,
+            GateState.SAFETY_UNKNOWN,
         },
         GateState.ROLLED_BACK: set(),
         GateState.FAILED_SAFE: set(),
+        GateState.SAFETY_UNKNOWN: set(),
     }
 
     def __init__(
@@ -144,14 +220,16 @@ class ReferenceExposureGate:
         traffic: DeterministicTrafficAdapter,
         *,
         clock: Callable[[], int],
-        lease_token: str = "lease-1",
+        authority: LeaseAuthority | None = None,
         faults: set[str] | None = None,
     ):
-        self.connection = sqlite3.connect(path)
+        # Every mutating context starts with BEGIN IMMEDIATE. Together with the
+        # revision CAS this makes the documented single-writer contract explicit.
+        self.connection = sqlite3.connect(path, isolation_level="IMMEDIATE")
         self.connection.row_factory = sqlite3.Row
         self.traffic = traffic
         self.clock = clock
-        self.lease_token = lease_token
+        self.authority = authority or traffic.authority
         self.faults = set() if faults is None else faults
         self._schema()
 
@@ -163,7 +241,9 @@ class ReferenceExposureGate:
               predecessor_generation INTEGER NOT NULL, candidate_generation INTEGER,
               predecessor_json BLOB NOT NULL, candidate_json BLOB,
               route_generation INTEGER, route_fence TEXT NOT NULL,
-              lease_token TEXT NOT NULL, transition_seq INTEGER NOT NULL);
+              lease_json BLOB NOT NULL, transition_seq INTEGER NOT NULL,
+              revision INTEGER NOT NULL, schema_version INTEGER NOT NULL,
+              proof_digest TEXT);
             CREATE TABLE IF NOT EXISTS gate_transition(
               seq INTEGER PRIMARY KEY AUTOINCREMENT, generation INTEGER NOT NULL,
               kind TEXT NOT NULL, operation TEXT NOT NULL, from_state TEXT,
@@ -173,7 +253,15 @@ class ReferenceExposureGate:
               request_id TEXT PRIMARY KEY, route_epoch TEXT NOT NULL,
               chosen_generation INTEGER NOT NULL, admitted_at INTEGER NOT NULL,
               finished_at INTEGER, result TEXT, abort TEXT,
-              transition_seq INTEGER NOT NULL);
+              transition_seq INTEGER NOT NULL,
+              CHECK((finished_at IS NULL AND result IS NULL AND abort IS NULL) OR
+                    (finished_at >= admitted_at AND
+                     ((result IS NOT NULL) != (abort IS NOT NULL)))));
+            CREATE TABLE IF NOT EXISTS admission_event(
+              seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL,
+              kind TEXT NOT NULL, chosen_generation INTEGER NOT NULL,
+              route_epoch TEXT NOT NULL, at INTEGER NOT NULL,
+              transition_seq INTEGER NOT NULL, detail_json BLOB NOT NULL);
             """
         )
         self.connection.commit()
@@ -188,6 +276,8 @@ class ReferenceExposureGate:
         ).fetchone()
         if row is None:
             raise GateError("gate is not initialized")
+        if row["schema_version"] != self.schema_version:
+            raise GateError("unknown gate schema version")
         return row
 
     def _hit(self, point: str) -> None:
@@ -239,10 +329,13 @@ class ReferenceExposureGate:
         seq = self._append(
             db, generation, kind, operation, current, target, fence, detail
         )
-        db.execute(
-            "UPDATE gate_state SET state=?,transition_seq=? WHERE singleton=1",
-            (target.value, seq),
-        )
+        changed = db.execute(
+            "UPDATE gate_state SET state=?,transition_seq=?,revision=revision+1 "
+            "WHERE singleton=1 AND revision=?",
+            (target.value, seq, row["revision"]),
+        ).rowcount
+        if changed != 1:
+            raise GateError("gate revision CAS mismatch")
         return seq
 
     def stage(self, candidate: Any, predecessor: Any) -> int:
@@ -263,15 +356,21 @@ class ReferenceExposureGate:
             if (
                 existing["candidate_generation"] == candidate_generation
                 and json.loads(existing["candidate_json"]) == candidate_value
+                and json.loads(existing["predecessor_json"]) == predecessor_value
+                and existing["route_fence"] == f"fence-{predecessor_generation}"
             ):
                 return candidate_generation
             raise GateError("another candidate is already staged")
         route = self.traffic.route
-        if route.generation != predecessor_generation:
-            raise GateError("actual predecessor route does not match snapshot")
+        if (
+            route.generation != predecessor_generation
+            or route.fence != f"fence-{predecessor_generation}"
+            or self._json(route.snapshot) != self._json(predecessor_value)
+        ):
+            raise GateError("actual predecessor generation/fence/snapshot mismatch")
         with self.connection as db:
             db.execute(
-                "INSERT INTO gate_state VALUES(1,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO gate_state VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     GateState.PREDECESSOR_OPEN.value,
                     predecessor_generation,
@@ -280,8 +379,11 @@ class ReferenceExposureGate:
                     self._json(candidate_value),
                     route.generation,
                     route.fence,
-                    self.lease_token,
+                    self._json(asdict(self.authority.current())),
                     0,
+                    0,
+                    self.schema_version,
+                    None,
                 ),
             )
             self._transition(
@@ -297,10 +399,10 @@ class ReferenceExposureGate:
     def close(self, generation: int) -> None:
         row = self._row()
         state = GateState(row["state"])
-        if state is GateState.CANDIDATE_CLOSED:
-            return
         if row["candidate_generation"] != generation:
             raise GateError("stale generation close")
+        if state is GateState.CANDIDATE_CLOSED:
+            return
         with self.connection as db:
             self._append(db, generation, "intent", "close", state, None, None, {})
         self._hit("close.after_intent")
@@ -310,25 +412,38 @@ class ReferenceExposureGate:
                 db, generation, GateState.CANDIDATE_CLOSED, "close", "receipt", {}
             )
 
-    def open(self, generation: int, proof: dict[str, Any]) -> str:
+    def open(self, generation: int, proof: OpenProof) -> str:
         row = self._row()
-        if GateState(row["state"]) is GateState.CANDIDATE_OPEN:
-            return str(row["route_fence"])
-        if GateState(row["state"]) is GateState.OPENING:
-            raise GateError("opening outcome requires reconcile")
-        required = {
-            "signed_receipts_verified",
-            "required_process_coverage",
-            "lease_valid",
-            "generation_cas",
-        }
-        if any(proof.get(name) is not True for name in required):
-            raise GateError("open proof is incomplete")
-        if row["candidate_generation"] != generation:
+        if proof.generation != generation or row["candidate_generation"] != generation:
             raise GateError("stale generation open")
-        if not self.traffic.lease_valid(str(proof.get("lease_token", ""))):
+        candidate = json.loads(row["candidate_json"])
+        expected_plan = (
+            candidate if isinstance(candidate, str) else candidate["plan_id"]
+        )
+        if proof.plan_id != expected_plan:
+            raise GateError("open proof plan mismatch")
+        if (
+            proof.evidence_count < 1
+            or not proof.evidence_digest.startswith("sha256:")
+            or not proof.coverage_digest.startswith("sha256:")
+        ):
+            raise GateError("open proof has no durable evidence coverage")
+        staged_lease = LeaseGrant(**json.loads(row["lease_json"]))
+        if proof.lease != staged_lease or not self.traffic.lease_valid(
+            proof.lease, self.clock()
+        ):
             raise GateError("lease lost")
-        fence = f"gate-{generation}-{row['transition_seq'] + 1}"
+        state = GateState(row["state"])
+        if state is GateState.CANDIDATE_OPEN:
+            if row["proof_digest"] != proof.digest:
+                raise GateError("idempotent open proof mismatch")
+            return str(row["route_fence"])
+        if state is GateState.OPENING:
+            raise GateError("opening outcome requires reconcile")
+        fence = (
+            f"gate-{generation}-lease-{proof.lease.fencing_token}-"
+            f"{row['transition_seq'] + 1}"
+        )
         self._hit("open.before_intent")
         with self.connection as db:
             self._transition(
@@ -337,12 +452,15 @@ class ReferenceExposureGate:
                 GateState.OPENING,
                 "open",
                 "intent",
-                proof,
+                {**asdict(proof), "proof_digest": proof.digest},
                 fence,
             )
+            db.execute(
+                "UPDATE gate_state SET proof_digest=? WHERE singleton=1",
+                (proof.digest,),
+            )
         self._hit("open.after_intent")
-        candidate = json.loads(row["candidate_json"])
-        self.traffic.open(generation, fence, candidate)
+        self.traffic.open(generation, fence, candidate, proof.lease, self.clock())
         self._hit("open.after_side_effect")
         with self.connection as db:
             seq = self._transition(
@@ -351,7 +469,11 @@ class ReferenceExposureGate:
                 GateState.CANDIDATE_OPEN,
                 "open",
                 "receipt",
-                {"actual_route": generation},
+                {
+                    "actual_route": generation,
+                    "lease_fencing_token": proof.lease.fencing_token,
+                    "proof_digest": proof.digest,
+                },
                 fence,
             )
             db.execute(
@@ -396,6 +518,14 @@ class ReferenceExposureGate:
             "SELECT * FROM admission WHERE request_id=?", (request.request_id,)
         ).fetchone()
         if existing is None:
+            gate_state = GateState(self._row()["state"])
+            if gate_state in {
+                GateState.OPENING,
+                GateState.ROLLED_BACK,
+                GateState.FAILED_SAFE,
+                GateState.SAFETY_UNKNOWN,
+            }:
+                raise GateError(f"admission blocked in {gate_state.value}")
             actual = self.traffic.route
             row = self._row()
             if actual.generation is None or actual.fence == "closed":
@@ -419,26 +549,57 @@ class ReferenceExposureGate:
                         row["transition_seq"],
                     ),
                 )
+                db.execute(
+                    "INSERT INTO admission_event(request_id,kind,chosen_generation,"
+                    "route_epoch,at,transition_seq,detail_json) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        request.request_id,
+                        "admit",
+                        actual.generation,
+                        actual.fence,
+                        request.admitted_at,
+                        row["transition_seq"],
+                        self._json({}),
+                    ),
+                )
             existing = self.connection.execute(
                 "SELECT * FROM admission WHERE request_id=?", (request.request_id,)
             ).fetchone()
         if result is not None:
+            if (result.result is None) == (result.abort is None):
+                raise GateError("finish requires exactly one of result or abort")
+            if result.finished_at < existing["admitted_at"]:
+                raise GateError("finish precedes admission")
             if existing["finished_at"] is not None:
-                if (existing["result"], existing["abort"]) != (
-                    result.result,
-                    result.abort,
-                ):
-                    raise GateError("immutable request result mismatch")
+                raise GateError("request finish is immutable")
             else:
                 with self.connection as db:
-                    db.execute(
+                    changed = db.execute(
                         "UPDATE admission SET finished_at=?,result=?,abort=? "
-                        "WHERE request_id=?",
+                        "WHERE request_id=? AND finished_at IS NULL",
                         (
                             result.finished_at,
                             result.result,
                             result.abort,
                             request.request_id,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise GateError("concurrent request finish")
+                    db.execute(
+                        "INSERT INTO admission_event(request_id,kind,"
+                        "chosen_generation,route_epoch,at,transition_seq,detail_json) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (
+                            request.request_id,
+                            "finish",
+                            existing["chosen_generation"],
+                            existing["route_epoch"],
+                            result.finished_at,
+                            existing["transition_seq"],
+                            self._json(
+                                {"result": result.result, "abort": result.abort}
+                            ),
                         ),
                     )
         return int(existing["chosen_generation"])
@@ -446,6 +607,47 @@ class ReferenceExposureGate:
     def reconcile(self) -> GateState:
         row = self._row()
         state = GateState(row["state"])
+        rollback_intent = self.connection.execute(
+            "SELECT * FROM gate_transition WHERE operation='rollback' "
+            "AND kind='intent' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        rollback_receipt = self.connection.execute(
+            "SELECT * FROM gate_transition WHERE operation='rollback' "
+            "AND kind='receipt' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if rollback_intent is not None and (
+            rollback_receipt is None or rollback_receipt["seq"] < rollback_intent["seq"]
+        ):
+            predecessor = json.loads(row["predecessor_json"])
+            expected_fence = f"fence-{row['predecessor_generation']}"
+            actual = self.traffic.route
+            if (
+                actual.generation == row["predecessor_generation"]
+                and actual.fence == expected_fence
+                and self._json(actual.snapshot) == self._json(predecessor)
+            ):
+                target = GateState.ROLLED_BACK
+                classification = RollbackClass.RESTORED_STRONG
+            elif actual.generation is None and actual.fence == "closed":
+                target = GateState.FAILED_SAFE
+                classification = RollbackClass.FAILED_SAFE
+            else:
+                target = GateState.SAFETY_UNKNOWN
+                classification = RollbackClass.SAFETY_UNKNOWN
+            with self.connection as db:
+                self._transition(
+                    db,
+                    int(row["candidate_generation"]),
+                    target,
+                    "rollback",
+                    "receipt",
+                    {
+                        "classification": classification.value,
+                        "reconciled": True,
+                        "actual_route": asdict(actual),
+                    },
+                )
+            return target
         if state is not GateState.OPENING:
             return state
         generation = int(row["candidate_generation"])
@@ -499,9 +701,13 @@ class ReferenceExposureGate:
         return GateState.FAILED_SAFE
 
     def rollback(
-        self, generation: int, behavioral_oracle: bool = False
+        self,
+        generation: int,
+        behavioral_oracle: BehavioralOracleResult | None = None,
     ) -> RollbackClass:
         row = self._row()
+        if row["candidate_generation"] != generation:
+            raise GateError("stale generation rollback")
         predecessor = json.loads(row["predecessor_json"])
         predecessor_generation = int(row["predecessor_generation"])
         predecessor_fence = f"fence-{predecessor_generation}"
@@ -514,28 +720,53 @@ class ReferenceExposureGate:
                 GateState(row["state"]),
                 None,
                 predecessor_fence,
-                {},
+                {
+                    "behavioral_oracle": (
+                        None if behavioral_oracle is None else asdict(behavioral_oracle)
+                    )
+                },
             )
+        self._hit("rollback.after_intent")
         try:
             actual = self.traffic.restore(
                 predecessor_generation, predecessor_fence, predecessor
             )
         except Exception:
-            self.traffic.close_all()
-            outcome = RollbackClass.FAILED_SAFE
+            with suppress(Exception):
+                self.traffic.close_all()
+            actual = self.traffic.route
+            outcome = (
+                RollbackClass.FAILED_SAFE
+                if actual.generation is None and actual.fence == "closed"
+                else RollbackClass.SAFETY_UNKNOWN
+            )
         else:
             if actual.snapshot == predecessor and actual.fence == predecessor_fence:
                 outcome = RollbackClass.RESTORED_STRONG
-            elif behavioral_oracle and self.traffic.behavioral_restore:
+            elif (
+                behavioral_oracle is not None
+                and behavioral_oracle.equivalent
+                and behavioral_oracle.observations_digest.startswith("sha256:")
+                and behavioral_oracle.oracle
+                and self.traffic.behavioral_restore
+            ):
                 outcome = RollbackClass.BEHAVIORAL
             else:
-                self.traffic.close_all()
-                outcome = RollbackClass.FAILED_SAFE
-        target = (
-            GateState.ROLLED_BACK
-            if outcome is not RollbackClass.FAILED_SAFE
-            else GateState.FAILED_SAFE
-        )
+                with suppress(Exception):
+                    self.traffic.close_all()
+                actual = self.traffic.route
+                outcome = (
+                    RollbackClass.FAILED_SAFE
+                    if actual.generation is None and actual.fence == "closed"
+                    else RollbackClass.SAFETY_UNKNOWN
+                )
+        self._hit("rollback.after_effect")
+        target = {
+            RollbackClass.RESTORED_STRONG: GateState.ROLLED_BACK,
+            RollbackClass.BEHAVIORAL: GateState.ROLLED_BACK,
+            RollbackClass.FAILED_SAFE: GateState.FAILED_SAFE,
+            RollbackClass.SAFETY_UNKNOWN: GateState.SAFETY_UNKNOWN,
+        }[outcome]
         with self.connection as db:
             self._transition(
                 db,
@@ -543,7 +774,13 @@ class ReferenceExposureGate:
                 target,
                 "rollback",
                 "receipt",
-                {"classification": outcome.value},
+                {
+                    "classification": outcome.value,
+                    "behavioral_oracle": (
+                        None if behavioral_oracle is None else asdict(behavioral_oracle)
+                    ),
+                    "actual_route": asdict(self.traffic.route),
+                },
             )
             route = self.traffic.route
             db.execute(
@@ -552,6 +789,64 @@ class ReferenceExposureGate:
                 (route.generation, route.fence),
             )
         return outcome
+
+    def fail_close(self, generation: int, reason: str) -> FailCloseResult:
+        row = self._row()
+        if row["candidate_generation"] != generation:
+            raise GateError("stale generation fail-close")
+        state = GateState(row["state"])
+        with self.connection as db:
+            self._append(
+                db,
+                generation,
+                "intent",
+                "fail_close",
+                state,
+                None,
+                "closed",
+                {"reason": reason},
+            )
+        error = None
+        try:
+            self.traffic.close_all()
+        except Exception as exc:
+            error = str(exc)
+        try:
+            actual = self.traffic.route
+        except Exception as exc:
+            actual = None
+            error = f"{error}; route query: {exc}" if error else str(exc)
+        closed = (
+            actual is not None
+            and actual.generation is None
+            and actual.fence == "closed"
+        )
+        classification = (
+            RollbackClass.FAILED_SAFE if closed else RollbackClass.SAFETY_UNKNOWN
+        )
+        target = GateState.FAILED_SAFE if closed else GateState.SAFETY_UNKNOWN
+        with self.connection as db:
+            self._transition(
+                db,
+                generation,
+                target,
+                "fail_close",
+                "receipt",
+                {
+                    "classification": classification.value,
+                    "actual_route": None if actual is None else asdict(actual),
+                    "error": error,
+                },
+            )
+            db.execute(
+                "UPDATE gate_state SET route_generation=?,route_fence=? "
+                "WHERE singleton=1",
+                (
+                    None if actual is None else actual.generation,
+                    "unknown" if actual is None else actual.fence,
+                ),
+            )
+        return FailCloseResult(classification, actual, error)
 
     def close_store(self) -> None:
         self.connection.close()
@@ -563,6 +858,9 @@ def evaluate_trace(path: str | Path) -> dict[str, Any]:
     db.row_factory = sqlite3.Row
     transitions = db.execute("SELECT * FROM gate_transition ORDER BY seq").fetchall()
     admissions = db.execute("SELECT * FROM admission ORDER BY admitted_at").fetchall()
+    admission_events = db.execute(
+        "SELECT * FROM admission_event ORDER BY seq"
+    ).fetchall()
     state = db.execute("SELECT * FROM gate_state WHERE singleton=1").fetchone()
     errors: list[str] = []
     open_receipts = [
@@ -578,11 +876,73 @@ def evaluate_trace(path: str | Path) -> dict[str, Any]:
     open_fence = None if not open_receipts else open_receipts[0]["fence"]
     if state is None or not transitions:
         errors.append("missing gate state or transitions")
+    expected_seq = 1
+    replay_state = GateState.PREDECESSOR_OPEN.value
+    allowed = {
+        GateState.PREDECESSOR_OPEN.value: {GateState.CANDIDATE_STAGED.value},
+        GateState.CANDIDATE_STAGED.value: {GateState.CANDIDATE_CLOSED.value},
+        GateState.CANDIDATE_CLOSED.value: {GateState.OPENING.value},
+        GateState.OPENING.value: {
+            GateState.CANDIDATE_OPEN.value,
+            GateState.FAILED_SAFE.value,
+            GateState.SAFETY_UNKNOWN.value,
+        },
+        GateState.CANDIDATE_OPEN.value: {
+            GateState.DRAINING.value,
+            GateState.ROLLED_BACK.value,
+            GateState.FAILED_SAFE.value,
+            GateState.SAFETY_UNKNOWN.value,
+        },
+        GateState.DRAINING.value: {GateState.CANDIDATE_OPEN.value},
+    }
+    pending: dict[tuple[int, str], int] = {}
+    for row in transitions:
+        if row["seq"] != expected_seq:
+            errors.append(f"transition sequence gap at {expected_seq}")
+            expected_seq = row["seq"]
+        expected_seq += 1
+        operation_id = (row["generation"], row["operation"].split(".")[0])
+        if row["from_state"] != replay_state:
+            errors.append(
+                f"transition source mismatch at {row['seq']}: "
+                f"{row['from_state']} != {replay_state}"
+            )
+        if row["kind"] == "intent":
+            if operation_id in pending:
+                errors.append(f"duplicate pending intent: {operation_id}")
+            pending[operation_id] = row["seq"]
+        elif row["kind"] == "receipt" and row["operation"] != "stage":
+            if operation_id not in pending:
+                errors.append(f"receipt without intent: {operation_id}")
+            else:
+                pending.pop(operation_id)
+        target = row["to_state"]
+        if target is not None and target != replay_state:
+            if target not in allowed.get(replay_state, set()):
+                errors.append(f"unknown transition: {replay_state}->{target}")
+            replay_state = target
+        if candidate is not None and row["generation"] != candidate:
+            errors.append(f"transition generation mismatch at {row['seq']}")
+    if pending:
+        errors.append(f"unpaired intents: {sorted(pending)}")
+    if state is not None and replay_state != state["state"]:
+        errors.append("replayed final state does not match durable state")
+    if len({row["generation"] for row in open_receipts}) > 1:
+        errors.append("multiple open generations")
+    if (
+        state is not None
+        and state["state"] == GateState.CANDIDATE_OPEN.value
+        and (
+            state["route_generation"] != candidate or state["route_fence"] != open_fence
+        )
+    ):
+        errors.append("final route observation does not match open receipt")
     seen: dict[str, int] = {}
+    for event in admission_events:
+        prior = seen.setdefault(event["request_id"], event["chosen_generation"])
+        if prior != event["chosen_generation"]:
+            errors.append(f"request {event['request_id']} crossed generation")
     for row in admissions:
-        prior = seen.setdefault(row["request_id"], row["chosen_generation"])
-        if prior != row["chosen_generation"]:
-            errors.append(f"request {row['request_id']} crossed generation")
         if (
             candidate is not None
             and row["chosen_generation"] == candidate
@@ -635,6 +995,12 @@ def export_trace(path: str | Path) -> list[dict[str, Any]]:
     for row in db.execute("SELECT * FROM admission ORDER BY admitted_at"):
         item = dict(row)
         item["type"] = "admission"
+        item["classification"] = "synthetic/reference"
+        exported.append(item)
+    for row in db.execute("SELECT * FROM admission_event ORDER BY seq"):
+        item = dict(row)
+        item["detail"] = json.loads(item.pop("detail_json"))
+        item["type"] = "admission_event"
         item["classification"] = "synthetic/reference"
         exported.append(item)
     db.close()

@@ -1,1 +1,29 @@
-{"schema":"ecpa-exposure-results/0.1","classification":"synthetic/reference","formal_paper_result":false,"seed":11,"clock":1800000000,"oracle":{"verdict":"PASS","transition_count":7,"admission_count":2,"candidate_generation":1,"predecessor_generation":0,"first_candidate_open_seq":5,"errors":[]},"fault_matrix":{"crash_after_open_intent":"FAILED_SAFE","crash_after_open_side_effect":"CANDIDATE_OPEN_AFTER_ROUTE_QUERY","stale_generation_cas":"REJECT","lease_loss":"REJECT","partial_worker_evidence_2_of_4":"REJECT","old_epoch_or_replay":"REJECT","rollback_strong":"RESTORED_STRONG","rollback_behavioral":"BEHAVIORAL","rollback_failure":"FAILED_SAFE"}}
+{
+  "classification": "synthetic/reference",
+  "clock": 1800000000,
+  "fault_matrix": {
+    "crash-after-open-intent": "FAILED_SAFE",
+    "crash-after-open-side-effect": "CANDIDATE_OPEN",
+    "happy-open-drain": "PASS",
+    "lease-loss": "REJECT",
+    "old-epoch-or-replay": "REJECT",
+    "partial-worker-evidence-2-of-4": "REJECT",
+    "rollback-behavioral": "BEHAVIORAL",
+    "rollback-failure": "FAILED_SAFE",
+    "rollback-strong": "RESTORED_STRONG",
+    "stale-generation-cas": "REJECT"
+  },
+  "formal_paper_result": false,
+  "oracle": {
+    "admission_count": 2,
+    "candidate_generation": 1,
+    "errors": [],
+    "first_candidate_open_seq": 5,
+    "predecessor_generation": 0,
+    "schema": "ecpa-exposure-oracle/0.1",
+    "transition_count": 7,
+    "verdict": "PASS"
+  },
+  "schema": "ecpa-exposure-results/0.2",
+  "seed": 11
+}
