@@ -35,10 +35,16 @@ effect boundary is separately instrumented.
 | event and entry-point tuple | host loader around `importlib.metadata.EntryPoint` |
 | hostname/PID/start identity | running host process and `/proc/self/stat` |
 | role/ordinal/epoch | trusted launch environment |
-| observation time | host clock at the observation site |
+| observation time | host wall clock (`time.time_ns`), not a monotonic clock |
 | Plan/launch ID | trusted launch environment; checked at ingestion |
 | plugin ID/artifact digest | absent in raw event; selected Plan only |
 | evidence digest | SHA-256 of exact received raw bytes |
+
+General Python plugins execute as trusted in-process extensions. This evidence
+does not prevent an adversarial plugin from importing or modifying observer
+internals. A deployment-controlled sink and signing boundary are required;
+trusted launcher injection, authenticated transport, durable outbox, and
+malicious-plugin isolation are outside Phase A.
 
 ## Frozen real-plugin experiments for Apei
 
@@ -61,4 +67,3 @@ Each experiment must link its implementation PR, record hardware/software
 versions and exact reproduction commands, and report failures as failures. A
 synthetic test, import, package installation, or unsigned host event is not a
 real-plugin E2E result.
-

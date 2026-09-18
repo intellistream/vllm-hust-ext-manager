@@ -43,6 +43,24 @@ def _invalid(detail: str) -> None:
     raise AttestationError(AttestationErrorCode.INVALID_STATEMENT, detail)
 
 
+def _validate_unicode(value: Any) -> None:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise AttestationError(
+                AttestationErrorCode.UNSUPPORTED_VALUE,
+                "invalid Unicode scalar",
+            ) from exc
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _validate_unicode(key)
+            _validate_unicode(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_unicode(item)
+
+
 def parse_host_event(raw: bytes) -> dict[str, Any]:
     try:
         value = parse_strict(raw)
@@ -55,6 +73,7 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
         "entry_point",
         "process",
         "observed_at_ns",
+        "delivery_attempt",
         "plan_id",
         "launch_id",
         "plugin_id",
@@ -66,6 +85,7 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
         _invalid("host event fields do not match schema")
     if value["schema"] != HOST_SCHEMA or value["event"] not in EVENTS:
         _invalid("unsupported host event schema or event")
+    _validate_unicode(value)
     entry = value["entry_point"]
     process = value["process"]
     if not isinstance(entry, dict) or set(entry) != {"group", "name", "value"}:
@@ -89,9 +109,25 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
         process["pid"],
         process["process_epoch"],
         value["observed_at_ns"],
+        value["delivery_attempt"],
     ):
         if isinstance(item, bool) or not isinstance(item, int) or item < 0:
             _invalid("host event integer must be non-negative")
+    start_identity = process["start_identity"]
+    prefix = f"pid:{process['pid']}:start_ticks:"
+    if not start_identity.startswith(prefix):
+        _invalid("start_identity does not bind the process pid")
+    try:
+        if int(start_identity.removeprefix(prefix)) < 0:
+            _invalid("process start ticks must be non-negative")
+    except ValueError:
+        _invalid("process start identity is unavailable")
+    if value["delivery_attempt"] < 1:
+        _invalid("delivery_attempt must be positive")
+    for name in ("plan_id", "launch_id", "detail"):
+        item = value[name]
+        if item is not None and not isinstance(item, str):
+            _invalid(f"{name} must be null or string")
     if value["plugin_id"] is not None or value["artifact_digest"] is not None:
         _invalid("Phase A host events must not invent plugin identity or digest")
     return value

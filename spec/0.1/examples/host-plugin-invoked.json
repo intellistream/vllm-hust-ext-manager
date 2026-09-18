@@ -1,6 +1,6 @@
 {
   "schema": "vllm-hust-plugin-evidence/0.1",
-  "event_id": "4b566fde-fbab-4f9b-8bbc-9c0cf34b4a80",
+  "event_id": "4b566fdefbab4f9b8bbc9c0cf34b4a804b566fdefbab4f9b8bbc9c0cf34b4a80",
   "event": "invoked",
   "entry_point": {
     "group": "vllm.general_plugins",
@@ -16,6 +16,7 @@
     "process_epoch": 7
   },
   "observed_at_ns": 1800000000000000000,
+  "delivery_attempt": 1,
   "plan_id": "plan:sha256:replace-at-ingestion-test",
   "launch_id": "launch-1",
   "plugin_id": null,

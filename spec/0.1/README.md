@@ -38,7 +38,8 @@ transition window and must identify their replacement.
   ownership fails closed.
 - `installed`, `configured`, `enabled`, and `runtime_effective` are independent.
 - Runtime evidence binds launch, process, role, artifact digest, runtime
-  version, capability, event, and monotonic timestamp.
+  version, capability, event, and wall-clock observation timestamp. Freshness
+  is checked against issuer/verifier policy; this field is not a monotonic clock.
 - Global effectiveness requires all processes named by the obligation (or its
   explicit quorum policy); parent import never proves worker invocation.
 - A deterministic activation plan records its predecessor. Commit happens only
