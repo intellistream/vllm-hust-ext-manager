@@ -225,6 +225,38 @@ def test_stage_rejects_wrong_predecessor_fence_and_snapshot(tmp_path):
         second.stage({"plan_id": "candidate"}, PREDECESSOR)
 
 
+def test_post_stage_predecessor_snapshot_mutation_fails_closed_before_admission(
+    tmp_path,
+):
+    gate, adapter = make_gate(tmp_path)
+    gate.stage({"plan_id": "candidate"}, PREDECESSOR)
+    adapter.route = adapter.route.__class__(0, "fence-0", {"mutated": True})
+    with pytest.raises(GateError, match="predecessor route identity changed"):
+        gate.observe(AdmissionRequest("must-not-admit", NOW + 1))
+    assert GateState(gate._row()["state"]) is GateState.FAILED_SAFE
+    assert adapter.route.generation is None
+    assert (
+        gate.connection.execute("SELECT count(*) FROM admission").fetchone()[0] == 0
+    )
+
+
+def test_close_side_effect_predecessor_mutation_never_reaches_closed_candidate(
+    tmp_path,
+):
+    gate, adapter = make_gate(tmp_path)
+    gate.stage({"plan_id": "candidate"}, PREDECESSOR)
+
+    def mutating_close(_generation):
+        adapter.route = adapter.route.__class__(0, "fence-0", {"mutated": True})
+
+    adapter.close = mutating_close
+    with pytest.raises(GateError, match="close changed predecessor route identity"):
+        gate.close(1)
+    assert GateState(gate._row()["state"]) is GateState.FAILED_SAFE
+    assert adapter.route.generation is None
+    assert evaluate_trace(tmp_path / "gate.db")["verdict"] == "PASS"
+
+
 def test_open_intent_without_side_effect_recovers_failed_safe(tmp_path):
     gate, adapter = make_gate(tmp_path)
     stage_closed(gate)
@@ -476,7 +508,7 @@ def test_unknown_actual_route_is_rejected_and_request_is_immutable(tmp_path):
     with pytest.raises(GateError, match="immutable"):
         gate.observe(request, AdmissionResult(NOW + 2, abort="changed"))
     adapter.route = adapter.route.__class__(99, "unknown", None)
-    with pytest.raises(GateError, match="unknown route"):
+    with pytest.raises(GateError, match="route identity changed"):
         gate.observe(AdmissionRequest("request-2", NOW + 3))
 
 

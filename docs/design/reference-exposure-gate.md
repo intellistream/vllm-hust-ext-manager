@@ -86,6 +86,13 @@ compensated if the host prepare step fails. The capability is selected by the
 explicit `ecpa.reference-exposure-gate/0.2` contract, not by method-name
 inspection.
 
+The canonical predecessor digest is persisted at stage. Every pre-open
+admission and the post-close route query must match predecessor generation,
+exact fence, and snapshot digest. Close receipts record the observed digest.
+A post-stage or close-side-effect mutation triggers verified fail-close (or
+`SAFETY_UNKNOWN` if closure cannot be observed) and cannot continue serving the
+mutated predecessor.
+
 ```bash
 PYTHONPATH=src python3 experiments/exposure_gate/reproduce.py --output /tmp/ecpa
 PYTHONPATH=src python3 -m pytest -q tests/test_exposure_gate.py

@@ -251,7 +251,9 @@ class ReferenceExposureGate:
               lease_json BLOB NOT NULL, transition_seq INTEGER NOT NULL,
               revision INTEGER NOT NULL, schema_version INTEGER NOT NULL,
               proof_digest TEXT, candidate_digest TEXT NOT NULL,
-              observed_candidate_digest TEXT);
+              observed_candidate_digest TEXT,
+              predecessor_digest TEXT NOT NULL,
+              observed_predecessor_digest TEXT);
             CREATE TABLE IF NOT EXISTS gate_transition(
               seq INTEGER PRIMARY KEY AUTOINCREMENT, generation INTEGER NOT NULL,
               kind TEXT NOT NULL, operation TEXT NOT NULL,
@@ -377,6 +379,7 @@ class ReferenceExposureGate:
         predecessor_generation = int(predecessor_value["generation"])
         candidate_generation = predecessor_generation + 1
         candidate_digest = self._digest(candidate_value)
+        predecessor_digest = self._digest(predecessor_value)
         existing = self.connection.execute("SELECT * FROM gate_state").fetchone()
         if existing is not None:
             if (
@@ -396,7 +399,7 @@ class ReferenceExposureGate:
             raise GateError("actual predecessor generation/fence/snapshot mismatch")
         with self.connection as db:
             db.execute(
-                "INSERT INTO gate_state VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO gate_state VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     GateState.PREDECESSOR_OPEN.value,
                     predecessor_generation,
@@ -412,6 +415,8 @@ class ReferenceExposureGate:
                     None,
                     candidate_digest,
                     None,
+                    predecessor_digest,
+                    predecessor_digest,
                 ),
             )
             self._transition(
@@ -420,7 +425,11 @@ class ReferenceExposureGate:
                 GateState.CANDIDATE_STAGED,
                 "stage",
                 "receipt",
-                {"candidate": candidate_value, "candidate_digest": candidate_digest},
+                {
+                    "candidate": candidate_value,
+                    "candidate_digest": candidate_digest,
+                    "predecessor_digest": predecessor_digest,
+                },
             )
         return candidate_generation
 
@@ -456,8 +465,29 @@ class ReferenceExposureGate:
         self._hit("close.after_effect")
         actual = self.traffic.query_route()
         self._hit("close.after_query")
-        if actual.generation != row["predecessor_generation"]:
-            raise GateError("close changed predecessor route")
+        observed_digest = self._digest(actual.snapshot)
+        if (
+            actual.generation != row["predecessor_generation"]
+            or actual.fence != row["route_fence"]
+            or observed_digest != row["predecessor_digest"]
+        ):
+            with self.connection as db:
+                self._append(
+                    db,
+                    generation,
+                    "receipt",
+                    "close",
+                    state,
+                    None,
+                    actual.fence,
+                    {
+                        "cancelled": "predecessor continuity mismatch",
+                        "observed_predecessor_digest": observed_digest,
+                    },
+                    operation_id=operation_id,
+                )
+            self.fail_close(generation, "predecessor continuity mismatch")
+            raise GateError("close changed predecessor route identity")
         with self.connection as db:
             self._transition(
                 db,
@@ -465,8 +495,16 @@ class ReferenceExposureGate:
                 GateState.CANDIDATE_CLOSED,
                 "close",
                 "receipt",
-                {"actual_route": asdict(actual)},
+                {
+                    "actual_route": asdict(actual),
+                    "observed_predecessor_digest": observed_digest,
+                },
                 operation_id=operation_id,
+            )
+            db.execute(
+                "UPDATE gate_state SET observed_predecessor_digest=? "
+                "WHERE singleton=1",
+                (observed_digest,),
             )
 
     def open(self, generation: int, proof: OpenProof) -> str:
@@ -612,6 +650,25 @@ class ReferenceExposureGate:
             row = self._row()
             if actual.generation is None or actual.fence == "closed":
                 raise GateError("traffic is failed safe")
+            predecessor_mismatch = (
+                gate_state
+                in {
+                    GateState.PREDECESSOR_OPEN,
+                    GateState.CANDIDATE_STAGED,
+                    GateState.CANDIDATE_CLOSED,
+                }
+                and (
+                    actual.generation != row["predecessor_generation"]
+                    or actual.fence != f"fence-{row['predecessor_generation']}"
+                    or self._digest(actual.snapshot) != row["predecessor_digest"]
+                )
+            )
+            if predecessor_mismatch:
+                self.fail_close(
+                    int(row["candidate_generation"]),
+                    "pre-open predecessor continuity mismatch",
+                )
+                raise GateError("predecessor route identity changed")
             if (
                 actual.generation != row["route_generation"]
                 or actual.fence != row["route_fence"]
@@ -1273,6 +1330,20 @@ def evaluate_trace(path: str | Path) -> dict[str, Any]:
         detail = json.loads(receipt["detail_json"])
         if detail.get("observed_candidate_digest") != state["candidate_digest"]:
             errors.append("open receipt candidate snapshot mismatch")
+    close_receipts = [
+        row
+        for row in transitions
+        if row["operation"] == "close" and row["kind"] == "receipt"
+    ]
+    for receipt in close_receipts:
+        detail = json.loads(receipt["detail_json"])
+        observed = detail.get("observed_predecessor_digest")
+        if (
+            "cancelled" not in detail
+            and observed is not None
+            and observed != state["predecessor_digest"]
+        ):
+            errors.append("close receipt predecessor snapshot mismatch")
     seen: dict[str, int] = {}
     for event in admission_events:
         prior = seen.setdefault(event["request_id"], event["chosen_generation"])
