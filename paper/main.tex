@@ -1,26 +1,21 @@
-\documentclass[10pt,twocolumn]{article}
-\usepackage[letterpaper,margin=0.72in,columnsep=0.24in]{geometry}
-\usepackage{times}
+\documentclass[letterpaper,twocolumn,10pt]{article}
+\usepackage{usenix2019_v3}
 \usepackage{microtype}
 \usepackage{booktabs}
 \usepackage{tabularx}
 \usepackage{graphicx}
 \usepackage{xcolor}
-\usepackage{enumitem}
 \usepackage{amsmath}
-\usepackage{url}
-\usepackage[hidelinks]{hyperref}
 \newcommand{\system}{\textsc{ECPA}}
 \newcommand{\tbd}{\textcolor{red!70!black}{\textbf{TBD}}}
 \newcommand{\code}[1]{\texttt{#1}}
-\setlist{nosep,leftmargin=*}
 \raggedbottom
 \setlength{\emergencystretch}{2em}
 \def\UrlBreaks{\do\/\do-\do\_}
 \sloppy
 \hbadness=10000
-\title{Evidence-Carrying Plugin Architecture for LLM Inference Systems}
-\author{Anonymous Authors}
+\title{\Large \bf ECPA: Evidence-Bound Activation for Extensible LLM Inference Systems}
+\author{Anonymous Submission}
 \date{}
 
 % Internal accountability (excluded from the anonymized author line):
@@ -28,35 +23,31 @@
 % participation is optional and non-blocking.
 
 \begin{document}
+\pagestyle{plain}
 \maketitle
 
 \begin{abstract}
-LLM inference engines increasingly expose plugins for schedulers, KV-cache
-connectors, policies, and control-plane integrations.  Existing plugin loaders
-answer whether a package can be found and imported, but operators need a
-stronger answer: did a compatible implementation acquire the intended
-capability in every relevant process, without conflicting with another plugin,
-and can the system return to a known-good configuration?  This distinction is
-easy to lose under version skew, heterogeneous providers, multi-process
-loading, and external services.  We present \system, an evidence-carrying
-architecture that separates typed static discovery, capability negotiation,
-conflict planning, saved activation intent, and process-owned runtime evidence.
-Its central invariant is that no lifecycle state may claim more than its
-evidence proves: installed, configured, enabled, and runtime-effective are
-independent predicates.  Activation fails closed on missing or contradictory
-evidence, while deterministic plans retain an explicit rollback target and
-providers never inherit authority over the runtime or external services.
-
-This paper is an implementation-grounded design and evaluation draft.  The
-current prototype validates manifests and plans across several provider types,
-passes 66 CPU tests, and exposes a concrete namespace regression in which all
-unit tests pass while a real installed plugin becomes undiscoverable.  Formal
-multi-process, composability, version-skew, rollback, and overhead campaigns
-are preregistered but not yet complete; their results are marked \tbd{} rather
-than inferred from existing integration evidence.  The proposed evaluation
-tests whether evidence-carrying activation eliminates false-effective claims,
-detects resource conflicts, survives upgrades and rollback, and remains off
-the request critical path at bounded cost.
+Extensible LLM inference systems can report a plugin as enabled even when the
+selected implementation never affects one or more serving processes.  We call
+this a false-effective outcome.  ECPA prevents such claims by treating
+activation as an evidence-bound transaction rather than a package-loading
+event.  A transaction combines an immutable activation plan, an epoch-scoped
+target-process set, authority-scoped fresh evidence, an ExposureGate that
+withholds traffic eligibility until obligations hold, and a durable
+coordinator that preserves intent and a predecessor for recovery.  ECPA keeps
+installed, configured, enabled, and runtime-effective as separate predicates;
+neither import success nor control-plane acknowledgement proves worker-side
+effect.  We ground the design in a corpus of 11 registered extensions and five
+adaptation candidates spanning schedulers, KV connectors, lifecycle observers,
+and deployment adapters.  The current Python prototype validates manifests,
+plans, resource ownership, durable generations, replay fencing, crash recovery,
+and fail-safe rollback through tests and adversarial traces.  An
+installed-package experiment also reproduces a namespace regression in which
+all legacy unit tests pass while the only installed plugin becomes
+undiscoverable.  These results establish a concrete false-effective failure
+and validate coordinator safety properties, but do not yet establish
+production latency, throughput, or multi-host availability.  We therefore
+state performance and live-runtime campaigns as planned work.
 \end{abstract}
 
 \section{Introduction}
@@ -98,6 +89,15 @@ resource-ownership graph.  The plan records evidence obligations.  Processes
 that actually invoke implementations satisfy those obligations; a manager
 cannot manufacture runtime effectiveness from configuration.
 
+Our safety property is: \emph{no activation is exposed as effective unless
+every required target in the current epoch has supplied fresh evidence from
+the authority that can observe the planned effect}.  ECPA is not the first
+plugin system, a deployment controller, or a software-supply-chain attestation
+scheme.  Its contribution is an evidence-bound activation transaction for
+extensions whose effect spans multiple inference processes and authority
+domains.  Existing plugin APIs, controllers, and provenance systems are inputs
+to that transaction, not components that ECPA replaces.
+
 This paper makes four intended contributions, with claim strength bounded by
 the evidence available today:
 \begin{itemize}
@@ -116,7 +116,7 @@ The first and parts of the second are implemented.  Process-owned evidence and
 the full formal evaluation remain work in progress; we do not present the
 existing provider demonstrations as proof of the full paper claim.
 
-\section{Motivation and Problem}
+\section{Background and Motivation}
 \subsection{Why Existing State Is Ambiguous}
 A package manager proves that files exist.  Entry-point discovery proves that
 metadata contains a name.  Configuration proves that an operator supplied
@@ -132,6 +132,7 @@ and operator checks.  Both are legitimate baselines.  Their limitation is not
 that they can never be made safe; it is that evidence obligations, ownership,
 and rollback are convention rather than a common machine-checkable contract.
 
+\section{Problem and Formal Model}
 \subsection{System Model}
 We model a host runtime $H$, providers $P$, plugins $G$, processes $W$, and
 resources $R$.  A plugin manifest declares required and provided capabilities,
@@ -256,7 +257,7 @@ data.  A provider protocol exposing plan/render/check therefore cannot silently
 apply, delete, or restart infrastructure.  This separation limits both failure
 blast radius and the claims that status may make.
 
-\section{Implementation}
+\section{Durable Coordinator}
 The reference implementation is written in Python as \code{vllm-hust-ext}.
 \system is not synonymous with that repository: it comprises the contract,
 planner/evidence semantics, reference implementation, corpus, and conformance
@@ -281,7 +282,32 @@ protocol across parent/worker topologies.  Consequently we claim an
 implementation foundation and a verified namespace failure, not a completed
 end-to-end \system evaluation.
 
-\section{Plugin Corpus and Generality Cases}
+The coordinator persists an immutable canonical plan before launching work.
+Each plan has a monotonically increasing generation, predecessor, launch ID,
+process epoch, target set, obligations, and deadline.  Generation
+compare-and-swap prevents a delayed actor from committing over a newer plan.
+Append-only intent and receipt records make recovery deterministic: after a
+crash, the coordinator resumes observation, retries an idempotent action, or
+enters fail-safe rollback; it does not infer success from the last attempted
+step.
+
+The \emph{ExposureGate} is the only path from CommitReady to Effective.  It
+checks target-set completeness, evidence identity and freshness, unresolved
+conflicts, and predecessor durability.  Evidence is scoped to the authority
+that observed it: a worker may attest hook invocation, a provider may attest a
+translation or check, and a deployment controller may report rollout status.
+No authority can substitute its acknowledgement for another authority's
+effect.  Epoch changes invalidate old membership evidence, preventing a
+departed worker or replayed receipt from satisfying a new launch.
+
+The current single-manager SQLite implementation exercises WAL recovery,
+receipts, replay fencing, generation CAS, predecessor gating, and explicit
+FailedSafe outcomes.  It is a reference for transaction semantics, not a
+distributed consensus service.  A production coordinator must additionally
+measure database contention, multi-host partitions, and high-availability
+failover.
+
+\section{Case Studies}
 We audited the authoritative workspace and accessible repositories by reading
 packaging metadata, manifests, registration functions, implementation paths,
 and evidence documents.  Names containing ``plugin'' were insufficient.  The
@@ -323,7 +349,7 @@ conflict or authority-boundary cell.  The corpus therefore supplies generality
 pressure to the contract while the conformance suite prevents the reference
 implementation from defining correctness by itself.
 
-\section{Evaluation Methodology}
+\section{Evaluation Methodology and Current Evidence}
 The evaluation is organized around four falsifiable hypotheses aligned with
 issues M0--M3.  \textbf{H1:} in preregistered failure cells, \system has zero
 false-effective outcomes and at least 99\% required-event coverage.
@@ -397,28 +423,36 @@ makes evidence obligations explicit and catches a class of namespace errors
 that the previous unit suite missed.
 
 \section{Related Work}
-vLLM documents a plugin system and a multi-process engine architecture
-\cite{vllm-plugin,vllm-arch}.  \system does not replace those mechanisms; it
-adds planning and evidence semantics around them.  Python packaging entry
-points support extensible discovery \cite{python-entrypoints}, but package
-metadata does not establish runtime invocation.  Dependency solvers reason
-about version constraints, while \system also reasons about semantic
-capabilities, exclusive runtime resources, and process evidence.
+\textbf{Inference and module plugins.}  vLLM's Plugin System loads registered
+general plugins during process initialization, while Endpoint Plugins extend
+the API server \cite{vllm-plugin,vllm-endpoint}.  These are the nearest loading
+mechanisms, and ECPA uses rather than replaces them.  Their registration and
+load events do not define a cross-process target set, exclusive resource plan,
+or transaction commit criterion.  OSGi offers mature bundle lifecycles and a
+dynamic service registry \cite{osgi-core}; ECPA differs in binding a selected
+plan to fresh evidence from a finite inference-process epoch.
 
-Service meshes, operators, and deployment controllers provide health and
-rollout mechanisms.  Our provider boundary deliberately consumes such evidence
-without becoming their control plane.  Feature-flag systems separate intent
-from rollout but usually do not prove that a specific inference worker invoked
-a selected implementation.  Software attestation and provenance systems bind
-artifacts to identities; \system uses a narrower, operational notion of
-launch-scoped evidence and does not claim cryptographic remote attestation.
+\textbf{Control-plane reconciliation.}  Envoy xDS separates configuration
+delivery and ACK/NACK \cite{envoy-xds}.  An ACK establishes protocol-level
+acceptance of a resource, not that an application-specific effect occurred in
+every downstream inference worker.  Kubernetes Device Plugins and CSI define
+specialized registration and resource/storage lifecycles
+\cite{k8s-device-plugin,csi-spec}; Kubernetes generations and conditions help
+controllers distinguish desired from observed state \cite{k8s-api-conventions}.
+ECPA borrows that discipline but contributes an activation commit spanning
+plugin, provider, and worker authorities.  It is not a general reconciler.
 
-Plugin isolation and supply-chain security are complementary.  Because vLLM
-plugins execute in application processes, typed manifests are not a sandbox.
-Our security contribution is limited to explicit activation authority,
-provenance, conflict visibility, and fail-closed state projection.
+\textbf{Runtime hooks and provenance.}  OCI runtime hooks provide ordered
+extension points around container lifecycle \cite{oci-runtime}; they do not
+negotiate semantic capabilities or prove application-level invocation.
+in-toto binds software-supply-chain steps and artifacts to authorized actors
+\cite{in-toto}, while SPIFFE/SPIRE issue workload identities
+\cite{spiffe,spire}.  These systems can authenticate ECPA artifacts and evidence
+producers.  They do not by themselves determine whether a planned extension
+became effective, and ECPA does not claim their cryptographic or identity
+properties.
 
-\section{Interoperability and Standardization Path}
+\section{Limitations and Discussion}
 ECPA 0.1 is a candidate interoperability specification, not an industry
 standard.  Its cumulative levels distinguish static discovery (L0), schema and
 namespace validity (L1), conflict-free negotiated plans (L2), process-owned
@@ -442,7 +476,7 @@ A de-facto-standard claim additionally requires external users, public
 conformance results, compatibility history, and governance beyond one
 repository.  Until then, ``standardizable contract'' is the strongest claim.
 
-\section{Discussion and Limitations}
+\subsection{Evidence and External Validity}
 Evidence has cost and can itself fail.  A synchronous per-request proof would
 be unacceptable; the design therefore targets lifecycle and sampled invocation
 events, but H4 must show that this does not move meaningful work onto the
