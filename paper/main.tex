@@ -27,27 +27,28 @@
 \maketitle
 
 \begin{abstract}
-Extensible LLM inference systems can report a plugin as enabled even when the
-selected implementation never affects one or more serving processes.  We call
-this a false-effective outcome.  ECPA prevents such claims by treating
-activation as an evidence-bound transaction rather than a package-loading
-event.  A transaction combines an immutable activation plan, an epoch-scoped
-target-process set, authority-scoped fresh evidence, an ExposureGate that
-withholds traffic eligibility until obligations hold, and a durable
-coordinator that preserves intent and a predecessor for recovery.  ECPA keeps
-installed, configured, enabled, and runtime-effective as separate predicates;
-neither import success nor control-plane acknowledgement proves worker-side
-effect.  We ground the design in a corpus of 11 registered extensions and five
-adaptation candidates spanning schedulers, KV connectors, lifecycle observers,
-and deployment adapters.  The current Python prototype validates manifests,
-plans, resource ownership, durable generations, replay fencing, crash recovery,
-and fail-safe rollback through tests and adversarial traces.  An
-installed-package experiment also reproduces a namespace regression in which
-all legacy unit tests pass while the only installed plugin becomes
-undiscoverable.  These results establish a concrete false-effective failure
-and validate coordinator safety properties, but do not yet establish
-production latency, throughput, or multi-host availability.  We therefore
-state performance and live-runtime campaigns as planned work.
+Modern LLM inference engines are evolving from monolithic executors into
+extensible platforms that accommodate changing models, accelerators,
+scheduling policies, and memory services. Plugins provide a way to incorporate
+these innovations without modifying the runtime core. However, existing
+extension mechanisms remain package-centric: they establish that code is
+installed, discoverable, or configured, but not that the implementation is
+compatible, conflict-free, and active in every process that can serve a
+request. This gap permits false-effective states, in which the control plane
+reports success while workers execute a partial, stale, or conflicting
+configuration. We present ECPA, an evidence-bound activation architecture for
+extensible inference systems. ECPA represents activation as a durable
+transaction over an immutable plan and an epoch-scoped target set. Runtime
+authorities discharge evidence obligations, and an ExposureGate admits a
+generation only after fresh evidence covers all required processes. Generation
+fencing and predecessor-aware rollback preserve this property across crashes,
+process replacement, and external-service failures. We derive ECPA's
+abstractions from 11 extensions and five adaptation candidates, and implement
+a reference coordinator that exercises namespace errors, resource conflicts,
+incomplete worker coverage, evidence replay, crash recovery, lease expiration,
+and failed compensation. ECPA thus provides a runtime-independent foundation
+for reasoning about extension correctness beyond installation and
+configuration.
 \end{abstract}
 
 \section{Introduction}
