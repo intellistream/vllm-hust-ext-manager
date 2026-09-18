@@ -8,6 +8,11 @@ This plan evaluates the architecture in
 installation, command success, or the number of integrations as evidence of
 runtime effectiveness.
 
+The current evaluation is a deep **vLLM-HUST-only system study**. It seeks
+external validity across real plugin categories, parent/engine/worker scopes,
+versions/topologies, providers, and failures within that runtime. A second
+inference runtime is not a current experimental cell or paper exit gate.
+
 ## Systems and baselines
 
 Use the same host/runtime versions, plugin implementations, process topology,

@@ -28,6 +28,8 @@ interoperability contract. Extension Manager is the reference implementation.
 The executable model in `src/vllm_hust_ext/ecpa_model.py` is pure and performs
 no external side effects. Production integration is intentionally deferred.
 
-Research-complete additionally requires a formal model, a second provider and
-independent consumer, real process/service fault injection, and matched
-overhead measurement.
+For the current vLLM-HUST-scoped study, research completion additionally
+requires a formal model, cross-plugin/provider validation within vLLM-HUST, an
+independent contract verifier, real process/service fault injection, and
+matched overhead measurement. Cross-runtime validation is future external-
+validity work, not a current paper exit gate.

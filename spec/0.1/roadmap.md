@@ -3,6 +3,12 @@
 Roadmap owner: `ShuhaoZhangTony` (张书豪). Execution is PI-led/self-driven and
 does not depend on a student owner or student delivery milestone.
 
+The current research and paper validate the proposed contract through a deep
+vLLM-HUST system study. Cross-runtime validation is deferred future work and is
+not a current milestone or submission gate. The roadmap below describes a
+possible longer-term standardization path, not commitments for the current
+paper.
+
 1. **Internal contract:** stabilize names, schema, negative fixtures, and M0
    oracle in this repository.
 2. **Multi-plugin validation:** migrate diverse policy, connector, provider,
@@ -11,8 +17,9 @@ does not depend on a student owner or student delivery milestone.
    both vLLM-HUST and intellistream, not merely forks owned by one author.
 4. **Upstream RFC and community feedback:** propose the smallest useful contract
    to vLLM and related communities; record rejected and revised semantics.
-5. **Independent interoperability:** demonstrate two implementations written by
-   separate teams exchanging manifests/plans/evidence without shared code.
+5. **Future independent interoperability:** after the current paper, demonstrate
+   independent implementations exchanging manifests/plans/evidence without
+   shared code; a future cross-runtime study may be one source of evidence.
 6. **Governance and evolution:** publish compatibility policy, test authority,
    release cadence, deprecation window, security process, and neutral change
    review.

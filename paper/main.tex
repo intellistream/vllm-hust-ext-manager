@@ -46,9 +46,8 @@ process replacement, and external-service failures. We derive ECPA's
 abstractions from 11 extensions and five adaptation candidates, and implement
 a reference coordinator that exercises namespace errors, resource conflicts,
 incomplete worker coverage, evidence replay, crash recovery, lease expiration,
-and failed compensation. ECPA thus provides a runtime-independent foundation
-for reasoning about extension correctness beyond installation and
-configuration.
+and failed compensation. ECPA thus provides a contract-centered foundation for
+reasoning about extension correctness beyond installation and configuration.
 \end{abstract}
 
 \section{Introduction}
@@ -98,6 +97,13 @@ scheme.  Its contribution is an evidence-bound activation transaction for
 extensions whose effect spans multiple inference processes and authority
 domains.  Existing plugin APIs, controllers, and provenance systems are inputs
 to that transaction, not components that ECPA replaces.
+
+This paper evaluates that mechanism as a deep case study of \textbf{vLLM-HUST},
+which is also the reference implementation's host runtime.  We seek generality
+within this scope through diverse plugin categories, parent/engine/worker
+process scopes, versions and topologies, authority boundaries, and fault modes.
+We do not claim cross-framework validation.  A second inference runtime is
+future external-validity work, not a prerequisite for the present study.
 
 This paper makes four intended contributions, with claim strength bounded by
 the evidence available today:
@@ -268,6 +274,9 @@ resolve compatibility, reject duplicate registrations and resource conflicts,
 and dispatch to host providers.  The CLI exposes list, inspect, configure,
 enable, check, and run-oriented paths.  Providers currently cover vLLM-native
 policies, Mooncake connectors/services, and rendered production-stack inputs.
+The current implementation and formal evaluation target vLLM-HUST; the
+contract/host boundary remains explicit so future work can test portability
+without presenting portability as a result of this paper.
 
 The implementation already keeps static bundle discovery separate from
 implementation entry points and distinguishes persistent intent from provider
@@ -349,6 +358,13 @@ an inert-import or missing-process cell, an identity/version mismatch, and a
 conflict or authority-boundary cell.  The corpus therefore supplies generality
 pressure to the contract while the conformance suite prevents the reference
 implementation from defining correctness by itself.
+
+The corpus supplies breadth across 11 registered extensions, five adaptation
+candidates, multiple plugin classes, and distinct process/authority scopes.
+Historical corpus metadata may mention another supported runtime, but that is
+not a cross-runtime ECPA experiment.  Our generality evidence is therefore the
+combination of corpus diversity, vLLM-HUST process scopes, the fault model, and
+the explicit contract/host boundary---not cross-framework validation.
 
 \section{Evaluation Methodology and Current Evidence}
 The evaluation is organized around four falsifiable hypotheses aligned with
@@ -517,6 +533,14 @@ and nonce.  Rollback is conditional on manager ownership and may fail safe.
 This pure executable reference model and its adversarial traces are a design
 oracle, not a production control plane, distributed side-effect transaction,
 physical exactly-once guarantee, or completed performance evaluation.
+
+External validity is bounded by this single-runtime study.  Deep validation
+across vLLM-HUST plugins, process roles, versions/topologies, and injected
+failures can show that the mechanism is not tied to one plugin, but cannot show
+that an independent inference framework adopts the same abstractions.
+Cross-runtime validation is deferred future work.  Accordingly, neither this
+paper nor the 11+5 corpus supports a cross-framework or industry-standard
+claim.
 
 \section{Conclusion}
 Inference plugin systems need a truth model stronger than successful

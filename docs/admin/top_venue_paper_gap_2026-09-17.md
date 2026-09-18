@@ -14,7 +14,7 @@
 
 ## 已有实现证据
 
-- 当前 main 的 66 个 CPU 测试通过。
+- 当前快照的 91 个 CPU 测试通过。
 - typed manifest、静态 discovery、配置/enable intent、provider plan/render/check、冲突拒绝和非变更 authority 边界已有实现基础。
 - `3201e133` namespace 变更提供真实负例：单测全过，但安装后的 Mooncake entry point 在错误 namespace 下从 1 个变 0，bundle discovery 为空。
 - Mooncake、Production Stack、BidKV 有仓库内既有集成证据，但尚不是论文要求的 matched formal campaign，不能直接当作 H1--H4 成功结果。
@@ -29,6 +29,11 @@
 - 将 11 个注册扩展逐步迁移为 ECPA manifest；当前 corpus 证明扩展面存在，不证明 L2--L4 符合性。
 
 ## 必须补实验
+
+- 当前论文范围固定为 vLLM-HUST 单 runtime 深度系统研究；不以接入 SGLang 或第二
+  inference runtime 作为投稿门槛。跨 runtime 验证仅作为未来 external-validity 工作。
+- 在 vLLM-HUST 内通过多个真实插件类别、parent/engine/worker process scope、版本/
+  拓扑和故障类型建立可迁移机制证据，但不得据此声称已完成跨框架验证。
 
 - 逐 cell 跑 vanilla vLLM entry points、manual integration、ECPA 三臂对照。
 - 完成 failure、composability、version-skew、multi-process、upgrade/rollback 矩阵；每个正式 cell 至少三次独立服务启动并交替 arm 顺序。

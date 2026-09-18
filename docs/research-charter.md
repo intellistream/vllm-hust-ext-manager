@@ -22,6 +22,13 @@ proof that a running process used the plugin.
 
 ## Proposed contribution boundary
 
+The current system study and paper use **vLLM-HUST as the sole inference-runtime
+instance**. Generality is investigated within that scope through multiple real
+plugin classes, process roles, versions/topologies, authority boundaries, and
+fault modes. Cross-runtime validation is future work, not a current milestone
+or submission condition; this scope does not justify a cross-framework or
+industry-standard claim.
+
 The research contribution is a jointly evaluated architecture, not any one
 manifest field or command:
 
