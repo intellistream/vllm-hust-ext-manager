@@ -565,6 +565,7 @@ class ActivationCoordinator:
             digest(evidence),
             digest(coverage),
             gate.authority.current(),
+            gate._row()["candidate_digest"],
         )
 
     def commit(self, plan_id: str, expected_generation: int) -> int:

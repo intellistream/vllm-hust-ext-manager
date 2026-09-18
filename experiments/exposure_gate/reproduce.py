@@ -59,6 +59,9 @@ PREDECESSOR = {
     "rendered_inputs": {"route": "old"},
 }
 GRANT = LeaseGrant("manager", 1, NOW + 60)
+CANDIDATE_DIGEST = (
+    "sha256:33c9a268940fae266a8d90ed2aedbdc43846684ba2bd327fc452fdb5c0ff171b"
+)
 PROOF = OpenProof(
     "candidate",
     1,
@@ -66,6 +69,7 @@ PROOF = OpenProof(
     "sha256:" + "1" * 64,
     "sha256:" + "2" * 64,
     GRANT,
+    CANDIDATE_DIGEST,
 )
 
 

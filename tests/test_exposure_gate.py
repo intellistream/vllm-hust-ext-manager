@@ -54,7 +54,13 @@ from vllm_hust_ext.exposure_gate import (
 NOW = 1_800_000_000
 PREDECESSOR = {"generation": 0, "plan_id": "old", "rendered_inputs": {"route": "old"}}
 GRANT = LeaseGrant("manager", 1, NOW + 60)
-PROOF = OpenProof("candidate", 1, 1, "sha256:" + "1" * 64, "sha256:" + "2" * 64, GRANT)
+CANDIDATE_DIGEST = (
+    "sha256:33c9a268940fae266a8d90ed2aedbdc43846684ba2bd327fc452fdb5c0ff171b"
+)
+PROOF = OpenProof(
+    "candidate", 1, 1, "sha256:" + "1" * 64, "sha256:" + "2" * 64, GRANT,
+    CANDIDATE_DIGEST,
+)
 
 
 def make_gate(tmp_path, **adapter_options):
@@ -162,7 +168,8 @@ def test_incomplete_proof_stale_generation_and_lease_loss_never_open(tmp_path):
     gate, adapter = make_gate(tmp_path)
     stage_closed(gate)
     partial = OpenProof(
-        "candidate", 1, 0, "sha256:" + "1" * 64, "sha256:" + "2" * 64, GRANT
+        "candidate", 1, 0, "sha256:" + "1" * 64, "sha256:" + "2" * 64, GRANT,
+        CANDIDATE_DIGEST,
     )
     with pytest.raises(GateError, match="no durable evidence"):
         gate.open(1, partial)
@@ -180,7 +187,9 @@ def test_incomplete_proof_stale_generation_and_lease_loss_never_open(tmp_path):
 def test_open_proof_requires_exact_lowercase_sha256_digest(tmp_path, digest):
     gate, _adapter = make_gate(tmp_path)
     stage_closed(gate)
-    malformed = OpenProof("candidate", 1, 1, digest, PROOF.coverage_digest, GRANT)
+    malformed = OpenProof(
+        "candidate", 1, 1, digest, PROOF.coverage_digest, GRANT, CANDIDATE_DIGEST
+    )
     with pytest.raises(GateError, match="no durable evidence"):
         gate.open(1, malformed)
 
@@ -255,6 +264,63 @@ def test_open_side_effect_without_receipt_reconciles_actual_fence(tmp_path):
     restarted = ReferenceExposureGate(tmp_path / "gate.db", adapter, clock=lambda: NOW)
     assert restarted.reconcile() is GateState.CANDIDATE_OPEN
     assert restarted.observe(AdmissionRequest("after-recovery", NOW + 1)) == 1
+
+
+def test_wrong_snapshot_reconcile_never_opens_or_admits(tmp_path):
+    gate, adapter = make_gate(tmp_path, faults={"open.after"})
+    stage_closed(gate)
+    with pytest.raises(InjectedCrash):
+        gate.open(1, PROOF)
+    adapter.route = adapter.route.__class__(1, adapter.route.fence, {"wrong": True})
+    assert gate.reconcile() is GateState.FAILED_SAFE
+    with pytest.raises(GateError):
+        gate.observe(AdmissionRequest("wrong-snapshot", NOW + 1))
+
+
+def test_admission_rechecks_candidate_snapshot_identity(tmp_path):
+    gate, adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    gate.open(1, PROOF)
+    adapter.route = adapter.route.__class__(1, adapter.route.fence, {"wrong": True})
+    with pytest.raises(GateError, match="unknown route state"):
+        gate.observe(AdmissionRequest("tampered-after-open", NOW + 1))
+
+
+def test_close_intent_retry_uses_one_intent_and_oracle_passes(tmp_path):
+    gate, adapter = make_gate(tmp_path)
+    gate.stage({"plan_id": "candidate"}, PREDECESSOR)
+    gate.faults.add("close.before_effect")
+    with pytest.raises(InjectedCrash):
+        gate.close(1)
+    gate.close_store()
+    restarted = ReferenceExposureGate(tmp_path / "gate.db", adapter, clock=lambda: NOW)
+    restarted.close(1)
+    intents = restarted.connection.execute(
+        "SELECT count(*) FROM gate_transition WHERE operation_id='close:1' "
+        "AND kind='intent'"
+    ).fetchone()[0]
+    assert intents == 1
+    assert evaluate_trace(tmp_path / "gate.db")["verdict"] == "PASS"
+
+
+def test_open_recovery_close_hard_crash_reuses_pending_intent(tmp_path):
+    gate, adapter = make_gate(tmp_path)
+    stage_closed(gate)
+    gate.faults.add("open.after_intent")
+    with pytest.raises(InjectedCrash):
+        gate.open(1, PROOF)
+    gate.faults.add("open_recovery_close.before_effect")
+    with pytest.raises(InjectedCrash):
+        gate.reconcile()
+    gate.close_store()
+    restarted = ReferenceExposureGate(tmp_path / "gate.db", adapter, clock=lambda: NOW)
+    assert restarted.reconcile() is GateState.FAILED_SAFE
+    intents = restarted.connection.execute(
+        "SELECT count(*) FROM gate_transition "
+        "WHERE operation_id='open-reconcile-close:1' AND kind='intent'"
+    ).fetchone()[0]
+    assert intents == 1
+    assert evaluate_trace(tmp_path / "gate.db")["verdict"] == "PASS"
 
 
 def test_rollback_restore_without_receipt_reconciles_strong(tmp_path):

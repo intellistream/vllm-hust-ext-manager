@@ -21,13 +21,20 @@ The generation is a compare-and-swap fence and each open creates a route fence.
 `open` accepts a non-empty `OpenProof` bound to the plan and generation. The
 proof commits to durable evidence and coverage digests plus a typed lease grant
 (`holder`, fencing token, expiry). The adapter revalidates that exact grant at
-the traffic side effect. The coordinator constructs this proof only after
+the traffic side effect. It also commits to the canonical candidate snapshot
+digest; the digest is embedded in the route fence and persisted in the open
+intent, receipt, and gate state. Normal open, recovery, and admission each
+query and compare the generation, fence, and candidate snapshot digest. The
+coordinator constructs this proof only after
 signed-receipt verification and complete required-process coverage. Discovery,
 readiness, load, or resolution do not satisfy these fields.
 
 Every adapter side effect has an earlier intent row and a later receipt row.
 Each pair carries an explicit `operation_id`; recovery suboperations use their
 own IDs rather than deriving identity by splitting an operation name.
+Operation IDs are stable idempotency keys. A retry that finds a pending close
+or recovery-close intent reuses it, queries/retries the side effect, and appends
+only its matching receipt; it never appends a second intent.
 If the process dies after actual open but before its receipt, recovery queries
 the adapter's actual generation and exact route fence. An exact match records a
 reconciliation receipt; any unknown or predecessor-only result closes both
