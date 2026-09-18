@@ -16,6 +16,12 @@ detached-JWS, Ed25519/EdDSA interoperability profile. Its
 and an independent Go verifier. This is a candidate profile, not an industry
 standard or production trust-root/key-management design.
 
+The Phase A host event input is defined by
+[`host-plugin-evidence.schema.json`](host-plugin-evidence.schema.json) and the
+[host evidence trust-boundary contract](../../docs/design/host-plugin-evidence-0.1.md).
+It is unsigned audit input, not an attestation and never direct proof of
+effectiveness.
+
 An ECPA manifest describes identity, semantic capabilities, exclusive/shared
 resources, host/provider compatibility, process evidence obligations, and a
 rollback boundary. Project namespaces are reverse-DNS strings. Capability and

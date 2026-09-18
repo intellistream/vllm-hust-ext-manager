@@ -1,0 +1,25 @@
+{
+  "schema": "vllm-hust-plugin-evidence/0.1",
+  "event_id": "4b566fde-fbab-4f9b-8bbc-9c0cf34b4a80",
+  "event": "invoked",
+  "entry_point": {
+    "group": "vllm.general_plugins",
+    "name": "demo",
+    "value": "demo.plugin:register"
+  },
+  "process": {
+    "host": "host-a",
+    "role": "worker",
+    "ordinal": 0,
+    "pid": 4242,
+    "start_identity": "pid:4242:start_ticks:9001",
+    "process_epoch": 7
+  },
+  "observed_at_ns": 1800000000000000000,
+  "plan_id": "plan:sha256:replace-at-ingestion-test",
+  "launch_id": "launch-1",
+  "plugin_id": null,
+  "artifact_digest": null,
+  "identity_status": "absent; bind from the ECPA Plan at trusted ingestion",
+  "detail": null
+}

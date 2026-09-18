@@ -28,6 +28,9 @@ def main() -> int:
     jsonschema.Draft7Validator(load(spec / "protocol.schema.json")).validate(
         load(spec / "protocol-instance.json")
     )
+    jsonschema.Draft7Validator(
+        load(spec / "host-plugin-evidence.schema.json")
+    ).validate(load(spec / "examples/host-plugin-invoked.json"))
     attestation_schema = load(spec / "attestation.schema.json")
     vectors = load(spec / "attestation-vectors.json")
     for case in vectors["cases"]:
@@ -40,7 +43,7 @@ def main() -> int:
     assert corpus["counts"]["adaptation_candidates"] == len(corpus["candidates"])
     print(
         "ECPA 0.1 draft: manifest and protocol examples valid, "
-        f"2 invalid examples rejected, corpus valid, "
+        f"2 invalid examples rejected, host event valid, corpus valid, "
         f"{len(vectors['cases'])} attestation vectors indexed"
     )
     return 0
