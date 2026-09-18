@@ -25,6 +25,7 @@ class State(str, Enum):
     ROLLBACK = "Rollback"
     ROLLED_BACK = "RolledBack"
     FAILED_SAFE = "FailedSafe"
+    SAFETY_UNKNOWN = "SafetyUnknown"
 
 
 class ErrorCode(str, Enum):

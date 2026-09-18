@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -40,9 +41,12 @@ TRANSITIONS: dict[State, frozenset[State]] = {
     State.EFFECTIVE: frozenset({State.DEGRADED, State.ROLLBACK}),
     State.DEGRADED: frozenset({State.RECONCILE, State.ROLLBACK}),
     State.RECONCILE: frozenset({State.OBSERVING, State.ROLLBACK, State.FAILED_SAFE}),
-    State.ROLLBACK: frozenset({State.ROLLED_BACK, State.FAILED_SAFE}),
+    State.ROLLBACK: frozenset(
+        {State.ROLLED_BACK, State.FAILED_SAFE, State.SAFETY_UNKNOWN}
+    ),
     State.ROLLED_BACK: frozenset(),
     State.FAILED_SAFE: frozenset(),
+    State.SAFETY_UNKNOWN: frozenset(),
 }
 
 
@@ -299,6 +303,11 @@ class ActivationCoordinator:
     def _now(self) -> int:
         return int(self.clock())
 
+    def _exposure_gate(self) -> Any | None:
+        from .exposure_gate import ReferenceExposureGate
+
+        return self.traffic if isinstance(self.traffic, ReferenceExposureGate) else None
+
     def _row(self, plan_id: str) -> sqlite3.Row:
         row = self.store.connection.execute(
             "SELECT * FROM activation WHERE plan_id=?", (plan_id,)
@@ -333,6 +342,13 @@ class ActivationCoordinator:
         )
 
     def plan(self, plan: Plan) -> str:
+        if not plan.obligations or any(
+            not obligation.required_ordinals for obligation in plan.obligations
+        ):
+            raise ContractError(
+                ErrorCode.MISSING_PROCESS_EVIDENCE,
+                "activation Plan requires non-empty evidence obligations and targets",
+            )
         with self.store.connection as db:
             db.execute(
                 "INSERT INTO activation VALUES(?,?,?,?,?,?)",
@@ -346,7 +362,19 @@ class ActivationCoordinator:
                 ),
             )
             self._journal(db, plan.plan_id, "transition", "plan", {"state": "Planned"})
-        self.traffic.hold_predecessor(plan.predecessor)
+        gate = self._exposure_gate()
+        if gate is not None:
+            try:
+                gate.stage(plan.plan_id, plan.predecessor)
+            except Exception:
+                with self.store.connection as db:
+                    db.execute("DELETE FROM journal WHERE plan_id=?", (plan.plan_id,))
+                    db.execute(
+                        "DELETE FROM activation WHERE plan_id=?", (plan.plan_id,)
+                    )
+                raise
+        else:
+            self.traffic.hold_predecessor(plan.predecessor)
         return plan.plan_id
 
     def prepare(self, plan_id: str) -> None:
@@ -360,6 +388,9 @@ class ActivationCoordinator:
         with self.store.connection as db:
             self._journal(db, plan_id, "receipt", "prepare", receipt)
             self._transition(db, plan_id, State.PREPARED)
+        gate = self._exposure_gate()
+        if gate is not None:
+            gate.close(plan.predecessor.generation + 1)
 
     def launch(self, plan_id: str, launch_id: str) -> None:
         plan = _plan_from_json(self._row(plan_id)["plan_json"])
@@ -470,6 +501,10 @@ class ActivationCoordinator:
             )
 
     def _evidence_complete(self, plan: Plan, now: int) -> bool:
+        if not plan.obligations or any(
+            not obligation.required_ordinals for obligation in plan.obligations
+        ):
+            return False
         inventory = self.store.connection.execute(
             "SELECT role,ordinal,epoch FROM inventory WHERE plan_id=?", (plan.plan_id,)
         ).fetchall()
@@ -506,6 +541,33 @@ class ActivationCoordinator:
                     return False
         return True
 
+    def _open_proof(self, plan: Plan, generation: int) -> Any:
+        from .exposure_gate import OpenProof
+
+        rows = self.store.connection.execute(
+            "SELECT nonce,evidence_digest,process_key,obligation_id,event "
+            "FROM evidence WHERE plan_id=? AND valid=1 AND manager_epoch=? "
+            "ORDER BY nonce",
+            (plan.plan_id, self.manager_epoch),
+        ).fetchall()
+        evidence = [dict(row) for row in rows]
+        coverage = [asdict(item) for item in plan.obligations]
+
+        def digest(value: Any) -> str:
+            return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+        gate = self._exposure_gate()
+        assert gate is not None
+        return OpenProof(
+            plan.plan_id,
+            generation,
+            len(evidence),
+            digest(evidence),
+            digest(coverage),
+            gate.authority.current(),
+            gate._row()["candidate_digest"],
+        )
+
     def commit(self, plan_id: str, expected_generation: int) -> int:
         plan = _plan_from_json(self._row(plan_id)["plan_json"])
         if not self.external.lease_valid(plan):
@@ -524,7 +586,21 @@ class ActivationCoordinator:
             if changed != 1 or plan.predecessor.generation != expected_generation:
                 raise ContractError(ErrorCode.CAS_MISMATCH, str(expected_generation))
         self.faults.hit("commit.after_wal")
-        self.traffic.activate(plan)
+        gate = self._exposure_gate()
+        if gate is not None:
+            from .attestation import SignedAttestationVerifier
+
+            if not isinstance(self.verifier, SignedAttestationVerifier):
+                raise ContractError(
+                    ErrorCode.MISSING_PROCESS_EVIDENCE,
+                    "ExposureGate requires signed receipt verification",
+                )
+            gate.open(
+                expected_generation + 1,
+                self._open_proof(plan, expected_generation + 1),
+            )
+        else:
+            self.traffic.activate(plan)
         self.faults.hit("commit.after_side_effect")
         with self.store.connection as db:
             generation = int(
@@ -540,7 +616,106 @@ class ActivationCoordinator:
         row = self._row(plan_id)
         state = State(row["state"])
         plan = _plan_from_json(row["plan_json"])
-        if state in {State.PREPARING, State.LAUNCHING, State.COMMIT_READY}:
+        gate = self._exposure_gate()
+        if state is State.ROLLBACK:
+            if gate is None:
+                with self.store.connection as db:
+                    self._transition(db, plan_id, State.FAILED_SAFE)
+                return State.FAILED_SAFE
+            from .exposure_gate import GateState
+
+            host_receipt = self.store.connection.execute(
+                "SELECT detail_json FROM journal WHERE plan_id=? "
+                "AND operation='rollback.host' ORDER BY sequence DESC LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            gate_state = gate.reconcile()
+            if host_receipt is None:
+                gate_state = {
+                    "FAILED_SAFE": GateState.FAILED_SAFE,
+                    "SAFETY_UNKNOWN": GateState.SAFETY_UNKNOWN,
+                }[
+                    gate.fail_close(
+                        plan.predecessor.generation + 1,
+                        "host rollback outcome missing during recovery",
+                    ).classification.value
+                ]
+                host_detail = {"outcome": None, "error": "missing host receipt"}
+            else:
+                host_detail = json.loads(host_receipt["detail_json"])
+            if gate_state is GateState.SAFETY_UNKNOWN:
+                target = State.SAFETY_UNKNOWN
+            elif (
+                gate_state is GateState.FAILED_SAFE
+                or host_detail.get("error") is not None
+                or host_detail.get("outcome") is None
+            ):
+                target = State.FAILED_SAFE
+            elif gate_state is GateState.ROLLED_BACK:
+                target = State.ROLLED_BACK
+            else:
+                outcome = gate.fail_close(
+                    plan.predecessor.generation + 1,
+                    f"unexpected gate recovery state {gate_state.value}",
+                )
+                target = (
+                    State.FAILED_SAFE
+                    if outcome.classification.value == "FAILED_SAFE"
+                    else State.SAFETY_UNKNOWN
+                )
+            with self.store.connection as db:
+                detail = {
+                    "recovered": True,
+                    "host": host_detail,
+                    "gate_state": gate_state.value,
+                }
+                db.execute(
+                    "INSERT INTO rollback_outcome"
+                    "(plan_id,success,detail_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        plan_id,
+                        int(target is State.ROLLED_BACK),
+                        canonical_bytes(detail),
+                        self._now(),
+                    ),
+                )
+                self._journal(db, plan_id, "receipt", "rollback.recover", detail)
+                self._transition(db, plan_id, target)
+            return target
+        if state is State.COMMIT_READY and gate is not None:
+            from .exposure_gate import GateState
+
+            gate_state = gate.reconcile()
+            if gate_state is GateState.CANDIDATE_OPEN:
+                with self.store.connection as db:
+                    self._journal(
+                        db, plan_id, "receipt", "commit.reconcile", {"queried": True}
+                    )
+                    self._transition(db, plan_id, State.EFFECTIVE)
+                return State.EFFECTIVE
+            if gate_state is GateState.CANDIDATE_CLOSED:
+                gate.rollback(plan.predecessor.generation + 1)
+            with self.store.connection as db:
+                self._transition(db, plan_id, State.RECONCILE)
+                self._journal(
+                    db,
+                    plan_id,
+                    "recovery",
+                    "gate-not-open",
+                    {"gate_state": gate_state.value},
+                )
+        elif state in {State.PREPARING, State.LAUNCHING, State.OBSERVING} and gate:
+            gate.rollback(plan.predecessor.generation + 1)
+            with self.store.connection as db:
+                self._transition(db, plan_id, State.RECONCILE)
+                self._journal(
+                    db,
+                    plan_id,
+                    "recovery",
+                    "pre-open-rollback",
+                    {"state": state.value},
+                )
+        elif state in {State.PREPARING, State.LAUNCHING, State.COMMIT_READY}:
             self.traffic.restore(plan.predecessor)
             with self.store.connection as db:
                 self._transition(db, plan_id, State.RECONCILE)
@@ -561,8 +736,84 @@ class ActivationCoordinator:
         with self.store.connection as db:
             self._transition(db, plan_id, State.ROLLBACK)
             self._journal(db, plan_id, "wal", "rollback", {"reason": reason})
+        host_outcome = None
+        host_error = None
         try:
-            outcome = self.host.rollback(plan.predecessor)
+            host_outcome = self.host.rollback(plan.predecessor)
+        except Exception as exc:
+            host_error = str(exc)
+        with self.store.connection as db:
+            self._journal(
+                db,
+                plan_id,
+                "receipt",
+                "rollback.host",
+                {"outcome": host_outcome, "error": host_error},
+            )
+
+        gate = self._exposure_gate()
+        if gate is not None:
+            from .exposure_gate import RollbackClass
+
+            gate_error = None
+            try:
+                if host_error is None:
+                    gate_outcome = gate.rollback(plan.predecessor.generation + 1)
+                else:
+                    gate_outcome = gate.fail_close(
+                        plan.predecessor.generation + 1,
+                        "host rollback failed",
+                    ).classification
+            except Exception as exc:
+                gate_error = str(exc)
+                try:
+                    gate_outcome = gate.fail_close(
+                        plan.predecessor.generation + 1,
+                        "traffic rollback failed",
+                    ).classification
+                except Exception as close_exc:
+                    gate_error = f"{gate_error}; fail-close: {close_exc}"
+                    gate_outcome = RollbackClass.SAFETY_UNKNOWN
+            self.faults.hit("rollback.after_traffic_side_effect")
+            with self.store.connection as db:
+                self._journal(
+                    db,
+                    plan_id,
+                    "receipt",
+                    "rollback.traffic",
+                    {"outcome": gate_outcome.value, "error": gate_error},
+                )
+            if gate_outcome is RollbackClass.SAFETY_UNKNOWN:
+                target = State.SAFETY_UNKNOWN
+            elif host_error is not None or gate_outcome is RollbackClass.FAILED_SAFE:
+                target = State.FAILED_SAFE
+            else:
+                target = State.ROLLED_BACK
+            with self.store.connection as db:
+                db.execute(
+                    "INSERT INTO rollback_outcome"
+                    "(plan_id,success,detail_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        plan_id,
+                        int(target is State.ROLLED_BACK),
+                        canonical_bytes(
+                            {
+                                "host_outcome": host_outcome,
+                                "host_error": host_error,
+                                "traffic_outcome": gate_outcome.value,
+                                "traffic_error": gate_error,
+                            }
+                        ),
+                        self._now(),
+                    ),
+                )
+                self._transition(db, plan_id, target)
+            return target
+
+        try:
+            if host_error is not None:
+                raise RuntimeError(host_error)
+            assert host_outcome is not None
             self.traffic.restore(plan.predecessor)
         except Exception as exc:
             with self.store.connection as db:
@@ -577,9 +828,9 @@ class ActivationCoordinator:
             db.execute(
                 "INSERT INTO rollback_outcome"
                 "(plan_id,success,detail_json,created_at) VALUES(?,?,?,?)",
-                (plan_id, 1, canonical_bytes(outcome), self._now()),
+                (plan_id, 1, canonical_bytes(host_outcome), self._now()),
             )
-            self._journal(db, plan_id, "receipt", "rollback", outcome)
+            self._journal(db, plan_id, "receipt", "rollback", host_outcome)
             self._transition(db, plan_id, State.ROLLED_BACK)
         return State.ROLLED_BACK
 
