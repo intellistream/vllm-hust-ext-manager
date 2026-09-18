@@ -12,6 +12,6 @@ algorithm/profile/type/key confusion, unknown critical headers/claims,
 freshness, plan/launch/artifact/process-epoch binding, replay, malformed JSON,
 duplicate keys, non-finite/float values, and noncanonical payload bytes.
 
-The Go implementation is intentionally self-contained from extension-manager
-and Python code. Both implementations share only the JSON vectors and published
-profile semantics.
+The separate Go implementation imports no extension-manager or Python code and
+passes the same raw-envelope corpus. This is cross-language consistency
+evidence, not yet a claim of independent interoperability.

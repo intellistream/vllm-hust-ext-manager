@@ -126,6 +126,11 @@ class Attestation:
     expires_at: int
     artifact_id: str
     authority: str = "host-runtime"
+    issuer: str = ""
+    kid: str = ""
+    observed_at: int = 0
+    evidence_digest: str = ""
+    artifact_digest: str = ""
 
 
 @dataclass(frozen=True)

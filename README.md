@@ -41,7 +41,7 @@ authority:
   plans without applying them.
 
 The ECPA 0.1 candidate attestation profile now has a Python producer/verifier,
-an independent Go clean-room verifier, shared positive/negative vectors, and a
+a separate Go implementation passing the shared positive/negative corpus, and a
 signed-evidence adapter for the durable coordinator. It uses RFC 8785 JCS,
 detached compact JWS, and Ed25519/EdDSA. This milestone does not supply a real
 vLLM-HUST issuer, production trust root/key management, or formal overhead

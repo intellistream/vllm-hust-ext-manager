@@ -320,8 +320,9 @@ failover.
 The implementation also includes an ECPA 0.1 candidate attestation profile:
 an encoding-independent statement is serialized with RFC 8785 JCS and signed
 as detached compact JWS using Ed25519/EdDSA.  Shared positive and negative
-vectors are accepted consistently by the Python producer/verifier and an
-independent Go verifier.  A coordinator adapter verifies signature and binding
+vectors are accepted consistently by the Python producer/verifier and a
+separate Go implementation passing the shared corpus.  A coordinator adapter
+verifies signature and binding
 before ingestion, while SQLite retains nonce replay fencing and the coordinator
 retains epoch, obligation, coverage, and commit authority.  This milestone uses
 test keys; a real vLLM-HUST issuer, production trust root/key lifecycle, and

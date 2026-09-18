@@ -118,7 +118,7 @@ def main() -> None:
         case(
             "positive-safe-integer-min",
             "positive",
-            statement(observed_at=0, issued_at=0, expires_at=NOW + 60),
+            statement(process=ProcessStatement("host-a", "worker", 0, "start-min", 0)),
             keys["test-key-1"],
         ),
         case(
@@ -126,6 +126,29 @@ def main() -> None:
             "positive",
             statement(kid="test-key-2", challenge_nonce="nonce-key-2"),
             keys["test-key-2"],
+        ),
+        case(
+            "positive-unicode-nfc",
+            "positive",
+            statement(
+                issuer="urn:ecpa:issuer:host-é", challenge_nonce="nonce-unicode-nfc"
+            ),
+            keys["test-key-1"],
+        ),
+        case(
+            "positive-unicode-pair",
+            "positive",
+            statement(issuer="urn:ecpa:issuer:host-😀", challenge_nonce="nonce-pair"),
+            keys["test-key-1"],
+        ),
+        case(
+            "positive-nonfinite-text",
+            "positive",
+            statement(
+                issuer="urn:ecpa:issuer:NaN-Infinity",
+                challenge_nonce="nonce-nonfinite-text",
+            ),
+            keys["test-key-1"],
         ),
     ]
 
@@ -360,12 +383,203 @@ def main() -> None:
         }
     )
 
+    def invalid_statement(case_id, changes, expected="ATTESTATION_INVALID_STATEMENT"):
+        value = base.to_dict()
+        for key, changed in changes.items():
+            if key.startswith("process."):
+                value["process"][key.split(".", 1)[1]] = changed
+            elif changed is _MISSING:
+                value.pop(key, None)
+            else:
+                value[key] = changed
+        payload = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        cases.append(
+            {
+                "id": case_id,
+                "category": "statement-schema",
+                "payload_b64": b64(payload),
+                "detached_jws": raw_sign(payload, base_header, keys[base.kid]),
+                "now": NOW,
+                "expected": expected,
+                "binding": None,
+            }
+        )
+
+    _MISSING = object()
+    invalid_statement("negative-empty-issuer", {"issuer": ""})
+    invalid_statement("negative-bad-evidence-digest", {"evidence_digest": "sha256:bad"})
+    invalid_statement("negative-bad-artifact-digest", {"artifact_digest": "bad"})
+    invalid_statement("negative-negative-ordinal", {"process.ordinal": -1})
+    invalid_statement("negative-negative-time", {"observed_at": -1})
+    invalid_statement("negative-bool-time", {"issued_at": True})
+    invalid_statement("negative-extra-property", {"extra": "no"})
+    invalid_statement("negative-missing-property", {"evidence_digest": _MISSING})
+    invalid_statement("negative-wrong-field-type", {"event": 3})
+    invalid_statement(
+        "negative-duplicate-critical-claims", {"critical_claims": ["x", "x"]}
+    )
+    invalid_statement(
+        "negative-safe-integer-overflow",
+        {"expires_at": 9007199254740992},
+        "ATTESTATION_UNSUPPORTED_VALUE",
+    )
+    invalid_statement(
+        "negative-time-order",
+        {"observed_at": NOW, "issued_at": NOW - 1},
+        "ATTESTATION_INVALID_TIME",
+    )
+    invalid_statement(
+        "negative-ttl", {"expires_at": NOW + 1000}, "ATTESTATION_INVALID_TIME"
+    )
+    invalid_statement(
+        "negative-observation-age",
+        {"observed_at": NOW - 1000, "issued_at": NOW - 1},
+        "ATTESTATION_INVALID_TIME",
+    )
+    invalid_statement(
+        "negative-authority-policy",
+        {"subject": "external-service"},
+        "ATTESTATION_TRUST_POLICY",
+    )
+    invalid_statement(
+        "negative-issuer-policy",
+        {"issuer": "urn:ecpa:issuer:unknown"},
+        "ATTESTATION_UNKNOWN_KEY",
+    )
+
+    bad_utf8 = b'{"issuer":"\xff"}'
+    cases.append(
+        {
+            "id": "negative-bad-utf8",
+            "category": "unicode",
+            "payload_b64": b64(bad_utf8),
+            "detached_jws": raw_sign(bad_utf8, base_header, keys[base.kid]),
+            "now": NOW,
+            "expected": "ATTESTATION_MALFORMED_JSON",
+            "binding": None,
+        }
+    )
+    surrogate = base.to_dict()
+    surrogate["issuer"] = "\ud800"
+    surrogate_payload = json.dumps(
+        surrogate, separators=(",", ":"), ensure_ascii=True
+    ).encode()
+    cases.append(
+        {
+            "id": "negative-lone-surrogate",
+            "category": "unicode",
+            "payload_b64": b64(surrogate_payload),
+            "detached_jws": raw_sign(surrogate_payload, base_header, keys[base.kid]),
+            "now": NOW,
+            "expected": "ATTESTATION_UNSUPPORTED_VALUE",
+            "binding": None,
+        }
+    )
+
+    jose_headers = [
+        ("negative-crit-empty", {**base_header, "crit": []}),
+        (
+            "negative-crit-duplicate",
+            {**base_header, "crit": ["ecpa_profile", "ecpa_profile"]},
+        ),
+        ("negative-crit-nonstring", {**base_header, "crit": [1]}),
+        (
+            "negative-crit-missing",
+            {k: v for k, v in base_header.items() if k != "crit"},
+        ),
+        (
+            "negative-critical-parameter-missing",
+            {k: v for k, v in base_header.items() if k != "ecpa_profile"},
+        ),
+    ]
+    for case_id, header in jose_headers:
+        cases.append(
+            {
+                "id": case_id,
+                "category": "jose",
+                "payload_b64": b64(valid.payload),
+                "detached_jws": raw_sign(valid.payload, header, keys[base.kid]),
+                "now": NOW,
+                "expected": "ATTESTATION_UNKNOWN_CRITICAL_HEADER",
+                "binding": None,
+            }
+        )
+    cases.append(
+        {
+            "id": "negative-base64-padding",
+            "category": "jose",
+            "payload_b64": b64(valid.payload),
+            "detached_jws": valid.detached_jws.replace("..", "=..", 1),
+            "now": NOW,
+            "expected": "ATTESTATION_MALFORMED_JWS",
+            "binding": None,
+        }
+    )
+    signature = valid.detached_jws.split(".")[2]
+    standard = (
+        signature.replace("-", "+", 1)
+        if "-" in signature
+        else signature.replace("_", "/", 1)
+    )
+    cases.append(
+        {
+            "id": "negative-standard-base64",
+            "category": "jose",
+            "payload_b64": b64(valid.payload),
+            "detached_jws": valid.detached_jws.rsplit(".", 1)[0] + "." + standard,
+            "now": NOW,
+            "expected": "ATTESTATION_MALFORMED_JWS",
+            "binding": None,
+        }
+    )
+
+    for item in cases:
+        item["layer"] = (
+            "coordinator-policy"
+            if item["category"] in {"binding", "replay"}
+            else "cryptographic-envelope"
+        )
+
     public_keys = []
     for kid, key in keys.items():
         public = key.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         )
-        public_keys.append({"kid": kid, "public_key_b64": b64(public)})
+        public_keys.append(
+            {
+                "issuer": "urn:ecpa:issuer:vllm-hust-host-a",
+                "kid": kid,
+                "public_key_b64": b64(public),
+                "subjects": ["host-runtime"],
+                "enabled": True,
+                "not_before": 0,
+                "not_after": 9007199254740991,
+            }
+        )
+    for issuer in (
+        "urn:ecpa:issuer:host-e\u0301",
+        "urn:ecpa:issuer:host-é",
+        "urn:ecpa:issuer:host-😀",
+        "urn:ecpa:issuer:NaN-Infinity",
+    ):
+        public = (
+            keys["test-key-1"]
+            .public_key()
+            .public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        )
+        public_keys.append(
+            {
+                "issuer": issuer,
+                "kid": "test-key-1",
+                "public_key_b64": b64(public),
+                "subjects": ["host-runtime"],
+                "enabled": True,
+                "not_before": 0,
+                "not_after": 9007199254740991,
+            }
+        )
     output = {
         "schema": "ecpa-attestation-vectors/0.1",
         "test_only": True,

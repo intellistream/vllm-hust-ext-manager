@@ -1,5 +1,7 @@
+import base64
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -10,6 +12,8 @@ from vllm_hust_ext.attestation import (
     AttestationStatement,
     ProcessStatement,
     SignedAttestationVerifier,
+    SignedEnvelope,
+    TrustEntry,
     TrustStore,
     canonicalize,
     sign,
@@ -34,6 +38,7 @@ from vllm_hust_ext.ecpa_model import (
     PredecessorSnapshot,
     ProcessIdentity,
     ResourceClaim,
+    State,
 )
 
 NOW = 1_800_000_000
@@ -53,7 +58,7 @@ def statement(**changes):
         "plan_id": "plan-1",
         "launch_id": "launch-1",
         "plugin_id": PLUGIN.id,
-        "artifact_digest": "sha256:" + "b" * 64,
+        "artifact_digest": "sha256:" + "a" * 64,
         "process": ProcessStatement("host-a", "worker", 0, "start-0", 7),
         "obligation": OBLIGATION.obligation_id,
         "event": OBLIGATION.event,
@@ -69,14 +74,33 @@ def statement(**changes):
 
 
 def trust_store():
-    return TrustStore({"test-key-1": KEY.public_key()})
+    return TrustStore(
+        [
+            TrustEntry(
+                "urn:ecpa:issuer:host-a",
+                "test-key-1",
+                KEY.public_key(),
+                frozenset({"host-runtime"}),
+            )
+        ]
+    )
 
 
 def test_sign_verify_and_unicode_is_not_normalized():
     decomposed = statement(issuer="urn:ecpa:issuer:e\u0301")
     composed = replace(decomposed, issuer="urn:ecpa:issuer:é")
     envelope = sign(decomposed, KEY)
-    assert verify(envelope, trust_store(), NOW) == decomposed
+    store = TrustStore(
+        [
+            TrustEntry(
+                decomposed.issuer,
+                decomposed.kid,
+                KEY.public_key(),
+                frozenset({"host-runtime"}),
+            )
+        ]
+    )
+    assert verify(envelope, store, NOW) == decomposed
     assert canonicalize(decomposed.to_dict()) != canonicalize(composed.to_dict())
 
 
@@ -102,7 +126,20 @@ def test_malformed_values_fail_closed(raw, code):
 def test_two_key_rotation_and_wrong_kid():
     second = Ed25519PrivateKey.from_private_bytes(bytes(range(32, 64)))
     store = TrustStore(
-        {"test-key-1": KEY.public_key(), "test-key-2": second.public_key()}
+        [
+            TrustEntry(
+                "urn:ecpa:issuer:host-a",
+                "test-key-1",
+                KEY.public_key(),
+                frozenset({"host-runtime"}),
+            ),
+            TrustEntry(
+                "urn:ecpa:issuer:host-a",
+                "test-key-2",
+                second.public_key(),
+                frozenset({"host-runtime"}),
+            ),
+        ]
     )
     item = statement(kid="test-key-2")
     assert verify(sign(item, second), store, NOW) == item
@@ -119,6 +156,7 @@ def test_signed_adapter_binds_before_coordinator_and_store_fences_replay(tmp_pat
         (OBLIGATION,),
         PredecessorSnapshot(0, "old", {"route": "old"}),
     )
+    signed_statement = statement(plan_id=plan.plan_id)
     item = Attestation(
         plan.plan_id,
         "launch-1",
@@ -129,12 +167,16 @@ def test_signed_adapter_binds_before_coordinator_and_store_fences_replay(tmp_pat
         NOW - 1,
         NOW + 60,
         PLUGIN.id,
+        "host-runtime",
+        signed_statement.issuer,
+        signed_statement.kid,
+        signed_statement.observed_at,
+        signed_statement.evidence_digest,
+        signed_statement.artifact_digest,
     )
-    signed_statement = statement(plan_id=plan.plan_id)
     verifier = SignedAttestationVerifier(
         {item.nonce: sign(signed_statement, KEY)},
         trust_store(),
-        {PLUGIN.id: "sha256:" + "b" * 64},
     )
     store = SQLiteActivationStore(tmp_path / "signed.db")
     coordinator = ActivationCoordinator(
@@ -149,6 +191,18 @@ def test_signed_adapter_binds_before_coordinator_and_store_fences_replay(tmp_pat
     coordinator.prepare(plan_id)
     coordinator.launch(plan_id, "launch-1")
     coordinator.observe(plan_id, item, NOW)
+    row = store.connection.execute(
+        "SELECT issuer,kid,observed_at,evidence_digest,artifact_digest "
+        "FROM evidence WHERE nonce=?",
+        (item.nonce,),
+    ).fetchone()
+    assert tuple(row) == (
+        signed_statement.issuer,
+        signed_statement.kid,
+        signed_statement.observed_at,
+        signed_statement.evidence_digest,
+        signed_statement.artifact_digest,
+    )
     with pytest.raises(ContractError) as caught:
         coordinator.observe(plan_id, item, NOW)
     assert caught.value.code is ErrorCode.REPLAYED_NONCE
@@ -161,7 +215,6 @@ def test_signature_does_not_override_binding_or_coverage(tmp_path):
     verifier = SignedAttestationVerifier(
         {item.challenge_nonce: sign(item, KEY)},
         trust_store(),
-        {PLUGIN.id: "sha256:" + "b" * 64},
     )
     logical = Attestation(
         "right-plan",
@@ -173,11 +226,78 @@ def test_signature_does_not_override_binding_or_coverage(tmp_path):
         item.issued_at,
         item.expires_at,
         item.plugin_id,
+        "host-runtime",
+        item.issuer,
+        item.kid,
+        item.observed_at,
+        item.evidence_digest,
+        item.artifact_digest,
     )
     with pytest.raises(AttestationError) as caught:
-        verifier.verify(logical, NOW)
+        verifier.verify(logical, NOW, type("Plan", (), {"plugins": (PLUGIN,)})())
     assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
 
 
 def test_statement_json_shape_is_stable():
     assert json.loads(canonicalize(statement().to_dict()))["schema"] == SCHEMA
+
+
+def test_shared_raw_envelope_corpus():
+    from scripts.check_attestation_vectors import main
+
+    main()
+
+
+def test_schema_invalid_signed_receipt_cannot_become_effective(tmp_path):
+    vectors = json.loads(
+        (Path(__file__).parents[1] / "spec/0.1/attestation-vectors.json").read_text()
+    )
+    vector = next(
+        item for item in vectors["cases"] if item["id"] == "negative-empty-issuer"
+    )
+    payload = base64.urlsafe_b64decode(
+        vector["payload_b64"] + "=" * (-len(vector["payload_b64"]) % 4)
+    )
+    envelope = SignedEnvelope(payload, vector["detached_jws"])
+    plan = Plan(
+        (PLUGIN,),
+        HostCompatibility("vllm-hust", "0.28", "vllm", "1"),
+        (ResourceClaim("urn:ecpa:resource:org.vllm-hust.signed", PLUGIN.id),),
+        (OBLIGATION,),
+        PredecessorSnapshot(0, "old", {"route": "old"}),
+    )
+    logical = Attestation(
+        plan.plan_id,
+        "launch-1",
+        PROCESS,
+        OBLIGATION.obligation_id,
+        OBLIGATION.event,
+        "nonce-1",
+        NOW - 1,
+        NOW + 60,
+        PLUGIN.id,
+        "host-runtime",
+        "",
+        "test-key-1",
+        NOW - 2,
+        "sha256:" + "4" * 64,
+        "sha256:" + "3" * 64,
+    )
+    store = SQLiteActivationStore(tmp_path / "invalid.db")
+    coordinator = ActivationCoordinator(
+        store,
+        FakeHostAdapter((PROCESS,)),
+        SignedAttestationVerifier({logical.nonce: envelope}, trust_store()),
+        FakeTrafficGate(),
+        FakeExternalServiceAdapter(),
+        clock=lambda: NOW,
+    )
+    plan_id = coordinator.plan(plan)
+    coordinator.prepare(plan_id)
+    coordinator.launch(plan_id, "launch-1")
+    with pytest.raises(AttestationError) as caught:
+        coordinator.observe(plan_id, logical, NOW)
+    assert caught.value.code is AttestationErrorCode.INVALID_STATEMENT
+    assert coordinator.status(plan_id)["state"] == State.OBSERVING.value
+    assert store.connection.execute("SELECT count(*) FROM evidence").fetchone()[0] == 0
+    store.close()

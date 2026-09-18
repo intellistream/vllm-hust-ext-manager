@@ -55,7 +55,7 @@ class HostAdapter(Protocol):
 
 
 class EvidenceVerifier(Protocol):
-    def verify(self, attestation: Attestation, now: int) -> None: ...
+    def verify(self, attestation: Attestation, now: int, plan: Plan) -> None: ...
 
 
 class EvidenceIssuer(Protocol):
@@ -131,7 +131,7 @@ class FakeTrafficGate:
 
 
 class FakeEvidenceVerifier:
-    def verify(self, attestation: Attestation, now: int) -> None:
+    def verify(self, attestation: Attestation, now: int, plan: Plan) -> None:
         if attestation.authority != "host-runtime":
             raise ContractError(ErrorCode.AUTHORITY_VIOLATION, attestation.authority)
         if attestation.issued_at > now or attestation.expires_at < now:
@@ -228,7 +228,11 @@ class SQLiteActivationStore:
               epoch INTEGER NOT NULL, obligation_id TEXT NOT NULL, event TEXT NOT NULL,
               issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
               artifact_id TEXT NOT NULL, authority TEXT NOT NULL,
-              manager_epoch INTEGER NOT NULL, valid INTEGER NOT NULL
+              manager_epoch INTEGER NOT NULL, valid INTEGER NOT NULL,
+              issuer TEXT NOT NULL DEFAULT '', kid TEXT NOT NULL DEFAULT '',
+              observed_at INTEGER NOT NULL DEFAULT 0,
+              evidence_digest TEXT NOT NULL DEFAULT '',
+              artifact_digest TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS rollback_outcome (
               sequence INTEGER PRIMARY KEY AUTOINCREMENT, plan_id TEXT NOT NULL,
@@ -237,6 +241,21 @@ class SQLiteActivationStore:
             );
             """
         )
+        columns = {
+            row[1] for row in self.connection.execute("PRAGMA table_info(evidence)")
+        }
+        migrations = {
+            "issuer": "TEXT NOT NULL DEFAULT ''",
+            "kid": "TEXT NOT NULL DEFAULT ''",
+            "observed_at": "INTEGER NOT NULL DEFAULT 0",
+            "evidence_digest": "TEXT NOT NULL DEFAULT ''",
+            "artifact_digest": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in migrations.items():
+            if name not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE evidence ADD COLUMN {name} {definition}"
+                )
         self.connection.commit()
 
     def transaction(self) -> sqlite3.Connection:
@@ -375,7 +394,7 @@ class ActivationCoordinator:
             )
         plan = _plan_from_json(row["plan_json"])
         observed_at = self._now() if now is None else now
-        self.verifier.verify(item, observed_at)
+        self.verifier.verify(item, observed_at, plan)
         inventory = self.store.connection.execute(
             "SELECT * FROM inventory WHERE plan_id=? AND role=? AND ordinal=?",
             (plan_id, item.process.role, item.process.ordinal),
@@ -392,7 +411,11 @@ class ActivationCoordinator:
         try:
             with self.store.connection as db:
                 db.execute(
-                    "INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                    "INSERT INTO evidence "
+                    "(nonce,plan_id,launch_id,process_key,role,ordinal,epoch,"
+                    "obligation_id,event,issued_at,expires_at,artifact_id,authority,"
+                    "manager_epoch,valid,issuer,kid,observed_at,evidence_digest,"
+                    "artifact_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
                     (
                         item.nonce,
                         plan_id,
@@ -408,6 +431,11 @@ class ActivationCoordinator:
                         item.artifact_id,
                         item.authority,
                         self.manager_epoch,
+                        item.issuer,
+                        item.kid,
+                        item.observed_at,
+                        item.evidence_digest,
+                        item.artifact_digest,
                     ),
                 )
                 self._journal(db, plan_id, "evidence", item.event, asdict(item))

@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from vllm_hust_ext.attestation import (
     AttestationStatement,
     ProcessStatement,
+    TrustEntry,
     TrustStore,
     canonicalize,
     sign,
@@ -61,7 +62,16 @@ def main() -> None:
         "sha256:" + "b" * 64,
     )
     envelope = sign(item, key)
-    store = TrustStore({"test-key-1": key.public_key()})
+    store = TrustStore(
+        [
+            TrustEntry(
+                "urn:ecpa:issuer:benchmark",
+                "test-key-1",
+                key.public_key(),
+                frozenset({"host-runtime"}),
+            )
+        ]
+    )
     result = {
         "schema": "ecpa-attestation-microbenchmark/0.1",
         "formal_paper_result": False,

@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from vllm_hust_ext.attestation import (
     AttestationError,
     SignedEnvelope,
+    TrustEntry,
     TrustStore,
     verify,
 )
@@ -27,12 +28,18 @@ def decode(value: str) -> bytes:
 def main() -> None:
     data = json.loads(VECTORS.read_text())
     store = TrustStore(
-        {
-            item["kid"]: Ed25519PublicKey.from_public_bytes(
-                decode(item["public_key_b64"])
+        [
+            TrustEntry(
+                item["issuer"],
+                item["kid"],
+                Ed25519PublicKey.from_public_bytes(decode(item["public_key_b64"])),
+                frozenset(item["subjects"]),
+                item["not_before"],
+                item["not_after"],
+                item["enabled"],
             )
             for item in data["keys"]
-        }
+        ]
     )
     seen: set[str] = set()
     failures = []
