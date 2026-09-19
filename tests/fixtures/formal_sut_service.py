@@ -15,25 +15,29 @@ contract = (
         else "entry-points-unmanaged"
     )
 )
-print("READY", flush=True)
-for command in sys.stdin:
-    command = command.strip()
-    if command == "workload":
-        print("WORKLOAD_OK", flush=True)
-    elif command.startswith("fault "):
-        print(f"FAULT_OK {command[6:]}", flush=True)
-    elif command == "observe":
-        print(
-            "OBSERVE "
-            + json.dumps(
+for raw in sys.stdin:
+    request = json.loads(raw)
+    command = request["command"]
+    if command == "observe":
+        Path("sut-telemetry.json").write_text(
+            json.dumps(
                 {
                     "activation_path": contract,
                     "effective_claim": False,
                     "plugin_invoked": False,
                 }
-            ),
-            flush=True,
+            )
         )
-    elif command == "shutdown":
-        print("SHUTDOWN_OK", flush=True)
+    print(
+        json.dumps(
+            {
+                "ack": True,
+                "phase": request["phase"],
+                "sequence": request["sequence"],
+                "challenge": request["challenge"],
+            }
+        ),
+        flush=True,
+    )
+    if command == "shutdown":
         break

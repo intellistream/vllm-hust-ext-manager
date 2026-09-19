@@ -3,30 +3,32 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 events = []
 expected = os.environ["ECPA_EXPECTED_CONTRACT"]
+target_pid = int(os.environ["ECPA_SUT_PID"])
+target_argv = Path(f"/proc/{target_pid}/cmdline").read_bytes().split(b"\0")
 for raw in sys.stdin:
     message = json.loads(raw)
     phase = message["phase"]
-    signal = message["signal"]
     common = {
         "source_role": "trusted-observer",
         "clock": "monotonic",
         "monotonic_ns": message["monotonic_ns"],
     }
-    valid = {
-        "service-ready": signal == "READY",
-        "workload-complete": signal == "WORKLOAD_OK",
-        "fault-injected": signal == f"FAULT_OK {message['scenario']}",
-        "observer-captured": signal.startswith("OBSERVE "),
-        "service-shutdown": signal == "SHUTDOWN_OK",
-    }[phase]
+    valid = message["causal_ack"]
     if valid:
         value = message["scenario"] if phase == "fault-injected" else True
         events.append({"event": phase, "value": value, **common})
     if phase == "observer-captured" and valid:
-        observed = json.loads(signal.removeprefix("OBSERVE "))
+        observed = json.loads(Path(os.environ["ECPA_TELEMETRY_SOURCE"]).read_text())
+        if expected == "manager-controlled-activation":
+            assert b"--enable-ecpa-manager" in target_argv
+        elif expected == "explicit-manual-hooks":
+            assert b"--manual-hooks" in target_argv
+        else:
+            assert b"--enable-entrypoints" in target_argv
         values = (
             ("activation-path", observed["activation_path"]),
             ("effective-claim", observed["effective_claim"]),

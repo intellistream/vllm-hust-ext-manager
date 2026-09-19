@@ -396,6 +396,21 @@ def validate_record(
                 raise ValueError("formal SUT and observer must be distinct processes")
             if sut.get("argv") == observer.get("argv"):
                 raise ValueError("formal SUT and observer argv must differ")
+            for role, process in (("SUT", sut), ("observer", observer)):
+                linux_identity = process.get("linux_identity", {})
+                expected_start = (
+                    f"pid:{process.get('pid')}@ticks:"
+                    f"{linux_identity.get('start_ticks')}"
+                )
+                if (
+                    linux_identity.get("pid") != process.get("pid")
+                    or linux_identity.get("argv") != process.get("argv")
+                    or process.get("start_identity") != expected_start
+                ):
+                    raise ValueError(f"{role} PID/start identity mismatch")
+            observer_pipe = safe_path(artifact_root, artifacts["observer_pipe"])
+            if digest_file(observer_pipe) != command.get("observer_pipe_sha256"):
+                raise ValueError("observer pipe bytes digest mismatch")
             if record.get("observer_binding") != {
                 "pid": observer.get("pid"),
                 "start_identity": observer.get("start_identity"),
@@ -469,6 +484,14 @@ def validate_record(
             "oracle_digest": digest_file(safe_path(artifact_root, artifacts["oracle"])),
             "exit_code": record["command"]["exit_code"],
             "timeout": record["command"]["timeout"],
+            "sut_identity": record["command"]
+            .get("sut_process", {})
+            .get("linux_identity"),
+            "observer_identity": record["command"]
+            .get("observer_process", {})
+            .get("linux_identity"),
+            "observer_argv": record["command"].get("observer_process", {}).get("argv"),
+            "observer_pipe_sha256": record["command"].get("observer_pipe_sha256"),
             "excluded_fields": ["artifact_root", "receipt_digest"],
         }
         if receipt != expected_receipt or digest_file(receipt_path) != record.get(
@@ -505,6 +528,8 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
         )
         if formal and record["evidence_class"] != "formal-real":
             raise ValueError("synthetic evidence cannot enter formal aggregate")
+        if formal and record.get("identity", {}).get("fixture_only"):
+            raise ValueError("fixture-only evidence cannot enter formal aggregate")
     complete = [item for item in records if item["status"] == "complete"]
     if formal and complete:
         groups: dict[str, list[dict[str, Any]]] = {}

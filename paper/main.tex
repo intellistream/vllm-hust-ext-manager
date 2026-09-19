@@ -175,6 +175,10 @@ observer are trusted; the SUT may fail but is not modeled as same-user code
 actively inspecting file descriptors or rewriting artifacts.  Harness records
 are runner-consistent and tamper-evident within this boundary, not
 cryptographically unforgeable evidence against a malicious SUT.
+The runner sends challenge-bound phase commands, captures observer telemetry
+over a dedicated pipe, and binds Linux PID/start-time identities and exact argv.
+Controlled fixture services test this interface but are rejected as formal
+paper evidence; real runs require a separately verified adapter contract.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger

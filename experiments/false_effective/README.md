@@ -47,16 +47,24 @@ Only the observer inherits a dedicated anonymous pipe write FD. The SUT uses
 `close_fds`, receives no result path/FD or observer-control environment, and its
 stdout cannot directly become formal evidence. The runner drives and confirms
 ready/workload/fault/observe/shutdown against SUT process signals and records
-actual monotonic bounds. It can generate
+actual monotonic bounds. Every instruction carries a random challenge and
+sequence number that its ACK must echo. Effectiveness, invocation, and
+activation-path fields are collected by the observer from a dedicated telemetry
+source, not relabeled from SUT stdout. Linux process identity is PID plus
+`/proc/PID/stat` start ticks and exact `/proc/PID/cmdline` argv. It can generate
 raw formal records from supplied commands, but the
 checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown
 events are mandatory; startup is launch-to-ready.
 
-`write_formal_manifest` writes canonical JSONL plus an index containing every
-runner-owned `record.json` digest. Paper generation accepts only that index,
+`write_formal_manifest` writes each canonical JSONL/index pair into a new
+generation directory, then atomically swaps one canonical current pointer.
+Paper generation accepts only that runner current pointer (not arbitrary
+hand-written JSON or JSONL),
 verifies both representations, validates the complete batch in a temporary
 directory, and atomically publishes a new output tree only after success.
+Fixture commands require explicit test mode and are rejected from formal
+aggregation; real runs require a pre-verified adapter contract.
 
 `raw-record.schema.json` is a start-level provenance extension beside the
 paper's `ecpa-result/v1`: it preserves the arm/status/null conventions while

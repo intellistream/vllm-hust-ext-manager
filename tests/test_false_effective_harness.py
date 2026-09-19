@@ -28,6 +28,7 @@ from runner import (  # noqa: E402
     ECPAAdapter,
     ManualIntegrationAdapter,
     VanillaVLLMAdapter,
+    parse_proc_stat_start_ticks,
     planned_records,
     run_formal_start,
     run_reference_start,
@@ -136,6 +137,7 @@ def formal_complete_records(tmp_path):
                 observer_arguments=[observer],
                 identity=identity,
                 timeout_s=5,
+                fixture_mode=True,
             )
             record["artifact_root"] = f"formal/{record['artifact_root']}"
             records.append(record)
@@ -145,14 +147,16 @@ def formal_complete_records(tmp_path):
 def test_matched_arm_metadata_mismatch_is_rejected(tmp_path):
     records = formal_complete_records(tmp_path)
     records[-1]["identity"]["model"] = "different"
-    with pytest.raises(ValueError, match="relabelled|metadata mismatch"):
+    with pytest.raises(ValueError, match="relabelled|metadata mismatch|fixture-only"):
         validate_batch(records, tmp_path, formal=True)
 
 
 def test_unbalanced_order_is_rejected(tmp_path):
     records = formal_complete_records(tmp_path)
     records[-1]["arm_order"] = records[-2]["arm_order"]
-    with pytest.raises(ValueError, match="relabelled|unbalanced|Latin square"):
+    with pytest.raises(
+        ValueError, match="relabelled|unbalanced|Latin square|fixture-only"
+    ):
         validate_batch(records, tmp_path, formal=True)
 
 
@@ -387,6 +391,19 @@ def test_formal_sut_cannot_write_trusted_result(tmp_path):
     )
 
 
+def test_pid_reuse_identity_mutation_is_rejected(tmp_path):
+    record = formal_complete_records(tmp_path)[0]
+    record["command"]["observer_process"]["linux_identity"]["start_ticks"] += 1
+    with pytest.raises(ValueError, match="identity"):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
+
+
 def test_frozen_registry_is_present_even_for_partial_input(tmp_path):
     result = aggregate(planned()[:1], tmp_path, formal=True)
     assert len(result["cells"]) == len(scenarios()) * 3
@@ -444,7 +461,18 @@ def test_oracle_mutation_is_rejected(tmp_path):
 
 @pytest.mark.parametrize(
     "code",
-    ["print('plain log')", "raise SystemExit(7)", "import time; time.sleep(10)"],
+    [
+        "print('plain log')",
+        "raise SystemExit(7)",
+        "import time; time.sleep(10)",
+        (
+            "import json,time; phases=['service-ready','workload-complete',"
+            "'fault-injected','observer-captured','service-shutdown'];"
+            "[print(json.dumps({'ack':True,'phase':p,'sequence':i+1,"
+            "'challenge':'guessed'}),flush=True) for i,p in enumerate(phases)];"
+            "time.sleep(10)"
+        ),
+    ],
 )
 def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, code):
     identity = {
@@ -478,10 +506,17 @@ def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, co
         ],
         identity=identity,
         timeout_s=1,
+        fixture_mode=True,
     )
     assert record["status"] == "failed"
     assert record["oracle"]["verdict"] == "INCOMPLETE"
     assert (tmp_path / record["artifact_root"] / "record.json").is_file()
+
+
+def test_proc_stat_parser_handles_parentheses_in_comm():
+    tail = ["S"] + [str(value) for value in range(4, 23)]
+    stat = "321 (worker (rank 0)) " + " ".join(tail)
+    assert parse_proc_stat_start_ticks(stat) == 22
 
 
 @pytest.mark.parametrize(
@@ -536,7 +571,7 @@ def test_runner_manifest_rejects_tampered_record_and_manual_jsonl(tmp_path):
     assert not (tmp_path / "published").exists()
     manual = tmp_path / "manual.jsonl"
     manual.write_text("{}\n")
-    with pytest.raises(ValueError, match="manifest|schema"):
+    with pytest.raises(ValueError, match="manifest|schema|current pointer"):
         module.generate(tmp_path / "manual-output", manual)
     assert not (tmp_path / "manual-output").exists()
 
@@ -544,28 +579,36 @@ def test_runner_manifest_rejects_tampered_record_and_manual_jsonl(tmp_path):
 def test_manifest_rejects_noncanonical_jsonl_and_wrong_start_binding(tmp_path):
     formal_complete_records(tmp_path)
     root = tmp_path / "formal"
-    manifest_path = root / "formal-record-index.json"
+    current_path = root / "formal-record-index.json"
+    current = json.loads(current_path.read_text())
+    manifest_path = root / current["generation_index"]
     manifest = json.loads(manifest_path.read_text())
     manifest["records"][0]["start_id"] = "forged"
     manifest_path.write_bytes(canonical(manifest) + b"\n")
+    current["generation_index_digest"] = digest_file(manifest_path)
+    current_path.write_bytes(canonical(current) + b"\n")
     with pytest.raises(ValueError, match="start_id"):
-        _reproduce_module().generate(tmp_path / "bad-index", manifest_path)
+        _reproduce_module().generate(tmp_path / "bad-index", current_path)
 
     records = [
         json.loads(path.read_text())
         for path in sorted(root.glob("starts/*/record.json"))
     ]
-    manifest_path = write_formal_manifest(root, records)
-    jsonl = root / "formal-records.jsonl"
-    jsonl.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    current_path = write_formal_manifest(root, records)
+    current = json.loads(current_path.read_text())
+    manifest_path = root / current["generation_index"]
     manifest = json.loads(manifest_path.read_text())
+    jsonl = root / manifest["records_jsonl"]
+    jsonl.write_text("\n".join(json.dumps(row) for row in records) + "\n")
     manifest["records_jsonl_digest"] = digest_file(jsonl)
     manifest_path.write_bytes(canonical(manifest) + b"\n")
+    current["generation_index_digest"] = digest_file(manifest_path)
+    current_path.write_bytes(canonical(current) + b"\n")
     with pytest.raises(ValueError, match="canonical"):
-        _reproduce_module().generate(tmp_path / "noncanonical", manifest_path)
+        _reproduce_module().generate(tmp_path / "noncanonical", current_path)
 
 
-def test_cli_accepts_valid_completed_and_failed_manifest_without_partial_output(
+def test_cli_rejects_fixture_completed_and_failed_manifest_without_partial_output(
     tmp_path,
 ):
     formal_complete_records(tmp_path)
@@ -586,6 +629,7 @@ def test_cli_accepts_valid_completed_and_failed_manifest_without_partial_output(
         ],
         identity=first["identity"],
         timeout_s=1,
+        fixture_mode=True,
     )
     assert failed["status"] == "failed"
     records = [
@@ -594,9 +638,9 @@ def test_cli_accepts_valid_completed_and_failed_manifest_without_partial_output(
     ]
     manifest = write_formal_manifest(root, records)
     output = tmp_path / "published"
-    _reproduce_module().generate(output, manifest)
-    assert (output / "paper-results.jsonl").is_file()
-    assert (output / "formal-aggregate.json").is_file()
+    with pytest.raises(ValueError, match="fixture-only"):
+        _reproduce_module().generate(output, manifest)
+    assert not output.exists()
 
 
 def _reproduce_module():

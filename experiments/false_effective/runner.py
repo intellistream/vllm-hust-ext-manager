@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import secrets
 import select
 import subprocess
 import sys
@@ -28,6 +29,27 @@ from harness import (
 )
 
 HERE = Path(__file__).resolve().parent
+
+
+def parse_proc_stat_start_ticks(stat: str) -> int:
+    """Parse Linux /proc/PID/stat field 22 despite spaces/parentheses in comm."""
+    close = stat.rfind(")")
+    if close < 0:
+        raise ValueError("malformed /proc stat comm field")
+    fields_from_three = stat[close + 2 :].split()
+    if len(fields_from_three) < 20:
+        raise ValueError("malformed /proc stat field count")
+    return int(fields_from_three[19])
+
+
+def linux_process_identity(pid: int) -> dict[str, Any]:
+    """Read Linux PID identity using /proc stat starttime (field 22)."""
+    start_ticks = parse_proc_stat_start_ticks(Path(f"/proc/{pid}/stat").read_text())
+    argv_raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    argv = [
+        part.decode(errors="surrogateescape") for part in argv_raw.split(b"\0") if part
+    ]
+    return {"pid": pid, "start_ticks": start_ticks, "argv": argv}
 
 
 @dataclass(frozen=True)
@@ -165,11 +187,16 @@ def _run_start(
             text=True,
             close_fds=True,
         )
+        sut_identity = linux_process_identity(sut.pid)
         read_fd, write_fd = os.pipe()
         observer_env = dict(env)
         observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
         observer_env["ECPA_EXPECTED_ARM"] = arm
         observer_env["ECPA_EXPECTED_CONTRACT"] = env["ECPA_ACTIVATION_CONTRACT"]
+        observer_env["ECPA_SUT_PID"] = str(sut.pid)
+        observer_env["ECPA_TELEMETRY_SOURCE"] = str(
+            (run_dir / "sut-telemetry.json").resolve()
+        )
         observer_start = time.monotonic_ns()
         observer = subprocess.Popen(
             observer_argv,
@@ -182,15 +209,27 @@ def _run_start(
             close_fds=True,
             pass_fds=(write_fd,),
         )
+        observer_identity = linux_process_identity(observer.pid)
         os.close(write_fd)
         phase_bounds: dict[str, list[int]] = {}
         sut_lines: list[str] = []
 
-        def drive(phase: str, instruction: str | None) -> bool:
+        def drive(phase: str, instruction: str, sequence: int) -> bool:
             start = time.monotonic_ns()
-            if instruction is not None and sut.stdin is not None:
+            challenge = secrets.token_hex(16)
+            if sut.stdin is not None:
                 try:
-                    sut.stdin.write(instruction + "\n")
+                    sut.stdin.write(
+                        json.dumps(
+                            {
+                                "command": instruction,
+                                "phase": phase,
+                                "sequence": sequence,
+                                "challenge": challenge,
+                            }
+                        )
+                        + "\n"
+                    )
                     sut.stdin.flush()
                 except BrokenPipeError:
                     pass
@@ -200,6 +239,16 @@ def _run_start(
             phase_bounds[phase] = [start, end]
             if line:
                 sut_lines.append(line)
+            try:
+                acknowledgement = json.loads(line)
+            except ValueError:
+                acknowledgement = {}
+            causal = (
+                acknowledgement.get("phase") == phase
+                and acknowledgement.get("sequence") == sequence
+                and acknowledgement.get("challenge") == challenge
+                and acknowledgement.get("ack") is True
+            )
             if observer.stdin is not None:
                 observer.stdin.write(
                     json.dumps(
@@ -208,18 +257,23 @@ def _run_start(
                             "signal": line,
                             "monotonic_ns": end,
                             "scenario": scenario["id"],
+                            "sequence": sequence,
+                            "challenge": challenge,
+                            "causal_ack": causal,
                         }
                     )
                     + "\n"
                 )
                 observer.stdin.flush()
-            return bool(line)
+            return causal
 
-        phase_ok = drive("service-ready", None)
-        phase_ok &= drive("workload-complete", "workload")
-        phase_ok &= drive("fault-injected", f"fault {scenario['id']}")
-        phase_ok &= drive("observer-captured", "observe")
-        phase_ok &= drive("service-shutdown", "shutdown")
+        phase_ok = drive("service-ready", "ready", 1)
+        phase_ok &= drive("workload-complete", "workload", 2)
+        phase_ok &= drive("fault-injected", f"fault {scenario['id']}", 3)
+        phase_ok &= drive("observer-captured", "observe", 4)
+        exited_before_shutdown = sut.poll() is not None
+        phase_ok &= drive("service-shutdown", "shutdown", 5)
+        phase_ok &= not exited_before_shutdown
         if observer.stdin is not None:
             observer.stdin.close()
         observer_timed_out = False
@@ -234,12 +288,12 @@ def _run_start(
         observer_end = time.monotonic_ns()
         observer_binding = {
             "pid": observer.pid,
-            "start_identity": f"pid:{observer.pid}@{observer_start}",
-            "argv": observer_argv,
+            "start_identity": (
+                f"pid:{observer.pid}@ticks:{observer_identity['start_ticks']}"
+            ),
+            "argv": observer_identity["argv"],
         }
-        premature_exit = (
-            sut.poll() is not None and phase_bounds.get("service-shutdown") is None
-        )
+        premature_exit = exited_before_shutdown
         if sut.poll() is None:
             sut.terminate()
         try:
@@ -259,7 +313,9 @@ def _run_start(
         while chunk := os.read(read_fd, 65536):
             result_bytes += chunk
         os.close(read_fd)
+        (run_dir / "observer-pipe.bin").write_bytes(result_bytes)
         result_path.write_bytes(result_bytes or canonical({"events": []}))
+        pipe_digest = digest_bytes(result_bytes)
         command = {
             "argv": argv,
             "cwd": str(run_dir.resolve()),
@@ -274,6 +330,7 @@ def _run_start(
             "signal": 15 if sut_exit == -15 else None,
             "timeout": observer_timed_out,
             "premature_exit": premature_exit,
+            "exited_before_shutdown_ack": exited_before_shutdown,
             "phase_complete": phase_ok,
             "stdout": "stdout.bin",
             "stdout_sha256": digest_file(run_dir / "stdout.bin"),
@@ -281,19 +338,24 @@ def _run_start(
             "stderr_sha256": digest_file(run_dir / "stderr.bin"),
             "environment_sha256": digest_file(run_dir / "environment.json"),
             "sut_process": {
-                "argv": argv,
+                "argv": sut_identity["argv"],
                 "pid": sut.pid,
-                "start_identity": f"pid:{sut.pid}@{sut_start}",
+                "start_identity": f"pid:{sut.pid}@ticks:{sut_identity['start_ticks']}",
+                "linux_identity": sut_identity,
             },
             "observer_process": {
-                "argv": observer_argv,
+                "argv": observer_identity["argv"],
                 "pid": observer.pid,
-                "start_identity": f"pid:{observer.pid}@{observer_start}",
+                "start_identity": (
+                    f"pid:{observer.pid}@ticks:{observer_identity['start_ticks']}"
+                ),
                 "exit_code": observer.returncode,
                 "monotonic_start_ns": observer_start,
                 "monotonic_end_ns": observer_end,
+                "linux_identity": observer_identity,
             },
             "phase_bounds": phase_bounds,
+            "observer_pipe_sha256": pipe_digest,
         }
         (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
         command_digest = digest_file(run_dir / "command.json")
@@ -352,6 +414,8 @@ def _run_start(
         "oracle": "oracle.json",
         "intake": "intake.json",
         "observations": "observations.json",
+        "observer_result": "observer-result.json",
+        "observer_pipe": "observer-pipe.bin" if observer_argv is not None else None,
         "scenario": "scenario.json",
         "protocol": "protocol.json",
         "receipt": "runner-receipt.json",
@@ -365,6 +429,7 @@ def _run_start(
         "environment.json",
         "command.json",
         "observations.json",
+        "observer-result.json",
         "scenario.json",
         "protocol.json",
         "intake.json",
@@ -373,6 +438,10 @@ def _run_start(
     for name in ("observer-stdout.bin", "observer-stderr.bin"):
         if (run_dir / name).is_file():
             artifacts["digests"][name] = digest_file(run_dir / name)
+    if artifacts["observer_pipe"]:
+        artifacts["digests"][artifacts["observer_pipe"]] = digest_file(
+            run_dir / artifacts["observer_pipe"]
+        )
     assert artifacts["digests"]["command.json"] == command_digest
     record = {
         "schema": "ecpa-false-effective-start/v1",
@@ -422,6 +491,10 @@ def _run_start(
         "oracle_digest": artifacts["digests"]["oracle.json"],
         "exit_code": command["exit_code"],
         "timeout": command["timeout"],
+        "sut_identity": command.get("sut_process", {}).get("linux_identity"),
+        "observer_identity": command.get("observer_process", {}).get("linux_identity"),
+        "observer_argv": command.get("observer_process", {}).get("argv"),
+        "observer_pipe_sha256": command.get("observer_pipe_sha256"),
         "excluded_fields": ["artifact_root", "receipt_digest"],
     }
     (run_dir / "runner-receipt.json").write_bytes(canonical(receipt) + b"\n")
@@ -503,6 +576,7 @@ def run_formal_start(
     observer_arguments: list[str],
     identity: dict[str, Any],
     timeout_s: float,
+    fixture_mode: bool = False,
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
@@ -526,6 +600,14 @@ def run_formal_start(
         identity.get(key) is None for key in required
     ):
         raise ValueError("formal declared identity is incomplete")
+    command_paths = [executable, observer_executable, *arguments, *observer_arguments]
+    fixture_path = any("tests/fixtures" in str(Path(value)) for value in command_paths)
+    if not fixture_mode and fixture_path:
+        raise ValueError("fixture-only command is forbidden for real formal execution")
+    if not fixture_mode and identity.get("adapter_contract_verified") is not True:
+        raise ValueError("real formal execution requires a verified adapter contract")
+    identity = dict(identity)
+    identity["fixture_only"] = fixture_mode
     argv, env = adapter.launch(executable, arguments, dict(os.environ))
     return _run_start(
         root,
@@ -577,7 +659,9 @@ def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
             temporary = Path(stream.name)
         os.replace(temporary, path)
 
-    jsonl = root / "formal-records.jsonl"
+    generation = root / "formal-generations" / secrets.token_hex(16)
+    generation.mkdir(parents=True, exist_ok=False)
+    jsonl = generation / "formal-records.jsonl"
     atomic_bytes(jsonl, b"".join(canonical(row) + b"\n" for row in records))
     entries = []
     for row in records:
@@ -593,20 +677,41 @@ def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
         )
     manifest = {
         "schema": "ecpa-formal-record-index/v1",
-        "records_jsonl": jsonl.name,
+        "records_jsonl": str(jsonl.relative_to(root)),
         "records_jsonl_digest": digest_file(jsonl),
         "records": entries,
     }
+    index = generation / "index.json"
+    atomic_bytes(index, canonical(manifest) + b"\n")
+    current = {
+        "schema": "ecpa-formal-current/v1",
+        "generation_index": str(index.relative_to(root)),
+        "generation_index_digest": digest_file(index),
+    }
     path = root / "formal-record-index.json"
-    atomic_bytes(path, canonical(manifest) + b"\n")
+    atomic_bytes(path, canonical(current) + b"\n")
     return path
 
 
 def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
-    manifest = json.loads(path.read_text())
-    if manifest.get("schema") != "ecpa-formal-record-index/v1":
-        raise ValueError("formal input must be a runner index manifest")
     root = path.parent
+    current_bytes = path.read_bytes()
+    current = json.loads(current_bytes)
+    if (
+        current_bytes != canonical(current) + b"\n"
+        or current.get("schema") != "ecpa-formal-current/v1"
+    ):
+        raise ValueError("formal input must be a canonical runner current pointer")
+    index_path = safe_path(root, current["generation_index"])
+    if digest_file(index_path) != current["generation_index_digest"]:
+        raise ValueError("formal generation index digest mismatch")
+    index_bytes = index_path.read_bytes()
+    manifest = json.loads(index_bytes)
+    if (
+        index_bytes != canonical(manifest) + b"\n"
+        or manifest.get("schema") != "ecpa-formal-record-index/v1"
+    ):
+        raise ValueError("formal generation index is not canonical")
     jsonl = safe_path(root, manifest["records_jsonl"])
     if digest_file(jsonl) != manifest["records_jsonl_digest"]:
         raise ValueError("formal JSONL digest mismatch")
