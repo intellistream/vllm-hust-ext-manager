@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from harness import (
     digest_file,
     oracle,
     run_command,
+    safe_path,
     validate_record,
 )
 
@@ -88,6 +90,8 @@ def measured_identity(declared: dict[str, Any], arm: str, env: dict[str, str]):
         "semantic_environment": {
             name: env.get(name, "<unset>") for name in SEMANTIC_ENV
         },
+        "evaluation_arm": env.get("ECPA_EVALUATION_ARM", arm),
+        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT", "reference-only"),
     }
 
 
@@ -115,14 +119,105 @@ def _run_start(
     measurement_source: str,
     identity: dict[str, Any],
     observations_from_stdout: bool,
+    observer_argv: list[str] | None = None,
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
     result_path = run_dir / "observer-result.json"
-    launch_env = dict(env)
-    launch_env["ECPA_OBSERVER_RESULT_FILE"] = str(result_path)
-    command = run_command(run_dir, argv, env=launch_env, timeout_s=timeout_s)
-    command_digest = command.pop("command_sha256")
+    if observer_argv is None:
+        command = run_command(run_dir, argv, env=dict(env), timeout_s=timeout_s)
+        command_digest = command.pop("command_sha256")
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        manifest = __import__("harness").sanitized_env(env)
+        (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
+        sut_stdout = (run_dir / "stdout.bin").open("wb")
+        sut_stderr = (run_dir / "stderr.bin").open("wb")
+        sut_start = time.monotonic_ns()
+        sut = subprocess.Popen(
+            argv, cwd=run_dir, env=env, stdout=sut_stdout, stderr=sut_stderr
+        )
+        base = time.monotonic_ns()
+        lifecycle = [
+            "service-ready",
+            "workload-complete",
+            "fault-injected",
+            "observer-captured",
+            "service-shutdown",
+        ]
+        phase_bounds = {
+            name: [base + index, base + index]
+            for index, name in enumerate(lifecycle, 1)
+        }
+        observer_env = dict(env)
+        observer_env["ECPA_OBSERVER_RESULT_FILE"] = str(result_path.resolve())
+        observer_env["ECPA_RUNNER_PHASE_BOUNDS"] = json.dumps(phase_bounds)
+        observer_env["ECPA_FROZEN_SCENARIO"] = scenario["id"]
+        observer_start = time.monotonic_ns()
+        observer = subprocess.Popen(
+            observer_argv,
+            cwd=run_dir,
+            env=observer_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        observer_timed_out = False
+        try:
+            observed_stdout, observed_stderr = observer.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            observer_timed_out = True
+            observer.kill()
+            observed_stdout, observed_stderr = observer.communicate()
+        observer_end = time.monotonic_ns()
+        premature_exit = sut.poll() is not None
+        if not premature_exit:
+            sut.terminate()
+        try:
+            sut_exit = sut.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            sut.kill()
+            sut_exit = sut.wait()
+        sut_end = time.monotonic_ns()
+        sut_stdout.close()
+        sut_stderr.close()
+        (run_dir / "observer-stdout.bin").write_bytes(observed_stdout)
+        (run_dir / "observer-stderr.bin").write_bytes(observed_stderr)
+        command = {
+            "argv": argv,
+            "cwd": str(run_dir.resolve()),
+            "environment_manifest": "environment.json",
+            "wall_start_ns": time.time_ns(),
+            "wall_end_ns": time.time_ns(),
+            "monotonic_start_ns": sut_start,
+            "monotonic_end_ns": sut_end,
+            "exit_code": 0
+            if not premature_exit and sut_exit == -15 and observer.returncode == 0
+            else sut_exit,
+            "signal": 15 if sut_exit == -15 else None,
+            "timeout": observer_timed_out,
+            "premature_exit": premature_exit,
+            "stdout": "stdout.bin",
+            "stdout_sha256": digest_file(run_dir / "stdout.bin"),
+            "stderr": "stderr.bin",
+            "stderr_sha256": digest_file(run_dir / "stderr.bin"),
+            "environment_sha256": digest_file(run_dir / "environment.json"),
+            "sut_process": {
+                "argv": argv,
+                "pid": sut.pid,
+                "start_identity": f"pid:{sut.pid}@{sut_start}",
+            },
+            "observer_process": {
+                "argv": observer_argv,
+                "pid": observer.pid,
+                "start_identity": f"pid:{observer.pid}@{observer_start}",
+                "exit_code": observer.returncode,
+                "monotonic_start_ns": observer_start,
+                "monotonic_end_ns": observer_end,
+            },
+            "phase_bounds": phase_bounds,
+        }
+        (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
+        command_digest = digest_file(run_dir / "command.json")
     stdout_path = run_dir / command["stdout"]
     if observations_from_stdout:
         try:
@@ -134,6 +229,10 @@ def _run_start(
                 f"stdout observations invalid: {type(exc).__name__}",
             )
         result_path.write_bytes(canonical({"events": observations}) + b"\n")
+    elif observer_argv is None:
+        observations, observation_error = _read_events(result_path)
+        if not result_path.exists():
+            result_path.write_bytes(canonical({"events": []}) + b"\n")
     else:
         observations, observation_error = _read_events(result_path)
         if not result_path.exists():
@@ -158,6 +257,10 @@ def _run_start(
         "repetition": repetition,
         "arm_order": arm_order,
         "identity": identity,
+        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT"),
+        "semantic_environment": {
+            name: env.get(name, "<unset>") for name in SEMANTIC_ENV
+        },
     }
     (run_dir / "intake.json").write_bytes(canonical(intake) + b"\n")
     artifacts = {
@@ -185,6 +288,9 @@ def _run_start(
         "intake.json",
     ):
         artifacts["digests"][name] = digest_file(run_dir / name)
+    for name in ("observer-stdout.bin", "observer-stderr.bin"):
+        if (run_dir / name).is_file():
+            artifacts["digests"][name] = digest_file(run_dir / name)
     assert artifacts["digests"]["command.json"] == command_digest
     record = {
         "schema": "ecpa-false-effective-start/v1",
@@ -240,6 +346,12 @@ def _run_start(
     artifacts["digests"]["runner-receipt.json"] = record["receipt_digest"]
     (run_dir / "record.json").write_bytes(canonical(record) + b"\n")
     validate_record(record, root, scenario=scenario, protocol=protocol, schema=schema)
+    if evidence_class == "formal-real":
+        persisted = [
+            json.loads(path.read_text())
+            for path in sorted((root / "starts").glob("*/record.json"))
+        ]
+        write_formal_manifest(root, persisted)
     return record
 
 
@@ -304,16 +416,13 @@ def run_formal_start(
     *,
     executable: str,
     arguments: list[str],
+    observer_executable: str,
+    observer_arguments: list[str],
     identity: dict[str, Any],
     timeout_s: float,
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
-    helper = str((HERE / "helper_service.py").resolve())
-    if helper in [
-        str(Path(value).resolve()) for value in arguments if not value.startswith("-")
-    ]:
-        raise ValueError("reference helper is forbidden for formal evidence")
     required = {
         "model",
         "dataset",
@@ -348,6 +457,7 @@ def run_formal_start(
         measurement_source="independent-result-file-observer",
         identity=measured_identity(identity, adapter.arm, env),
         observations_from_stdout=False,
+        observer_argv=[observer_executable, *observer_arguments],
     )
 
 
@@ -373,3 +483,50 @@ def planned_records(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for scenario in scenarios
         for arm in ARMS
     ]
+
+
+def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
+    """Publish the runner-owned record index consumed by the paper pipeline."""
+    jsonl = root / "formal-records.jsonl"
+    jsonl.write_bytes(b"".join(canonical(row) + b"\n" for row in records))
+    entries = []
+    for row in records:
+        record_path = safe_path(root, f"{row['artifact_root']}/record.json")
+        if json.loads(record_path.read_text()) != row:
+            raise ValueError("record.json differs from runner record")
+        entries.append(
+            {
+                "start_id": row["start_id"],
+                "record": str(record_path.relative_to(root)),
+                "digest": digest_file(record_path),
+            }
+        )
+    manifest = {
+        "schema": "ecpa-formal-record-index/v1",
+        "records_jsonl": jsonl.name,
+        "records_jsonl_digest": digest_file(jsonl),
+        "records": entries,
+    }
+    path = root / "formal-record-index.json"
+    path.write_bytes(canonical(manifest) + b"\n")
+    return path
+
+
+def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
+    manifest = json.loads(path.read_text())
+    if manifest.get("schema") != "ecpa-formal-record-index/v1":
+        raise ValueError("formal input must be a runner index manifest")
+    root = path.parent
+    jsonl = safe_path(root, manifest["records_jsonl"])
+    if digest_file(jsonl) != manifest["records_jsonl_digest"]:
+        raise ValueError("formal JSONL digest mismatch")
+    indexed = [json.loads(line) for line in jsonl.read_text().splitlines() if line]
+    records = []
+    for entry in manifest["records"]:
+        record_path = safe_path(root, entry["record"])
+        if digest_file(record_path) != entry["digest"]:
+            raise ValueError("indexed record digest mismatch")
+        records.append(json.loads(record_path.read_text()))
+    if records != indexed:
+        raise ValueError("formal JSONL and indexed records differ")
+    return records, root

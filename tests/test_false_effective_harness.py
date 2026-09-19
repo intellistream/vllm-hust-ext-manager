@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import os
@@ -29,6 +30,7 @@ from runner import (  # noqa: E402
     planned_records,
     run_formal_start,
     run_reference_start,
+    write_formal_manifest,
 )
 
 
@@ -83,7 +85,8 @@ def formal_complete_records(tmp_path):
     records = []
     protocol = json.loads((ROOT / "protocol.json").read_text())
     scenario = scenarios()[0]
-    helper = str(Path("tests/fixtures/formal_lifecycle_service.py").resolve())
+    sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
+    observer = str(Path("tests/fixtures/formal_observer_service.py").resolve())
     adapters = {
         "vanilla-vllm-entry-points": VanillaVLLMAdapter(),
         "manual-integration": ManualIntegrationAdapter(),
@@ -127,7 +130,9 @@ def formal_complete_records(tmp_path):
                 repetition,
                 arm_order,
                 executable=sys.executable,
-                arguments=[helper, scenario["id"]],
+                arguments=[sut],
+                observer_executable=sys.executable,
+                observer_arguments=[observer],
                 identity=identity,
                 timeout_s=5,
             )
@@ -352,21 +357,19 @@ def test_disk_command_and_oracle_are_exactly_bound(tmp_path):
     assert (run_dir / "oracle.json").is_file()
 
 
-def test_formal_runner_forbids_reference_helper(tmp_path):
-    protocol = json.loads((ROOT / "protocol.json").read_text())
-    with pytest.raises(ValueError, match="reference helper"):
-        run_formal_start(
-            tmp_path,
-            scenarios()[0],
-            protocol,
-            ECPAAdapter(),
-            1,
-            3,
-            executable=sys.executable,
-            arguments=[str((ROOT / "helper_service.py").resolve())],
-            identity={},
-            timeout_s=1,
-        )
+def test_formal_sut_cannot_write_trusted_result(tmp_path):
+    record = formal_complete_records(tmp_path)[0]
+    run_dir = tmp_path / record["artifact_root"]
+    sut_environment = json.loads((run_dir / "sut-environment.json").read_text())
+    assert "ECPA_OBSERVER_RESULT_FILE" not in sut_environment
+    assert (
+        record["command"]["sut_process"]["pid"]
+        != record["command"]["observer_process"]["pid"]
+    )
+    assert (
+        record["observations"]
+        != json.loads((run_dir / "forged-observer-result.json").read_text())["events"]
+    )
 
 
 def test_frozen_registry_is_present_even_for_partial_input(tmp_path):
@@ -384,8 +387,10 @@ def test_formal_observer_ignores_plain_stdout_and_captures_lifecycle(tmp_path):
     assert events.index("workload-complete") < events.index("fault-injected")
     assert events.index("fault-injected") < events.index("observer-captured")
     assert events.index("observer-captured") < events.index("service-shutdown")
-    run_dir = tmp_path / record["artifact_root"]
-    assert (run_dir / "stdout.bin").read_text().startswith("ordinary service log")
+    assert (
+        record["command"]["sut_process"]["argv"]
+        != record["command"]["observer_process"]["argv"]
+    )
 
 
 def test_arm_launch_contracts_are_distinct_and_auditable():
@@ -447,9 +452,110 @@ def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, co
         3,
         executable=sys.executable,
         arguments=["-c", code],
+        observer_executable=sys.executable,
+        observer_arguments=[
+            str(Path("tests/fixtures/formal_observer_service.py").resolve())
+        ],
         identity=identity,
         timeout_s=1,
     )
     assert record["status"] == "failed"
     assert record["oracle"]["verdict"] == "INCOMPLETE"
     assert (tmp_path / record["artifact_root"] / "record.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["duplicate", "reverse", "false", "source", "fault"]
+)
+def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
+    record = copy.deepcopy(formal_complete_records(tmp_path)[0])
+    events = record["observations"]
+    if mutation == "duplicate":
+        events.append(copy.deepcopy(events[0]))
+    elif mutation == "reverse":
+        ready = next(item for item in events if item["event"] == "service-ready")
+        shutdown = next(item for item in events if item["event"] == "service-shutdown")
+        ready["monotonic_ns"], shutdown["monotonic_ns"] = (
+            shutdown["monotonic_ns"],
+            ready["monotonic_ns"],
+        )
+    elif mutation == "false":
+        next(item for item in events if item["event"] == "service-ready")["value"] = (
+            False
+        )
+    elif mutation == "source":
+        next(item for item in events if item["event"] == "plugin-invoked")[
+            "source_role"
+        ] = "sut"
+    else:
+        next(item for item in events if item["event"] == "fault-injected")["value"] = (
+            "other"
+        )
+    assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
+
+
+def test_runner_manifest_rejects_tampered_record_and_manual_jsonl(tmp_path):
+    formal_complete_records(tmp_path)
+    root = tmp_path / "formal"
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    manifest = write_formal_manifest(root, records)
+    target = root / records[0]["artifact_root"] / "record.json"
+    target.write_text(
+        target.read_text().replace('"status":"complete"', '"status":"failed"')
+    )
+    module = _reproduce_module()
+    with pytest.raises(ValueError, match="digest"):
+        module.generate(tmp_path / "published", manifest)
+    assert not (tmp_path / "published").exists()
+    manual = tmp_path / "manual.jsonl"
+    manual.write_text("{}\n")
+    with pytest.raises(ValueError, match="manifest|schema"):
+        module.generate(tmp_path / "manual-output", manual)
+    assert not (tmp_path / "manual-output").exists()
+
+
+def test_cli_accepts_valid_completed_and_failed_manifest_without_partial_output(
+    tmp_path,
+):
+    formal_complete_records(tmp_path)
+    root = tmp_path / "formal"
+    first = json.loads(next(root.glob("starts/*/record.json")).read_text())
+    failed = run_formal_start(
+        root,
+        scenarios()[1],
+        json.loads((ROOT / "protocol.json").read_text()),
+        ECPAAdapter(),
+        4,
+        3,
+        executable=sys.executable,
+        arguments=["-c", "raise SystemExit(7)"],
+        observer_executable=sys.executable,
+        observer_arguments=[
+            str(Path("tests/fixtures/formal_observer_service.py").resolve())
+        ],
+        identity=first["identity"],
+        timeout_s=1,
+    )
+    assert failed["status"] == "failed"
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    manifest = write_formal_manifest(root, records)
+    output = tmp_path / "published"
+    _reproduce_module().generate(output, manifest)
+    assert (output / "paper-results.jsonl").is_file()
+    assert (output / "formal-aggregate.json").is_file()
+
+
+def _reproduce_module():
+    spec = importlib.util.spec_from_file_location(
+        "false_effective_reproduce_extra", ROOT / "reproduce.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

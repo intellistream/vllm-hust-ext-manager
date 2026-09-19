@@ -21,11 +21,26 @@ LATIN_SQUARE = (
 RULE_VERSION = "ecpa-false-effective-oracle/v1"
 SEMANTIC_ENV = (
     "VLLM_USE_V1",
+    "VLLM_ATTENTION_BACKEND",
+    "VLLM_WORKER_MULTIPROC_METHOD",
     "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
     "ASCEND_RT_VISIBLE_DEVICES",
+    "NCCL_DEBUG",
+    "NCCL_SOCKET_IFNAME",
+    "HCCL_CONNECT_TIMEOUT",
     "LD_PRELOAD",
+    "PYTHONHASHSEED",
 )
-ALLOW_ENV = {"LANG", "LC_ALL", "PATH", "PYTHONPATH", *SEMANTIC_ENV}
+ALLOW_ENV = {
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "PYTHONPATH",
+    "ECPA_EVALUATION_ARM",
+    "ECPA_ACTIVATION_CONTRACT",
+    *SEMANTIC_ENV,
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -160,6 +175,8 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     forbidden = {"truth", "false_effective", "conflict_truth"}
     if any(forbidden.intersection(item) for item in observations):
         raise ValueError("SUT observations contain oracle-owned truth fields")
+    names = [item.get("event") for item in observations]
+    duplicate = sorted({name for name in names if names.count(name) > 1})
     events = {item["event"]: item for item in observations}
     required = [
         *scenario["expected_observable"],
@@ -171,7 +188,43 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         "plugin-invoked",
         "service-shutdown",
     ]
-    missing = [name for name in required if name not in events]
+    reasons = [f"missing observable: {name}" for name in required if name not in events]
+    reasons.extend(f"duplicate observable: {name}" for name in duplicate)
+    if record.get("evidence_class") == "formal-real":
+        if record.get("command", {}).get("premature_exit"):
+            reasons.append("SUT exited before runner shutdown phase")
+        lifecycle = [
+            "service-ready",
+            "workload-complete",
+            "fault-injected",
+            "observer-captured",
+            "service-shutdown",
+        ]
+        for name in required:
+            event = events.get(name)
+            if event and event.get("source_role") != "trusted-observer":
+                reasons.append(f"untrusted observable source: {name}")
+            if event and event.get("clock") != "monotonic":
+                reasons.append(f"invalid clock: {name}")
+        times = [events.get(name, {}).get("monotonic_ns") for name in lifecycle]
+        if all(isinstance(value, int) for value in times):
+            if times != sorted(times) or len(set(times)) != len(times):
+                reasons.append("lifecycle timestamps are not strictly ordered")
+            bounds = record.get("command", {}).get("phase_bounds", {})
+            for name, timestamp in zip(lifecycle, times, strict=True):
+                phase = bounds.get(name)
+                if not phase or not phase[0] <= timestamp <= phase[1]:
+                    reasons.append(f"observable outside runner phase: {name}")
+        else:
+            reasons.append("lifecycle monotonic timestamp missing")
+        fault = events.get("fault-injected", {}).get("value")
+        if fault != scenario["id"]:
+            reasons.append("fault observable does not match frozen scenario")
+        boolean_lifecycle = [name for name in lifecycle if name != "fault-injected"]
+        if any(
+            events.get(name, {}).get("value") is not True for name in boolean_lifecycle
+        ):
+            reasons.append("lifecycle value must be true")
     truth = scenario["truth"]
     claimed = bool(events.get("effective-claim", {}).get("value", False))
     invoked = bool(events.get("plugin-invoked", {}).get("value", False))
@@ -226,8 +279,8 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         "schema": RULE_VERSION,
         "input_digest": digest_bytes(canonical(inputs)),
         "record_digest": digest_bytes(canonical(record_binding)),
-        "verdict": "INCOMPLETE" if missing else "PASS",
-        "reasons": [f"missing observable: {name}" for name in missing],
+        "verdict": "INCOMPLETE" if reasons else "PASS",
+        "reasons": reasons,
         "outcome": outcome,
     }
 
@@ -318,6 +371,37 @@ def validate_record(
         ):
             if record[field] != intake[field]:
                 raise ValueError(f"record relabelled outside runner intake: {field}")
+        if record["evidence_class"] == "formal-real":
+            sut = command.get("sut_process", {})
+            observer = command.get("observer_process", {})
+            if (
+                not sut.get("pid")
+                or not observer.get("pid")
+                or sut["pid"] == observer["pid"]
+            ):
+                raise ValueError("formal SUT and observer must be distinct processes")
+            if sut.get("argv") == observer.get("argv"):
+                raise ValueError("formal SUT and observer argv must differ")
+            semantic = {
+                name: record["identity"]["semantic_environment"].get(name)
+                for name in SEMANTIC_ENV
+            }
+            if semantic != intake.get("semantic_environment"):
+                raise ValueError("semantic environment differs from runner intake")
+            manifest = json.loads(
+                safe_path(artifact_root, artifacts["environment"]).read_text()
+            )
+            expected_contract = {
+                "vanilla-vllm-entry-points": "entry-points-unmanaged",
+                "manual-integration": "explicit-manual-hooks",
+                "ecpa": "manager-controlled-activation",
+            }[record["arm"]]
+            if (
+                manifest.get("ECPA_EVALUATION_ARM") != record["arm"]
+                or manifest.get("ECPA_ACTIVATION_CONTRACT") != expected_contract
+                or intake.get("activation_contract") != expected_contract
+            ):
+                raise ValueError("adapter contract mismatch")
         if scenario is None or protocol is None:
             raise ValueError(
                 "executed record validation requires scenario and protocol"
@@ -407,7 +491,12 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
             if any(sum(row["arm"] == arm for row in rows) < 3 for arm in ARMS):
                 raise ValueError(f"cell {cell} has fewer than 3 starts per arm")
             identities = [
-                {k: v for k, v in row["identity"].items() if k != "arm"} for row in rows
+                {
+                    k: v
+                    for k, v in row["identity"].items()
+                    if k not in {"arm", "evaluation_arm", "activation_contract"}
+                }
+                for row in rows
             ]
             if any(value != identities[0] for value in identities[1:]):
                 raise ValueError(f"cell {cell} matched-arm metadata mismatch")
@@ -480,6 +569,27 @@ def aggregate(
             for outcome in outcomes
             if outcome["conflict_truth"] != "not-applicable"
         ]
+        expected_decision = {
+            "conflict": "reject",
+            "compatible": "accept",
+            "conditional": "conditional",
+        }
+        tp = sum(
+            o["conflict_truth"] == "conflict" and o["conflict_decision"] == "reject"
+            for o in conflicts
+        )
+        fp = sum(
+            o["conflict_truth"] != "conflict" and o["conflict_decision"] == "reject"
+            for o in conflicts
+        )
+        fn = sum(
+            o["conflict_truth"] == "conflict" and o["conflict_decision"] != "reject"
+            for o in conflicts
+        )
+        tn = sum(
+            o["conflict_truth"] != "conflict" and o["conflict_decision"] != "reject"
+            for o in conflicts
+        )
         cells.append(
             {
                 "scenario": scenario,
@@ -500,12 +610,18 @@ def aggregate(
                     "coverage_mean": sum(coverage) / len(coverage)
                     if coverage
                     else None,
-                    "conflict_correct": sum(
-                        (outcome["conflict_truth"] == "conflict")
-                        == (outcome["conflict_decision"] == "reject")
+                    "conflict_exact_correct": sum(
+                        outcome["conflict_decision"]
+                        == expected_decision.get(outcome["conflict_truth"])
                         for outcome in conflicts
                     ),
                     "conflict_denominator": len(conflicts),
+                    "conflict_confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+                    "conflict_precision": tp / (tp + fp) if tp + fp >= 3 else None,
+                    "conflict_recall": tp / (tp + fn) if tp + fn >= 3 else None,
+                    "conflict_null_reason": None
+                    if min(tp + fp, tp + fn) >= 3
+                    else "fewer than 3 applicable decisions",
                     "rollback_successes": sum(value is True for value in rollback),
                     "rollback_denominator": len(rollback),
                 },

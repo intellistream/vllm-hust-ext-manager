@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -14,21 +15,26 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from harness import ARMS, aggregate, canonical, project_paper_result  # noqa: E402
-from runner import planned_records, run_reference_start  # noqa: E402
+from runner import (  # noqa: E402
+    load_formal_manifest,
+    planned_records,
+    run_reference_start,
+)
 
 
-def generate(output: Path, records_path: Path | None = None) -> dict:
+def _generate(output: Path, records_path: Path | None = None) -> dict:
     scenarios = json.loads((HERE / "scenarios.json").read_text())["scenarios"]
     protocol = json.loads((HERE / "protocol.json").read_text())
     output.mkdir(parents=True, exist_ok=True)
-    formal = (
-        [json.loads(line) for line in records_path.read_text().splitlines() if line]
-        if records_path is not None
-        else planned_records(scenarios)
-    )
-    validation_root = records_path.parent if records_path is not None else output
+    if records_path is not None:
+        formal, validation_root = load_formal_manifest(records_path)
+    else:
+        formal, validation_root = planned_records(scenarios), output
     formal_path = output / "formal-planned.jsonl"
     formal_path.write_bytes(b"".join(canonical(row) + b"\n" for row in formal))
+    # Reload the serialized boundary so the CLI exercises raw -> validate -> aggregate.
+    formal = [json.loads(line) for line in formal_path.read_text().splitlines() if line]
+    formal_aggregate = aggregate(formal, validation_root, formal=True)
     paper_schema = json.loads(
         (HERE.parent.parent / "paper/artifacts/results.schema.json").read_text()
     )
@@ -36,9 +42,6 @@ def generate(output: Path, records_path: Path | None = None) -> dict:
     (output / "paper-results.jsonl").write_bytes(
         b"".join(canonical(row) + b"\n" for row in paper_results)
     )
-    # Reload the serialized boundary so the CLI exercises raw -> validate -> aggregate.
-    formal = [json.loads(line) for line in formal_path.read_text().splitlines() if line]
-    formal_aggregate = aggregate(formal, validation_root, formal=True)
     (output / "formal-aggregate.json").write_bytes(canonical(formal_aggregate) + b"\n")
     formal_summary = {
         "schema": formal_aggregate["schema"],
@@ -46,7 +49,7 @@ def generate(output: Path, records_path: Path | None = None) -> dict:
         "planned_records": formal_aggregate["failure_missing_modes"]["planned"],
         "metrics": formal_aggregate["metrics"],
         "paired_contrasts": formal_aggregate["paired_contrasts"],
-        "reason": formal_aggregate["reason"],
+        "reason": formal_aggregate.get("reason"),
     }
     (output / "formal-aggregate-summary.json").write_bytes(
         canonical(formal_summary) + b"\n"
@@ -125,13 +128,30 @@ def generate(output: Path, records_path: Path | None = None) -> dict:
     return summary
 
 
+def generate(output: Path, records_path: Path | None = None) -> dict:
+    """Validate completely in staging, then atomically publish a new output tree."""
+    if output.exists():
+        raise FileExistsError(f"refusing to replace existing output: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
+    try:
+        result = _generate(staging, records_path)
+        os.replace(staging, output)
+        return result
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(staging)
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--records",
         type=Path,
-        help="formal JSONL records; artifact paths resolve from its directory",
+        help="runner-owned formal-record-index.json manifest",
     )
     args = parser.parse_args()
     if args.output is None:
