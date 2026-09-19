@@ -117,7 +117,7 @@ def _generate(output: Path, records_path: Path | None = None) -> dict:
         "oracle_failures": sum(
             row["oracle"]["verdict"] != "PASS" for row in reference_records
         ),
-        "formal_completed_cells": 0,
+        "formal_completed_cells": formal_aggregate["completed_cells"],
         "timing_summary": None,
         "timing_reason": (
             "raw real timings retained per start; nondeterministic durations "

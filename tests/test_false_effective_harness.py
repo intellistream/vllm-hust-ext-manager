@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from harness import (  # noqa: E402
     aggregate,
     canonical,
+    conflict_metrics,
     digest_file,
     oracle,
     project_paper_result,
@@ -250,6 +251,19 @@ def test_json_rejects_nan_and_infinity():
         canonical({"bad": float("nan")})
 
 
+def test_conflict_arm_summary_counts_fp_and_fn():
+    rows = [
+        {"conflict_truth": "conflict", "conflict_decision": "reject"},
+        {"conflict_truth": "conflict", "conflict_decision": "accept"},
+        {"conflict_truth": "compatible", "conflict_decision": "reject"},
+        {"conflict_truth": "conditional", "conflict_decision": "conditional"},
+    ]
+    result = conflict_metrics(rows)
+    assert result["confusion"] == {"tp": 1, "fp": 1, "fn": 1, "tn": 1}
+    assert result["precision"] is None
+    assert result["recall"] is None
+
+
 def test_raw_record_schema_accepts_planned_and_forbids_sut_truth():
     schema = json.loads((ROOT / "raw-record.schema.json").read_text())
     Draft7Validator(schema).validate(planned()[0])
@@ -361,14 +375,15 @@ def test_formal_sut_cannot_write_trusted_result(tmp_path):
     record = formal_complete_records(tmp_path)[0]
     run_dir = tmp_path / record["artifact_root"]
     sut_environment = json.loads((run_dir / "sut-environment.json").read_text())
-    assert "ECPA_OBSERVER_RESULT_FILE" not in sut_environment
+    assert not any(name.startswith("ECPA_OBSERVER_") for name in sut_environment)
+    assert not any(name.startswith("ECPA_RUNNER_") for name in sut_environment)
     assert (
         record["command"]["sut_process"]["pid"]
         != record["command"]["observer_process"]["pid"]
     )
     assert (
-        record["observations"]
-        != json.loads((run_dir / "forged-observer-result.json").read_text())["events"]
+        record["observer_binding"]["pid"]
+        == record["command"]["observer_process"]["pid"]
     )
 
 
@@ -397,6 +412,8 @@ def test_arm_launch_contracts_are_distinct_and_auditable():
     adapters = [VanillaVLLMAdapter(), ManualIntegrationAdapter(), ECPAAdapter()]
     launches = [adapter.launch("service", [], {}) for adapter in adapters]
     assert len({env["ECPA_ACTIVATION_CONTRACT"] for _, env in launches}) == 3
+    assert len({tuple(argv) for argv, _ in launches}) == 3
+    assert any("--enable-ecpa-manager" in argv for argv, _ in launches)
     assert {env["ECPA_EVALUATION_ARM"] for _, env in launches} == {
         adapter.arm for adapter in adapters
     }
@@ -425,7 +442,10 @@ def test_oracle_mutation_is_rejected(tmp_path):
         )
 
 
-@pytest.mark.parametrize("code", ["print('plain log')", "raise SystemExit(7)"])
+@pytest.mark.parametrize(
+    "code",
+    ["print('plain log')", "raise SystemExit(7)", "import time; time.sleep(10)"],
+)
 def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, code):
     identity = {
         "model": "test",
@@ -465,7 +485,7 @@ def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, co
 
 
 @pytest.mark.parametrize(
-    "mutation", ["duplicate", "reverse", "false", "source", "fault"]
+    "mutation", ["duplicate", "reverse", "false", "source", "fault", "activation"]
 )
 def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
     record = copy.deepcopy(formal_complete_records(tmp_path)[0])
@@ -487,9 +507,13 @@ def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
         next(item for item in events if item["event"] == "plugin-invoked")[
             "source_role"
         ] = "sut"
-    else:
+    elif mutation == "fault":
         next(item for item in events if item["event"] == "fault-injected")["value"] = (
             "other"
+        )
+    else:
+        next(item for item in events if item["event"] == "activation-path")["value"] = (
+            "wrong-path"
         )
     assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
 
@@ -515,6 +539,30 @@ def test_runner_manifest_rejects_tampered_record_and_manual_jsonl(tmp_path):
     with pytest.raises(ValueError, match="manifest|schema"):
         module.generate(tmp_path / "manual-output", manual)
     assert not (tmp_path / "manual-output").exists()
+
+
+def test_manifest_rejects_noncanonical_jsonl_and_wrong_start_binding(tmp_path):
+    formal_complete_records(tmp_path)
+    root = tmp_path / "formal"
+    manifest_path = root / "formal-record-index.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["records"][0]["start_id"] = "forged"
+    manifest_path.write_bytes(canonical(manifest) + b"\n")
+    with pytest.raises(ValueError, match="start_id"):
+        _reproduce_module().generate(tmp_path / "bad-index", manifest_path)
+
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    manifest_path = write_formal_manifest(root, records)
+    jsonl = root / "formal-records.jsonl"
+    jsonl.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    manifest = json.loads(manifest_path.read_text())
+    manifest["records_jsonl_digest"] = digest_file(jsonl)
+    manifest_path.write_bytes(canonical(manifest) + b"\n")
+    with pytest.raises(ValueError, match="canonical"):
+        _reproduce_module().generate(tmp_path / "noncanonical", manifest_path)
 
 
 def test_cli_accepts_valid_completed_and_failed_manifest_without_partial_output(

@@ -82,6 +82,7 @@ def canonical_record_core(record: dict[str, Any]) -> dict[str, Any]:
             "identity",
             "command",
             "observations",
+            "observer_binding",
             "missing_reason",
             "intake_digest",
             "oracle",
@@ -191,6 +192,8 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     reasons = [f"missing observable: {name}" for name in required if name not in events]
     reasons.extend(f"duplicate observable: {name}" for name in duplicate)
     if record.get("evidence_class") == "formal-real":
+        if not record.get("command", {}).get("phase_complete"):
+            reasons.append("runner did not confirm every lifecycle phase")
         if record.get("command", {}).get("premature_exit"):
             reasons.append("SUT exited before runner shutdown phase")
         lifecycle = [
@@ -225,6 +228,17 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             events.get(name, {}).get("value") is not True for name in boolean_lifecycle
         ):
             reasons.append("lifecycle value must be true")
+        activation = events.get("activation-path")
+        expected_contract = record.get("identity", {}).get("activation_contract")
+        if not activation:
+            reasons.append("missing observable: activation-path")
+        elif activation.get("value") != expected_contract:
+            reasons.append("activation path does not match adapter contract")
+        elif (
+            activation.get("source_role") != "trusted-observer"
+            or activation.get("clock") != "monotonic"
+        ):
+            reasons.append("activation path lacks trusted observer provenance")
     truth = scenario["truth"]
     claimed = bool(events.get("effective-claim", {}).get("value", False))
     invoked = bool(events.get("plugin-invoked", {}).get("value", False))
@@ -382,6 +396,12 @@ def validate_record(
                 raise ValueError("formal SUT and observer must be distinct processes")
             if sut.get("argv") == observer.get("argv"):
                 raise ValueError("formal SUT and observer argv must differ")
+            if record.get("observer_binding") != {
+                "pid": observer.get("pid"),
+                "start_identity": observer.get("start_identity"),
+                "argv": observer.get("argv"),
+            }:
+                raise ValueError("observer result binding mismatch")
             semantic = {
                 name: record["identity"]["semantic_environment"].get(name)
                 for name in SEMANTIC_ENV
@@ -411,9 +431,14 @@ def validate_record(
         if digest_bytes(canonical(protocol)) != intake["protocol_digest"]:
             raise ValueError("protocol digest mismatch")
         observation_path = safe_path(artifact_root, artifacts["observations"])
-        raw_observations = json.loads(observation_path.read_text())["events"]
+        observation_payload = json.loads(observation_path.read_text())
+        raw_observations = observation_payload["events"]
         if raw_observations != record["observations"]:
             raise ValueError("raw observations mismatch")
+        if observation_payload.get("observer_binding") != record.get(
+            "observer_binding"
+        ):
+            raise ValueError("raw observer binding mismatch")
         recomputed = oracle(
             scenario, {k: v for k, v in record.items() if k != "oracle"}
         )
@@ -522,6 +547,34 @@ def wilson(numerator: int, denominator: int) -> list[float] | None:
     center = (p + z * z / (2 * denominator)) / d
     half = z * math.sqrt(p * (1 - p) / denominator + z * z / (4 * denominator**2)) / d
     return [center - half, center + half]
+
+
+def conflict_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [row for row in outcomes if row["conflict_truth"] != "not-applicable"]
+    tp = sum(
+        row["conflict_truth"] == "conflict" and row["conflict_decision"] == "reject"
+        for row in rows
+    )
+    fp = sum(
+        row["conflict_truth"] != "conflict" and row["conflict_decision"] == "reject"
+        for row in rows
+    )
+    fn = sum(
+        row["conflict_truth"] == "conflict" and row["conflict_decision"] != "reject"
+        for row in rows
+    )
+    tn = sum(
+        row["conflict_truth"] != "conflict" and row["conflict_decision"] != "reject"
+        for row in rows
+    )
+    return {
+        "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+        "precision": tp / (tp + fp) if tp + fp >= 3 else None,
+        "recall": tp / (tp + fn) if tp + fn >= 3 else None,
+        "null_reason": None
+        if min(tp + fp, tp + fn) >= 3
+        else "fewer than 3 applicable decisions",
+    }
 
 
 def aggregate(
@@ -650,6 +703,7 @@ def aggregate(
             "metrics": None,
             "cells": cells,
             "paired_contrasts": None,
+            "conflict_by_arm": {arm: None for arm in ARMS},
             "failure_missing_modes": {
                 "planned": sum(row["status"] == "planned" for row in records),
                 "failed": sum(row["status"] == "failed" for row in records),
@@ -684,6 +738,12 @@ def aggregate(
                         - values["manual-integration"],
                     }
                 )
+    conflict_by_arm = {
+        arm: conflict_metrics(
+            [row["oracle"]["outcome"] for row in complete if row["arm"] == arm]
+        )
+        for arm in ARMS
+    }
     return {
         "schema": "ecpa-false-effective-aggregate/v1",
         "formal": formal,
@@ -691,6 +751,7 @@ def aggregate(
         "cells": cells,
         "strata": strata,
         "paired_contrasts": paired,
+        "conflict_by_arm": conflict_by_arm,
         "failure_missing_modes": {
             "planned": sum(row["status"] == "planned" for row in records),
             "failed": sum(row["status"] == "failed" for row in records),

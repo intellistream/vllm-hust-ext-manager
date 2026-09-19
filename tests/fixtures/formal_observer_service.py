@@ -1,55 +1,46 @@
-"""Test-only trusted observer process."""
+"""Trusted test observer translating independently received process signals."""
 
 import json
 import os
-from pathlib import Path
+import sys
 
-bounds = json.loads(os.environ["ECPA_RUNNER_PHASE_BOUNDS"])
-scenario = os.environ["ECPA_FROZEN_SCENARIO"]
-expected = {"namespace-mismatch": ["service_started", "plugin_not_invoked"]}.get(
-    scenario, []
-)
 events = []
-for name in [
-    "service-ready",
-    "workload-complete",
-    "fault-injected",
-    "observer-captured",
-    "service-shutdown",
-]:
-    events.append(
-        {
-            "event": name,
-            "value": scenario if name == "fault-injected" else True,
-            "source_role": "trusted-observer",
-            "clock": "monotonic",
-            "monotonic_ns": bounds[name][0],
-        }
-    )
-events.extend(
-    {
-        "event": name,
-        "value": True,
+expected = os.environ["ECPA_EXPECTED_CONTRACT"]
+for raw in sys.stdin:
+    message = json.loads(raw)
+    phase = message["phase"]
+    signal = message["signal"]
+    common = {
         "source_role": "trusted-observer",
         "clock": "monotonic",
-        "monotonic_ns": bounds["observer-captured"][0],
+        "monotonic_ns": message["monotonic_ns"],
     }
-    for name in expected
+    valid = {
+        "service-ready": signal == "READY",
+        "workload-complete": signal == "WORKLOAD_OK",
+        "fault-injected": signal == f"FAULT_OK {message['scenario']}",
+        "observer-captured": signal.startswith("OBSERVE "),
+        "service-shutdown": signal == "SHUTDOWN_OK",
+    }[phase]
+    if valid:
+        value = message["scenario"] if phase == "fault-injected" else True
+        events.append({"event": phase, "value": value, **common})
+    if phase == "observer-captured" and valid:
+        observed = json.loads(signal.removeprefix("OBSERVE "))
+        values = (
+            ("activation-path", observed["activation_path"]),
+            ("effective-claim", observed["effective_claim"]),
+            ("plugin-invoked", observed["plugin_invoked"]),
+            ("coverage", 1.0),
+            ("conflict-decision", "not-applicable"),
+            ("rollback-class", None),
+            ("service_started", True),
+            ("plugin_not_invoked", True),
+        )
+        events.extend(
+            {"event": name, "value": value, **common} for name, value in values
+        )
+os.write(int(os.environ["ECPA_OBSERVER_FD"]), json.dumps({"events": events}).encode())
+assert any(
+    item["event"] == "activation-path" and item["value"] == expected for item in events
 )
-for name, value in (
-    ("effective-claim", False),
-    ("plugin-invoked", False),
-    ("coverage", 0.0),
-    ("conflict-decision", "not-applicable"),
-    ("rollback-class", None),
-):
-    events.append(
-        {
-            "event": name,
-            "value": value,
-            "source_role": "trusted-observer",
-            "clock": "monotonic",
-            "monotonic_ns": bounds["observer-captured"][0],
-        }
-    )
-Path(os.environ["ECPA_OBSERVER_RESULT_FILE"]).write_text(json.dumps({"events": events}))

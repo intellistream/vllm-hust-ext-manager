@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import select
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,27 +34,40 @@ HERE = Path(__file__).resolve().parent
 class FormalArmAdapter:
     arm: str
     activation_contract: str
+    activation_arguments: tuple[str, ...]
 
     def launch(self, executable: str, arguments: list[str], env: dict[str, str]):
         launched = dict(env)
         launched["ECPA_EVALUATION_ARM"] = self.arm
         launched["ECPA_ACTIVATION_CONTRACT"] = self.activation_contract
-        return [executable, *arguments], launched
+        return [executable, *arguments, *self.activation_arguments], launched
 
 
 class VanillaVLLMAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("vanilla-vllm-entry-points", "entry-points-unmanaged")
+        super().__init__(
+            "vanilla-vllm-entry-points",
+            "entry-points-unmanaged",
+            ("--disable-ecpa-manager", "--enable-entrypoints"),
+        )
 
 
 class ManualIntegrationAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("manual-integration", "explicit-manual-hooks")
+        super().__init__(
+            "manual-integration",
+            "explicit-manual-hooks",
+            ("--disable-ecpa-manager", "--manual-hooks"),
+        )
 
 
 class ECPAAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("ecpa", "manager-controlled-activation")
+        super().__init__(
+            "ecpa",
+            "manager-controlled-activation",
+            ("--enable-ecpa-manager", "--disable-entrypoints"),
+        )
 
 
 def _git_measurement() -> tuple[str, bool]:
@@ -124,6 +139,7 @@ def _run_start(
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
     result_path = run_dir / "observer-result.json"
+    observer_binding = None
     if observer_argv is None:
         command = run_command(run_dir, argv, env=dict(env), timeout_s=timeout_s)
         command_digest = command.pop("command_sha256")
@@ -131,46 +147,100 @@ def _run_start(
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = __import__("harness").sanitized_env(env)
         (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
-        sut_stdout = (run_dir / "stdout.bin").open("wb")
-        sut_stderr = (run_dir / "stderr.bin").open("wb")
+        sut_env = {
+            key: value
+            for key, value in env.items()
+            if not key.startswith("ECPA_OBSERVER_")
+            and not key.startswith("ECPA_RUNNER_")
+            and key != "ECPA_FROZEN_SCENARIO"
+        }
         sut_start = time.monotonic_ns()
         sut = subprocess.Popen(
-            argv, cwd=run_dir, env=env, stdout=sut_stdout, stderr=sut_stderr
+            argv,
+            cwd=run_dir,
+            env=sut_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            close_fds=True,
         )
-        base = time.monotonic_ns()
-        lifecycle = [
-            "service-ready",
-            "workload-complete",
-            "fault-injected",
-            "observer-captured",
-            "service-shutdown",
-        ]
-        phase_bounds = {
-            name: [base + index, base + index]
-            for index, name in enumerate(lifecycle, 1)
-        }
+        read_fd, write_fd = os.pipe()
         observer_env = dict(env)
-        observer_env["ECPA_OBSERVER_RESULT_FILE"] = str(result_path.resolve())
-        observer_env["ECPA_RUNNER_PHASE_BOUNDS"] = json.dumps(phase_bounds)
-        observer_env["ECPA_FROZEN_SCENARIO"] = scenario["id"]
+        observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
+        observer_env["ECPA_EXPECTED_ARM"] = arm
+        observer_env["ECPA_EXPECTED_CONTRACT"] = env["ECPA_ACTIVATION_CONTRACT"]
         observer_start = time.monotonic_ns()
         observer = subprocess.Popen(
             observer_argv,
             cwd=run_dir,
             env=observer_env,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            text=True,
+            close_fds=True,
+            pass_fds=(write_fd,),
         )
+        os.close(write_fd)
+        phase_bounds: dict[str, list[int]] = {}
+        sut_lines: list[str] = []
+
+        def drive(phase: str, instruction: str | None) -> bool:
+            start = time.monotonic_ns()
+            if instruction is not None and sut.stdin is not None:
+                try:
+                    sut.stdin.write(instruction + "\n")
+                    sut.stdin.flush()
+                except BrokenPipeError:
+                    pass
+            ready, _, _ = select.select([sut.stdout], [], [], timeout_s)
+            line = sut.stdout.readline().strip() if ready and sut.stdout else ""
+            end = time.monotonic_ns()
+            phase_bounds[phase] = [start, end]
+            if line:
+                sut_lines.append(line)
+            if observer.stdin is not None:
+                observer.stdin.write(
+                    json.dumps(
+                        {
+                            "phase": phase,
+                            "signal": line,
+                            "monotonic_ns": end,
+                            "scenario": scenario["id"],
+                        }
+                    )
+                    + "\n"
+                )
+                observer.stdin.flush()
+            return bool(line)
+
+        phase_ok = drive("service-ready", None)
+        phase_ok &= drive("workload-complete", "workload")
+        phase_ok &= drive("fault-injected", f"fault {scenario['id']}")
+        phase_ok &= drive("observer-captured", "observe")
+        phase_ok &= drive("service-shutdown", "shutdown")
+        if observer.stdin is not None:
+            observer.stdin.close()
         observer_timed_out = False
         try:
-            observed_stdout, observed_stderr = observer.communicate(timeout=timeout_s)
+            observer.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             observer_timed_out = True
             observer.kill()
-            observed_stdout, observed_stderr = observer.communicate()
+            observer.wait()
+        observed_stdout = observer.stdout.read() if observer.stdout else ""
+        observed_stderr = observer.stderr.read() if observer.stderr else ""
         observer_end = time.monotonic_ns()
-        premature_exit = sut.poll() is not None
-        if not premature_exit:
+        observer_binding = {
+            "pid": observer.pid,
+            "start_identity": f"pid:{observer.pid}@{observer_start}",
+            "argv": observer_argv,
+        }
+        premature_exit = (
+            sut.poll() is not None and phase_bounds.get("service-shutdown") is None
+        )
+        if sut.poll() is None:
             sut.terminate()
         try:
             sut_exit = sut.wait(timeout=timeout_s)
@@ -178,10 +248,18 @@ def _run_start(
             sut.kill()
             sut_exit = sut.wait()
         sut_end = time.monotonic_ns()
-        sut_stdout.close()
-        sut_stderr.close()
-        (run_dir / "observer-stdout.bin").write_bytes(observed_stdout)
-        (run_dir / "observer-stderr.bin").write_bytes(observed_stderr)
+        remaining_stdout, remaining_stderr = sut.communicate()
+        if remaining_stdout:
+            sut_lines.extend(remaining_stdout.splitlines())
+        (run_dir / "stdout.bin").write_text("\n".join(sut_lines) + "\n")
+        (run_dir / "stderr.bin").write_text(remaining_stderr or "")
+        (run_dir / "observer-stdout.bin").write_text(observed_stdout)
+        (run_dir / "observer-stderr.bin").write_text(observed_stderr)
+        result_bytes = b""
+        while chunk := os.read(read_fd, 65536):
+            result_bytes += chunk
+        os.close(read_fd)
+        result_path.write_bytes(result_bytes or canonical({"events": []}))
         command = {
             "argv": argv,
             "cwd": str(run_dir.resolve()),
@@ -191,11 +269,12 @@ def _run_start(
             "monotonic_start_ns": sut_start,
             "monotonic_end_ns": sut_end,
             "exit_code": 0
-            if not premature_exit and sut_exit == -15 and observer.returncode == 0
+            if phase_ok and sut_exit in (0, -15) and observer.returncode == 0
             else sut_exit,
             "signal": 15 if sut_exit == -15 else None,
             "timeout": observer_timed_out,
             "premature_exit": premature_exit,
+            "phase_complete": phase_ok,
             "stdout": "stdout.bin",
             "stdout_sha256": digest_file(run_dir / "stdout.bin"),
             "stderr": "stderr.bin",
@@ -240,7 +319,10 @@ def _run_start(
     protocol = json.loads((HERE / "protocol.json").read_text())
     schema = json.loads((HERE / "raw-record.schema.json").read_text())
     for name, value in (
-        ("observations.json", {"events": observations}),
+        (
+            "observations.json",
+            {"events": observations, "observer_binding": observer_binding},
+        ),
         ("scenario.json", scenario),
         ("protocol.json", protocol),
     ):
@@ -307,6 +389,7 @@ def _run_start(
         "command": command,
         "artifacts": artifacts,
         "observations": observations,
+        "observer_binding": observer_binding,
         "missing_reason": observation_error,
         "intake_digest": artifacts["digests"]["intake.json"],
         "artifact_root": f"starts/{start_id}",
@@ -487,8 +570,15 @@ def planned_records(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
     """Publish the runner-owned record index consumed by the paper pipeline."""
+
+    def atomic_bytes(path: Path, value: bytes) -> None:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            stream.write(value)
+            temporary = Path(stream.name)
+        os.replace(temporary, path)
+
     jsonl = root / "formal-records.jsonl"
-    jsonl.write_bytes(b"".join(canonical(row) + b"\n" for row in records))
+    atomic_bytes(jsonl, b"".join(canonical(row) + b"\n" for row in records))
     entries = []
     for row in records:
         record_path = safe_path(root, f"{row['artifact_root']}/record.json")
@@ -508,7 +598,7 @@ def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
         "records": entries,
     }
     path = root / "formal-record-index.json"
-    path.write_bytes(canonical(manifest) + b"\n")
+    atomic_bytes(path, canonical(manifest) + b"\n")
     return path
 
 
@@ -521,12 +611,20 @@ def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
     if digest_file(jsonl) != manifest["records_jsonl_digest"]:
         raise ValueError("formal JSONL digest mismatch")
     indexed = [json.loads(line) for line in jsonl.read_text().splitlines() if line]
+    if jsonl.read_bytes() != b"".join(canonical(row) + b"\n" for row in indexed):
+        raise ValueError("formal JSONL is not canonical")
     records = []
     for entry in manifest["records"]:
         record_path = safe_path(root, entry["record"])
         if digest_file(record_path) != entry["digest"]:
             raise ValueError("indexed record digest mismatch")
-        records.append(json.loads(record_path.read_text()))
+        record = json.loads(record_path.read_text())
+        if entry["start_id"] != record.get("start_id"):
+            raise ValueError("index start_id does not match record")
+        expected_path = f"{record['artifact_root']}/record.json"
+        if entry["record"] != expected_path:
+            raise ValueError("index path does not match record artifact root")
+        records.append(record)
     if records != indexed:
         raise ValueError("formal JSONL and indexed records differ")
     return records, root

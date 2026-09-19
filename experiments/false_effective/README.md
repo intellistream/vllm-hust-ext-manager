@@ -21,7 +21,16 @@ The reference helper executes 45 real subprocess lifecycles: five scenarios
 and three arms. Those records are explicitly
 `reference-synthetic` and the formal validator rejects them.
 
-Executed records are runner-owned: an immutable intake binds evidence class,
+## Threat model
+
+The experiment host, runner, and observer are trusted. The SUT may crash,
+hang, omit events, or return incorrect behavior, but code running as the same
+OS user is **not** treated as an active attacker trying to inspect `/proc`,
+rewrite artifacts, or bypass process isolation. The evidence is
+runner-consistent and tamper-evident under that boundary; it is not
+cryptographically unforgeable and does not claim malicious-code isolation.
+
+Executed records are runner-owned: a receipt binds evidence class,
 identity, scenario/protocol digests, arm, repetition, and order. A runner receipt
 binds a canonical record core, final status/cell, exact command and oracle,
 exit/timeout, sanitized environment, raw observations, raw stdout/stderr,
@@ -34,9 +43,11 @@ bound artifact fails validation.
 The external formal runner exposes dedicated vanilla/manual/ECPA adapter
 interfaces with distinct activation contracts. The runner starts the SUT and
 trusted observer as different processes and records both argv/PID/start identities.
-Only the observer receives `ECPA_OBSERVER_RESULT_FILE`; SUT output cannot become
-formal evidence. The runner controls and seals ready/workload/fault/observe/shutdown
-phase bounds. It can generate
+Only the observer inherits a dedicated anonymous pipe write FD. The SUT uses
+`close_fds`, receives no result path/FD or observer-control environment, and its
+stdout cannot directly become formal evidence. The runner drives and confirms
+ready/workload/fault/observe/shutdown against SUT process signals and records
+actual monotonic bounds. It can generate
 raw formal records from supplied commands, but the
 checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown

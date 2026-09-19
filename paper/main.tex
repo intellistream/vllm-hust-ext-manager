@@ -170,6 +170,11 @@ trusted.  We do \emph{not} sandbox malicious Python, defend a compromised host,
 or claim that signed metadata makes arbitrary plugin code safe.  This boundary
 follows the upstream warning that plugins execute with application authority
 \cite{vllm-security}.
+For the evaluation harness specifically, the experiment host, runner, and
+observer are trusted; the SUT may fail but is not modeled as same-user code
+actively inspecting file descriptors or rewriting artifacts.  Harness records
+are runner-consistent and tamper-evident within this boundary, not
+cryptographically unforgeable evidence against a malicious SUT.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger
@@ -386,7 +391,7 @@ three independent service starts per arm under a three-by-three Latin-square
 order.  A separate oracle derives outcomes from preregistered truth predicates
 and raw runtime observations; implementation decisions are not accepted as
 ground truth.  The current checked matrix has zero completed formal-real cells,
-so every paper metric remains null.  A 27-start helper-process run tests the
+so every paper metric remains null.  A 45-start helper-process run tests the
 harness lifecycle and failure classification, but is explicitly
 reference-synthetic and excluded from paper aggregates.  Formal ingestion is
 runner-owned and content-addresses the command, semantic environment, raw
