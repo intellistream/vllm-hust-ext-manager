@@ -15,13 +15,21 @@ from harness import (  # noqa: E402
     canonical,
     digest_file,
     oracle,
+    project_paper_result,
     run_command,
     safe_path,
     sanitized_env,
     validate_batch,
     validate_record,
 )
-from runner import planned_records  # noqa: E402
+from runner import (  # noqa: E402
+    ECPAAdapter,
+    ManualIntegrationAdapter,
+    VanillaVLLMAdapter,
+    planned_records,
+    run_formal_start,
+    run_reference_start,
+)
 
 
 def scenarios():
@@ -72,9 +80,15 @@ def test_duplicate_start_id_is_rejected(tmp_path):
 
 
 def formal_complete_records(tmp_path):
-    for name in ("raw", "environment", "command", "oracle"):
-        (tmp_path / name).write_text(name)
     records = []
+    protocol = json.loads((ROOT / "protocol.json").read_text())
+    scenario = scenarios()[0]
+    helper = str((ROOT / "helper_service.py").resolve())
+    adapters = {
+        "vanilla-vllm-entry-points": VanillaVLLMAdapter(),
+        "manual-integration": ManualIntegrationAdapter(),
+        "ecpa": ECPAAdapter(),
+    }
     schedule = (
         ("vanilla-vllm-entry-points", "manual-integration", "ecpa"),
         ("manual-integration", "ecpa", "vanilla-vllm-entry-points"),
@@ -82,44 +96,42 @@ def formal_complete_records(tmp_path):
     )
     for repetition, order in enumerate(schedule, 1):
         for arm_order, arm in enumerate(order, 1):
-            record = planned()[0]
-            record.update(
-                status="complete",
-                arm=arm,
-                start_id=f"r{repetition}-{arm}",
-                repetition=repetition,
-                arm_order=arm_order,
-                identity={
-                    "arm": arm,
-                    "model": "same",
-                    "workload": "same",
-                    "hardware": "same",
-                    "runtime_commit": "same",
-                    "plugin_commits": [],
-                    "topology": "same",
-                    "fault": "same",
-                    "warm_state": "cold",
-                    "git_dirty": False,
-                    "container_digest": None,
-                    "cpu": None,
-                    "gpu": None,
-                    "npu": None,
-                    "driver": None,
-                    "runtime": "same",
-                },
-                command={},
-                missing_reason=None,
-            )
-            record["artifacts"] = {
-                "raw_log": "raw",
-                "environment": "environment",
-                "command": "command",
-                "oracle": "oracle",
-                "digests": {
-                    name: digest_file(tmp_path / name)
-                    for name in ("raw", "environment", "command", "oracle")
-                },
+            identity = {
+                "arm": arm,
+                "model": "same",
+                "dataset": "same",
+                "workload": "same",
+                "hardware": "same",
+                "software": {"runtime": "same"},
+                "observer": "same",
+                "runtime_commit": "same",
+                "plugin_commits": [],
+                "topology": "same",
+                "fault_plan": "same",
+                "fault": "same",
+                "warm_state": "cold",
+                "git_dirty": False,
+                "container_digest": "sha256:test",
+                "cpu": "test",
+                "gpu": "not-applicable",
+                "npu": "not-applicable",
+                "driver": "test",
+                "runtime": "same",
+                "semantic_environment": "same",
             }
+            record = run_formal_start(
+                tmp_path / "formal",
+                scenario,
+                protocol,
+                adapters[arm],
+                repetition,
+                arm_order,
+                executable=sys.executable,
+                arguments=[helper, "--arm", arm, "--scenario", scenario["id"]],
+                identity=identity,
+                timeout_s=5,
+            )
+            record["artifact_root"] = f"formal/{record['artifact_root']}"
             records.append(record)
     return records
 
@@ -127,14 +139,14 @@ def formal_complete_records(tmp_path):
 def test_matched_arm_metadata_mismatch_is_rejected(tmp_path):
     records = formal_complete_records(tmp_path)
     records[-1]["identity"]["model"] = "different"
-    with pytest.raises(ValueError, match="metadata mismatch"):
+    with pytest.raises(ValueError, match="relabelled|metadata mismatch"):
         validate_batch(records, tmp_path, formal=True)
 
 
 def test_unbalanced_order_is_rejected(tmp_path):
     records = formal_complete_records(tmp_path)
     records[-1]["arm_order"] = records[-2]["arm_order"]
-    with pytest.raises(ValueError, match="unbalanced"):
+    with pytest.raises(ValueError, match="relabelled|unbalanced|Latin square"):
         validate_batch(records, tmp_path, formal=True)
 
 
@@ -217,11 +229,11 @@ def test_reproduce_checked_deterministic_outputs(tmp_path):
     spec.loader.exec_module(module)
     output = tmp_path / "output"
     summary = module.generate(output)
-    assert summary["starts"] == 27
+    assert summary["starts"] == 45
     assert summary["formal_completed_cells"] == 0
     checked = ROOT / "artifacts"
     for name in (
-        "formal-aggregate.json",
+        "formal-aggregate-summary.json",
         "paper-table.csv",
         "reference-summary.json",
     ):
@@ -239,3 +251,45 @@ def test_raw_record_schema_accepts_planned_and_forbids_sut_truth():
     invalid = planned()[0]
     invalid["observations"] = [{"event": "bad", "truth": True}]
     assert list(Draft7Validator(schema).iter_errors(invalid))
+
+
+def test_reference_record_relabelled_formal_is_rejected(tmp_path):
+    record = run_reference_start(tmp_path, scenarios()[0], "ecpa", 1, 3)
+    record["evidence_class"] = "formal-real"
+    with pytest.raises(ValueError, match="relabelled"):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
+
+
+def test_missing_required_observation_is_incomplete_and_null():
+    scenario = scenarios()[0]
+    record = {"observations": [], "artifacts": {}, "command": {}}
+    result = oracle(scenario, record)
+    assert result["verdict"] == "INCOMPLETE"
+    assert result["outcome"]["activation_event_coverage"] is None
+
+
+def test_failed_safe_is_not_counted_as_rollback_success():
+    scenario = next(row for row in scenarios() if row["id"] == "rollback-failure")
+    record = {
+        "observations": [
+            {"event": name, "value": True} for name in scenario["expected_observable"]
+        ]
+        + [{"event": "rollback-class", "value": "FAILED_SAFE"}],
+        "artifacts": {},
+        "command": {},
+    }
+    assert oracle(scenario, record)["outcome"]["rollback_success"] is False
+
+
+def test_planned_projection_validates_paper_schema():
+    schema = json.loads(Path("paper/artifacts/results.schema.json").read_text())
+    result = project_paper_result(planned()[0], schema)
+    assert result["schema"] == "ecpa-result/v1"
+    assert result["status"] == "planned"
+    assert result["outcome"]["false_effective"] is None

@@ -13,7 +13,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from harness import ARMS, aggregate, canonical  # noqa: E402
+from harness import ARMS, aggregate, canonical, project_paper_result  # noqa: E402
 from runner import planned_records, run_reference_start  # noqa: E402
 
 
@@ -24,8 +24,26 @@ def generate(output: Path) -> dict:
     formal = planned_records(scenarios)
     formal_path = output / "formal-planned.jsonl"
     formal_path.write_bytes(b"".join(canonical(row) + b"\n" for row in formal))
+    paper_schema = json.loads(
+        (HERE.parent.parent / "paper/artifacts/results.schema.json").read_text()
+    )
+    paper_results = [project_paper_result(row, paper_schema) for row in formal]
+    (output / "paper-results.jsonl").write_bytes(
+        b"".join(canonical(row) + b"\n" for row in paper_results)
+    )
     formal_aggregate = aggregate(formal, output, formal=True)
     (output / "formal-aggregate.json").write_bytes(canonical(formal_aggregate) + b"\n")
+    formal_summary = {
+        "schema": formal_aggregate["schema"],
+        "completed_cells": formal_aggregate["completed_cells"],
+        "planned_records": formal_aggregate["failure_missing_modes"]["planned"],
+        "metrics": formal_aggregate["metrics"],
+        "paired_contrasts": formal_aggregate["paired_contrasts"],
+        "reason": formal_aggregate["reason"],
+    }
+    (output / "formal-aggregate-summary.json").write_bytes(
+        canonical(formal_summary) + b"\n"
+    )
     with (output / "paper-table.csv").open("w", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
@@ -46,6 +64,8 @@ def generate(output: Path) -> dict:
             "namespace-mismatch",
             "partial-worker-coverage",
             "rollback-failure",
+            "compatible-resource-pair",
+            "conditional-resource-pair",
         )
     ]
     reference_records = []
