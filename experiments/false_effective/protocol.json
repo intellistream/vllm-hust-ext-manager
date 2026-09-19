@@ -1,0 +1,1 @@
+{"schema":"ecpa-false-effective-protocol/v1","seed":12012,"minimum_starts":3,"arms":["vanilla-vllm-entry-points","manual-integration","ecpa"],"schedule":[["vanilla-vllm-entry-points","manual-integration","ecpa"],["manual-integration","ecpa","vanilla-vllm-entry-points"],["ecpa","vanilla-vllm-entry-points","manual-integration"]],"formal_evidence_class":"formal-real"}
