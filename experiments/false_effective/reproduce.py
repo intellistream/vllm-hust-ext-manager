@@ -17,11 +17,16 @@ from harness import ARMS, aggregate, canonical, project_paper_result  # noqa: E4
 from runner import planned_records, run_reference_start  # noqa: E402
 
 
-def generate(output: Path) -> dict:
+def generate(output: Path, records_path: Path | None = None) -> dict:
     scenarios = json.loads((HERE / "scenarios.json").read_text())["scenarios"]
     protocol = json.loads((HERE / "protocol.json").read_text())
     output.mkdir(parents=True, exist_ok=True)
-    formal = planned_records(scenarios)
+    formal = (
+        [json.loads(line) for line in records_path.read_text().splitlines() if line]
+        if records_path is not None
+        else planned_records(scenarios)
+    )
+    validation_root = records_path.parent if records_path is not None else output
     formal_path = output / "formal-planned.jsonl"
     formal_path.write_bytes(b"".join(canonical(row) + b"\n" for row in formal))
     paper_schema = json.loads(
@@ -31,7 +36,9 @@ def generate(output: Path) -> dict:
     (output / "paper-results.jsonl").write_bytes(
         b"".join(canonical(row) + b"\n" for row in paper_results)
     )
-    formal_aggregate = aggregate(formal, output, formal=True)
+    # Reload the serialized boundary so the CLI exercises raw -> validate -> aggregate.
+    formal = [json.loads(line) for line in formal_path.read_text().splitlines() if line]
+    formal_aggregate = aggregate(formal, validation_root, formal=True)
     (output / "formal-aggregate.json").write_bytes(canonical(formal_aggregate) + b"\n")
     formal_summary = {
         "schema": formal_aggregate["schema"],
@@ -48,15 +55,29 @@ def generate(output: Path) -> dict:
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
-                "completed_formal_cells",
+                "scenario",
+                "arm",
+                "complete_starts",
                 "false_effective_rate",
-                "coverage_mean",
-                "throughput",
-                "latency_p99_ms",
+                "wilson95_low",
+                "wilson95_high",
                 "reason",
             ]
         )
-        writer.writerow([0, "", "", "", "", formal_aggregate["reason"]])
+        for cell in formal_aggregate["cells"]:
+            metric = cell["false_effective"]
+            interval = metric["wilson95"] if metric else None
+            writer.writerow(
+                [
+                    cell["scenario"],
+                    cell["arm"],
+                    cell["status_counts"]["complete"],
+                    "" if metric is None else metric["rate"],
+                    "" if interval is None else interval[0],
+                    "" if interval is None else interval[1],
+                    cell["null_reason"] or "",
+                ]
+            )
 
     selected = [
         next(row for row in scenarios if row["id"] == name)
@@ -107,12 +128,17 @@ def generate(output: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--records",
+        type=Path,
+        help="formal JSONL records; artifact paths resolve from its directory",
+    )
     args = parser.parse_args()
     if args.output is None:
         with tempfile.TemporaryDirectory(prefix="ecpa-false-effective-") as directory:
-            print(json.dumps(generate(Path(directory)), sort_keys=True))
+            print(json.dumps(generate(Path(directory), args.records), sort_keys=True))
     else:
-        generate(args.output)
+        generate(args.output, args.records)
     return 0
 
 

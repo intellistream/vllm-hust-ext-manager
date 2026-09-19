@@ -83,7 +83,7 @@ def formal_complete_records(tmp_path):
     records = []
     protocol = json.loads((ROOT / "protocol.json").read_text())
     scenario = scenarios()[0]
-    helper = str((ROOT / "helper_service.py").resolve())
+    helper = str(Path("tests/fixtures/formal_lifecycle_service.py").resolve())
     adapters = {
         "vanilla-vllm-entry-points": VanillaVLLMAdapter(),
         "manual-integration": ManualIntegrationAdapter(),
@@ -127,7 +127,7 @@ def formal_complete_records(tmp_path):
                 repetition,
                 arm_order,
                 executable=sys.executable,
-                arguments=[helper, "--arm", arm, "--scenario", scenario["id"]],
+                arguments=[helper, scenario["id"]],
                 identity=identity,
                 timeout_s=5,
             )
@@ -293,3 +293,163 @@ def test_planned_projection_validates_paper_schema():
     assert result["schema"] == "ecpa-result/v1"
     assert result["status"] == "planned"
     assert result["outcome"]["false_effective"] is None
+
+
+@pytest.mark.parametrize("missing", ["effective-claim", "plugin-invoked"])
+def test_core_claim_observations_are_mandatory(missing):
+    scenario = scenarios()[0]
+    events = [
+        {"event": name, "value": True}
+        for name in scenario["expected_observable"]
+        + [
+            "service-ready",
+            "workload-complete",
+            "fault-injected",
+            "observer-captured",
+            "effective-claim",
+            "plugin-invoked",
+            "service-shutdown",
+        ]
+        if name != missing
+    ]
+    result = oracle(scenario, {"observations": events, "artifacts": {}, "command": {}})
+    assert result["verdict"] == "INCOMPLETE"
+    assert any(missing in reason for reason in result["reasons"])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("status", "failed"),
+        ("cell_id", "forged"),
+    ],
+)
+def test_runner_receipt_rejects_core_relabel(tmp_path, field, value):
+    record = run_reference_start(tmp_path, scenarios()[0], "ecpa", 1, 3)
+    record[field] = value
+    with pytest.raises(ValueError):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
+
+
+def test_disk_command_and_oracle_are_exactly_bound(tmp_path):
+    record = run_reference_start(tmp_path, scenarios()[0], "ecpa", 1, 3)
+    run_dir = tmp_path / record["artifact_root"]
+    record["command"]["exit_code"] = 9
+    with pytest.raises(ValueError, match="command|oracle|receipt"):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
+    assert (run_dir / "oracle.json").is_file()
+
+
+def test_formal_runner_forbids_reference_helper(tmp_path):
+    protocol = json.loads((ROOT / "protocol.json").read_text())
+    with pytest.raises(ValueError, match="reference helper"):
+        run_formal_start(
+            tmp_path,
+            scenarios()[0],
+            protocol,
+            ECPAAdapter(),
+            1,
+            3,
+            executable=sys.executable,
+            arguments=[str((ROOT / "helper_service.py").resolve())],
+            identity={},
+            timeout_s=1,
+        )
+
+
+def test_frozen_registry_is_present_even_for_partial_input(tmp_path):
+    result = aggregate(planned()[:1], tmp_path, formal=True)
+    assert len(result["cells"]) == len(scenarios()) * 3
+
+
+def test_formal_observer_ignores_plain_stdout_and_captures_lifecycle(tmp_path):
+    records = formal_complete_records(tmp_path)
+    record = records[0]
+    assert record["status"] == "complete"
+    assert record["measurement_source"] == "independent-result-file-observer"
+    events = [item["event"] for item in record["observations"]]
+    assert events.index("service-ready") < events.index("workload-complete")
+    assert events.index("workload-complete") < events.index("fault-injected")
+    assert events.index("fault-injected") < events.index("observer-captured")
+    assert events.index("observer-captured") < events.index("service-shutdown")
+    run_dir = tmp_path / record["artifact_root"]
+    assert (run_dir / "stdout.bin").read_text().startswith("ordinary service log")
+
+
+def test_arm_launch_contracts_are_distinct_and_auditable():
+    adapters = [VanillaVLLMAdapter(), ManualIntegrationAdapter(), ECPAAdapter()]
+    launches = [adapter.launch("service", [], {}) for adapter in adapters]
+    assert len({env["ECPA_ACTIVATION_CONTRACT"] for _, env in launches}) == 3
+    assert {env["ECPA_EVALUATION_ARM"] for _, env in launches} == {
+        adapter.arm for adapter in adapters
+    }
+
+
+def test_semantic_environment_is_runner_measured(tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_USE_V1", "1")
+    record = run_reference_start(tmp_path, scenarios()[0], "ecpa", 1, 3)
+    assert record["identity"]["semantic_environment"]["VLLM_USE_V1"] == "1"
+    manifest = json.loads(
+        (tmp_path / record["artifact_root"] / "environment.json").read_text()
+    )
+    assert manifest["VLLM_USE_V1"] == "1"
+
+
+def test_oracle_mutation_is_rejected(tmp_path):
+    record = run_reference_start(tmp_path, scenarios()[0], "ecpa", 1, 3)
+    record["oracle"]["outcome"]["false_effective"] = True
+    with pytest.raises(ValueError, match="oracle"):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
+
+
+@pytest.mark.parametrize("code", ["print('plain log')", "raise SystemExit(7)"])
+def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, code):
+    identity = {
+        "model": "test",
+        "dataset": "test",
+        "workload": "test",
+        "software": {"runtime": "test"},
+        "observer": "result-file/v1",
+        "plugin_commits": [],
+        "topology": "single",
+        "fault_plan": "test",
+        "fault": "test",
+        "warm_state": "cold",
+        "container_digest": "test",
+        "gpu": "not-applicable",
+        "npu": "not-applicable",
+        "driver": "test",
+    }
+    record = run_formal_start(
+        tmp_path,
+        scenarios()[0],
+        json.loads((ROOT / "protocol.json").read_text()),
+        ECPAAdapter(),
+        1,
+        3,
+        executable=sys.executable,
+        arguments=["-c", code],
+        identity=identity,
+        timeout_s=1,
+    )
+    assert record["status"] == "failed"
+    assert record["oracle"]["verdict"] == "INCOMPLETE"
+    assert (tmp_path / record["artifact_root"] / "record.json").is_file()

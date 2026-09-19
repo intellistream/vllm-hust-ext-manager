@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import statistics
 import subprocess
 import time
 from pathlib import Path
@@ -20,7 +19,13 @@ LATIN_SQUARE = (
     ("ecpa", "vanilla-vllm-entry-points", "manual-integration"),
 )
 RULE_VERSION = "ecpa-false-effective-oracle/v1"
-ALLOW_ENV = {"LANG", "LC_ALL", "PATH", "PYTHONPATH"}
+SEMANTIC_ENV = (
+    "VLLM_USE_V1",
+    "CUDA_VISIBLE_DEVICES",
+    "ASCEND_RT_VISIBLE_DEVICES",
+    "LD_PRELOAD",
+)
+ALLOW_ENV = {"LANG", "LC_ALL", "PATH", "PYTHONPATH", *SEMANTIC_ENV}
 
 
 def canonical(value: Any) -> bytes:
@@ -42,6 +47,37 @@ def safe_path(root: Path, relative: str) -> Path:
     if candidate != root.resolve() and root.resolve() not in candidate.parents:
         raise ValueError("artifact path escapes run root")
     return candidate
+
+
+def canonical_record_core(record: dict[str, Any]) -> dict[str, Any]:
+    """Fields sealed by the runner receipt; receipt pointers are cycle-excluded."""
+    return {
+        key: record.get(key)
+        for key in (
+            "schema",
+            "status",
+            "evidence_class",
+            "measurement_source",
+            "cell_id",
+            "scenario",
+            "arm",
+            "start_id",
+            "repetition",
+            "arm_order",
+            "identity",
+            "command",
+            "observations",
+            "missing_reason",
+            "intake_digest",
+            "oracle",
+        )
+    } | {
+        "artifact_digests": {
+            name: record.get("artifacts", {}).get("digests", {}).get(name)
+            for name in sorted(record.get("artifacts", {}).get("digests", {}))
+            if name != "runner-receipt.json"
+        }
+    }
 
 
 def sanitized_env(source: dict[str, str]) -> dict[str, Any]:
@@ -107,16 +143,16 @@ def run_command(
         "signal": signal,
         "timeout": timed_out,
     }
-    command_path.write_bytes(canonical(command) + b"\n")
-    return {
+    command = {
         **command,
         "stdout": stdout_path.name,
         "stdout_sha256": digest_file(stdout_path),
         "stderr": stderr_path.name,
         "stderr_sha256": digest_file(stderr_path),
         "environment_sha256": digest_file(env_path),
-        "command_sha256": digest_file(command_path),
     }
+    command_path.write_bytes(canonical(command) + b"\n")
+    return {**command, "command_sha256": digest_file(command_path)}
 
 
 def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
@@ -128,7 +164,11 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     required = [
         *scenario["expected_observable"],
         "service-ready",
+        "workload-complete",
         "fault-injected",
+        "observer-captured",
+        "effective-claim",
+        "plugin-invoked",
         "service-shutdown",
     ]
     missing = [name for name in required if name not in events]
@@ -297,17 +337,42 @@ def validate_record(
             raise ValueError("independent oracle mismatch")
         if record["status"] == "complete" and recomputed["verdict"] != "PASS":
             raise ValueError("complete record has incomplete required observations")
-        chain_path = safe_path(artifact_root, artifacts.get("chain", ""))
-        chain = json.loads(chain_path.read_text())
-        expected_chain = {
-            "schema": "ecpa-runner-content-chain/v1",
-            "intake_digest": record["intake_digest"],
-            "artifact_digests": dict(sorted(artifacts["digests"].items())),
+        command_disk = json.loads(
+            safe_path(artifact_root, artifacts["command"]).read_text()
+        )
+        if command_disk != record["command"]:
+            raise ValueError("disk command differs from record command")
+        oracle_disk = json.loads(
+            safe_path(artifact_root, artifacts["oracle"]).read_text()
+        )
+        if oracle_disk != record["oracle"]:
+            raise ValueError("disk oracle differs from record oracle")
+        receipt_path = safe_path(artifact_root, artifacts.get("receipt", ""))
+        receipt = json.loads(receipt_path.read_text())
+        expected_receipt = {
+            "schema": "ecpa-runner-receipt/v1",
+            "core_digest": digest_bytes(canonical(canonical_record_core(record))),
+            "status": record["status"],
+            "cell_id": record["cell_id"],
+            "command_digest": digest_file(
+                safe_path(artifact_root, artifacts["command"])
+            ),
+            "oracle_digest": digest_file(safe_path(artifact_root, artifacts["oracle"])),
+            "exit_code": record["command"]["exit_code"],
+            "timeout": record["command"]["timeout"],
+            "excluded_fields": ["artifact_root", "receipt_digest"],
         }
-        if chain != expected_chain or digest_file(chain_path) != record.get(
-            "chain_digest"
+        if receipt != expected_receipt or digest_file(receipt_path) != record.get(
+            "receipt_digest"
         ):
-            raise ValueError("runner content chain mismatch")
+            raise ValueError("runner receipt mismatch")
+        should_complete = (
+            command["exit_code"] == 0
+            and not command["timeout"]
+            and recomputed["verdict"] == "PASS"
+        )
+        if record["status"] == "complete" and not should_complete:
+            raise ValueError("failed execution relabelled complete")
 
 
 def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -> None:
@@ -375,6 +440,12 @@ def aggregate(
 ) -> dict[str, Any]:
     validate_batch(records, root, formal=formal)
     complete = [row for row in records if row["status"] == "complete"]
+    scenario_registry = [
+        item["id"]
+        for item in json.loads(
+            (Path(__file__).resolve().parent / "scenarios.json").read_text()
+        )["scenarios"]
+    ]
     cells = []
     for (scenario, arm), rows in sorted(
         {
@@ -383,7 +454,7 @@ def aggregate(
                 for row in records
                 if row["scenario"] == scenario and row["arm"] == arm
             ]
-            for scenario in {row["scenario"] for row in records}
+            for scenario in scenario_registry
             for arm in ARMS
         }.items()
     ):
@@ -391,12 +462,63 @@ def aggregate(
             status: sum(row["status"] == status for row in rows)
             for status in ("planned", "complete", "failed", "excluded")
         }
+        valid = [row for row in rows if row["status"] == "complete"]
+        outcomes = [row["oracle"]["outcome"] for row in valid]
+        false_count = sum(bool(outcome["false_effective"]) for outcome in outcomes)
+        coverage = [
+            outcome["activation_event_coverage"]
+            for outcome in outcomes
+            if outcome["activation_event_coverage"] is not None
+        ]
+        rollback = [
+            outcome["rollback_success"]
+            for outcome in outcomes
+            if outcome["rollback_success"] is not None
+        ]
+        conflicts = [
+            outcome
+            for outcome in outcomes
+            if outcome["conflict_truth"] != "not-applicable"
+        ]
         cells.append(
             {
                 "scenario": scenario,
                 "arm": arm,
                 "status_counts": statuses,
-                "metric": None if statuses["complete"] < 3 else "available",
+                "false_effective": None
+                if statuses["complete"] < 3
+                else {
+                    "numerator": false_count,
+                    "denominator": len(valid),
+                    "rate": false_count / len(valid),
+                    "wilson95": wilson(false_count, len(valid)),
+                },
+                "quality": None
+                if statuses["complete"] < 3
+                else {
+                    "coverage_samples": coverage,
+                    "coverage_mean": sum(coverage) / len(coverage)
+                    if coverage
+                    else None,
+                    "conflict_correct": sum(
+                        (outcome["conflict_truth"] == "conflict")
+                        == (outcome["conflict_decision"] == "reject")
+                        for outcome in conflicts
+                    ),
+                    "conflict_denominator": len(conflicts),
+                    "rollback_successes": sum(value is True for value in rollback),
+                    "rollback_denominator": len(rollback),
+                },
+                "cost": None
+                if statuses["complete"] < 3
+                else {
+                    "startup_ms": [outcome["startup_ms"] for outcome in outcomes],
+                    "recovery_ms": [outcome["recovery_ms"] for outcome in outcomes],
+                    "evidence_bytes": [
+                        outcome["evidence_bytes"] for outcome in outcomes
+                    ],
+                    "message_bytes": [outcome["message_bytes"] for outcome in outcomes],
+                },
                 "null_reason": (
                     "fewer than 3 complete independent starts"
                     if statuses["complete"] < 3
@@ -419,33 +541,6 @@ def aggregate(
             },
             "reason": "no validator-approved complete formal-real cells",
         }
-    false_values = [row["oracle"]["outcome"]["false_effective"] for row in complete]
-    numerator = sum(false_values)
-    coverage = [
-        row["oracle"]["outcome"]["activation_event_coverage"] for row in complete
-    ]
-    coverage = [value for value in coverage if value is not None]
-    conflict_rows = [
-        row["oracle"]["outcome"]
-        for row in complete
-        if row["oracle"]["outcome"]["conflict_truth"] != "not-applicable"
-    ]
-    tp = sum(
-        row["conflict_truth"] == "conflict" and row["conflict_decision"] == "reject"
-        for row in conflict_rows
-    )
-    fp = sum(
-        row["conflict_truth"] != "conflict" and row["conflict_decision"] == "reject"
-        for row in conflict_rows
-    )
-    fn = sum(
-        row["conflict_truth"] == "conflict" and row["conflict_decision"] != "reject"
-        for row in conflict_rows
-    )
-    rollback_classes = [row["oracle"]["outcome"]["rollback_class"] for row in complete]
-    rollback_classes = [value for value in rollback_classes if value is not None]
-    startup_samples = [row["oracle"]["outcome"]["startup_ms"] for row in complete]
-    startup_samples = [value for value in startup_samples if value is not None]
     strata = {}
     for row in complete:
         key = f"{row['scenario']}::{row['arm']}"
@@ -493,72 +588,9 @@ def aggregate(
             "paired_unit": "scenario x repetition",
         },
         "metrics": {
+            "scope": "stratified-only; no mixed-arm primary estimate",
             "n_starts": len(complete),
-            "false_effective": {
-                "numerator": numerator,
-                "denominator": len(false_values),
-                "rate": numerator / len(false_values),
-                "wilson95": wilson(numerator, len(false_values)),
-            },
-            "coverage": {
-                "samples": coverage,
-                "mean": statistics.fmean(coverage) if len(coverage) >= 3 else None,
-                "observed_range": (
-                    [min(coverage), max(coverage)] if len(coverage) >= 3 else None
-                ),
-                "reason": None if len(coverage) >= 3 else "fewer than 3 samples",
-            },
-            "conflict": {
-                "tp": tp,
-                "fp": fp,
-                "fn": fn,
-                "not_applicable": len(complete) - len(conflict_rows),
-                "precision": tp / (tp + fp) if tp + fp >= 3 else None,
-                "recall": tp / (tp + fn) if tp + fn >= 3 else None,
-                "reason": None
-                if min(tp + fp, tp + fn) >= 3
-                else "fewer than 3 applicable decisions",
-            },
-            "rollback": {
-                "class_counts": {
-                    value: rollback_classes.count(value)
-                    for value in sorted(set(rollback_classes))
-                },
-                "success_rate": (
-                    sum(
-                        value in {"RESTORED_STRONG", "BEHAVIORAL", "FAILED_SAFE"}
-                        for value in rollback_classes
-                    )
-                    / len(rollback_classes)
-                    if len(rollback_classes) >= 3
-                    else None
-                ),
-                "recovery_samples": [
-                    row["oracle"]["outcome"]["recovery_ms"]
-                    for row in complete
-                    if row["oracle"]["outcome"]["recovery_ms"] is not None
-                ],
-            },
-            "startup": {
-                "samples_ms": startup_samples,
-                "median_ms": statistics.median(startup_samples)
-                if len(startup_samples) >= 3
-                else None,
-                "observed_range": (
-                    [min(startup_samples), max(startup_samples)]
-                    if len(startup_samples) >= 3
-                    else None
-                ),
-                "range_note": "observed range; not a confidence interval",
-            },
-            "evidence_bytes_samples": [
-                row["oracle"]["outcome"]["evidence_bytes"] for row in complete
-            ],
-            "message_bytes_samples": [
-                row["oracle"]["outcome"]["message_bytes"] for row in complete
-            ],
-            "throughput": None,
-            "latency_p99_ms": None,
+            "by_scenario_arm": cells,
         },
     }
 

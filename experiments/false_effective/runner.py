@@ -1,9 +1,11 @@
-"""External-command and reference runner."""
+"""Reference self-test and independently observed formal command runner."""
 
 from __future__ import annotations
 
 import json
 import os
+import platform
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +13,9 @@ from typing import Any
 
 from harness import (
     ARMS,
+    SEMANTIC_ENV,
     canonical,
+    canonical_record_core,
     digest_bytes,
     digest_file,
     oracle,
@@ -25,113 +29,123 @@ HERE = Path(__file__).resolve().parent
 @dataclass(frozen=True)
 class FormalArmAdapter:
     arm: str
+    activation_contract: str
 
-    def argv(self, executable: str, arguments: list[str]) -> list[str]:
-        return [executable, *arguments]
+    def launch(self, executable: str, arguments: list[str], env: dict[str, str]):
+        launched = dict(env)
+        launched["ECPA_EVALUATION_ARM"] = self.arm
+        launched["ECPA_ACTIVATION_CONTRACT"] = self.activation_contract
+        return [executable, *arguments], launched
 
 
 class VanillaVLLMAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("vanilla-vllm-entry-points")
+        super().__init__("vanilla-vllm-entry-points", "entry-points-unmanaged")
 
 
 class ManualIntegrationAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("manual-integration")
+        super().__init__("manual-integration", "explicit-manual-hooks")
 
 
 class ECPAAdapter(FormalArmAdapter):
     def __init__(self):
-        super().__init__("ecpa")
+        super().__init__("ecpa", "manager-controlled-activation")
 
 
-def run_reference_start(
+def _git_measurement() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=HERE,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+        return commit, dirty
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable", True
+
+
+def measured_identity(declared: dict[str, Any], arm: str, env: dict[str, str]):
+    commit, dirty = _git_measurement()
+    return dict(declared) | {
+        "arm": arm,
+        "hardware": platform.machine(),
+        "cpu": platform.processor() or platform.machine(),
+        "runtime": platform.python_version(),
+        "runtime_commit": commit,
+        "git_dirty": dirty,
+        "semantic_environment": {
+            name: env.get(name, "<unset>") for name in SEMANTIC_ENV
+        },
+    }
+
+
+def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        events = json.loads(path.read_text())["events"]
+        if not isinstance(events, list):
+            raise TypeError("events is not a list")
+        return events, None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return [], f"observer result unavailable or invalid: {type(exc).__name__}"
+
+
+def _run_start(
     root: Path,
     scenario: dict[str, Any],
     arm: str,
     repetition: int,
     arm_order: int,
     *,
-    fail: bool = False,
-    timeout_s: float = 5,
-    adapter: FormalArmAdapter | None = None,
-    executable: str | None = None,
-    arguments: list[str] | None = None,
-    formal_identity: dict[str, Any] | None = None,
+    argv: list[str],
+    env: dict[str, str],
+    timeout_s: float,
+    evidence_class: str,
+    measurement_source: str,
+    identity: dict[str, Any],
+    observations_from_stdout: bool,
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
-    helper = Path(__file__).with_name("helper_service.py").resolve()
-    argv = [sys.executable, str(helper), "--arm", arm, "--scenario", scenario["id"]]
-    evidence_class = "reference-synthetic"
-    measurement_source = "reference-helper-subprocess"
-    if adapter is not None:
-        if adapter.arm != arm or executable is None or formal_identity is None:
-            raise ValueError("formal adapter, arm, executable, and identity must match")
-        argv = adapter.argv(executable, arguments or [])
-        evidence_class = "formal-real"
-        measurement_source = "external-command-formal"
-    if fail:
-        argv.append("--fail")
-    command = run_command(run_dir, argv, env=dict(os.environ), timeout_s=timeout_s)
-    stdout = (run_dir / command["stdout"]).read_text()
-    observations = []
-    if stdout.strip():
-        observations = json.loads(stdout)["events"]
+    result_path = run_dir / "observer-result.json"
+    launch_env = dict(env)
+    launch_env["ECPA_OBSERVER_RESULT_FILE"] = str(result_path)
+    command = run_command(run_dir, argv, env=launch_env, timeout_s=timeout_s)
+    command_digest = command.pop("command_sha256")
+    stdout_path = run_dir / command["stdout"]
+    if observations_from_stdout:
+        try:
+            observations = json.loads(stdout_path.read_text())["events"]
+            observation_error = None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            observations, observation_error = (
+                [],
+                f"stdout observations invalid: {type(exc).__name__}",
+            )
+        result_path.write_bytes(canonical({"events": observations}) + b"\n")
+    else:
+        observations, observation_error = _read_events(result_path)
+        if not result_path.exists():
+            result_path.write_bytes(canonical({"events": []}) + b"\n")
     protocol = json.loads((HERE / "protocol.json").read_text())
     schema = json.loads((HERE / "raw-record.schema.json").read_text())
-    (run_dir / "observations.json").write_bytes(
-        canonical({"events": observations}) + b"\n"
-    )
-    (run_dir / "scenario.json").write_bytes(canonical(scenario) + b"\n")
-    (run_dir / "protocol.json").write_bytes(canonical(protocol) + b"\n")
-    status = (
-        "complete" if command["exit_code"] == 0 and not command["timeout"] else "failed"
-    )
-    artifacts = {
-        "raw_log": command["stdout"],
-        "environment": "environment.json",
-        "command": "command.json",
-        "oracle": "oracle.json",
-        "intake": "intake.json",
-        "observations": "observations.json",
-        "scenario": "scenario.json",
-        "protocol": "protocol.json",
-        "evidence_bytes": len(stdout.encode()),
-        "message_bytes": len(canonical(observations)),
-        "digests": {
-            command["stdout"]: command["stdout_sha256"],
-            command["stderr"]: command["stderr_sha256"],
-            "environment.json": command["environment_sha256"],
-            "command.json": command["command_sha256"],
-            "observations.json": digest_file(run_dir / "observations.json"),
-            "scenario.json": digest_file(run_dir / "scenario.json"),
-            "protocol.json": digest_file(run_dir / "protocol.json"),
-        },
-    }
-    identity = formal_identity or {
-        "arm": arm,
-        "model": "reference-helper",
-        "dataset": "reference-events-v1",
-        "workload": "deterministic-selftest",
-        "hardware": "reference-local-process",
-        "software": {"python": sys.version.split()[0]},
-        "observer": "helper-json-events/v1",
-        "runtime_commit": "01d9ac1ebcc1493fe45e31696a2636b3960c1d15",
-        "plugin_commits": [],
-        "topology": "one helper process",
-        "fault_plan": scenario["id"],
-        "fault": scenario["id"],
-        "semantic_environment": "reference-only",
-        "warm_state": "cold",
-        "git_dirty": False,
-        "container_digest": "not-containerized",
-        "cpu": "unmeasured-reference",
-        "gpu": "not-applicable",
-        "npu": "not-applicable",
-        "driver": "not-applicable",
-        "runtime": sys.version.split()[0],
-    }
+    for name, value in (
+        ("observations.json", {"events": observations}),
+        ("scenario.json", scenario),
+        ("protocol.json", protocol),
+    ):
+        (run_dir / name).write_bytes(canonical(value) + b"\n")
     intake = {
         "schema": "ecpa-runner-intake/v1",
         "evidence_class": evidence_class,
@@ -146,10 +160,35 @@ def run_reference_start(
         "identity": identity,
     }
     (run_dir / "intake.json").write_bytes(canonical(intake) + b"\n")
-    artifacts["digests"]["intake.json"] = digest_file(run_dir / "intake.json")
+    artifacts = {
+        "raw_log": command["stdout"],
+        "environment": "environment.json",
+        "command": "command.json",
+        "oracle": "oracle.json",
+        "intake": "intake.json",
+        "observations": "observations.json",
+        "scenario": "scenario.json",
+        "protocol": "protocol.json",
+        "receipt": "runner-receipt.json",
+        "evidence_bytes": stdout_path.stat().st_size,
+        "message_bytes": len(canonical(observations)),
+        "digests": {},
+    }
+    for name in (
+        command["stdout"],
+        command["stderr"],
+        "environment.json",
+        "command.json",
+        "observations.json",
+        "scenario.json",
+        "protocol.json",
+        "intake.json",
+    ):
+        artifacts["digests"][name] = digest_file(run_dir / name)
+    assert artifacts["digests"]["command.json"] == command_digest
     record = {
         "schema": "ecpa-false-effective-start/v1",
-        "status": status,
+        "status": "failed",
         "evidence_class": evidence_class,
         "measurement_source": measurement_source,
         "cell_id": scenario["id"],
@@ -162,29 +201,97 @@ def run_reference_start(
         "command": command,
         "artifacts": artifacts,
         "observations": observations,
-        "missing_reason": None,
+        "missing_reason": observation_error,
         "intake_digest": artifacts["digests"]["intake.json"],
         "artifact_root": f"starts/{start_id}",
     }
     result = oracle(scenario, record)
-    if result["verdict"] != "PASS" and record["status"] == "complete":
-        record["status"] = "failed"
-        record["missing_reason"] = "; ".join(result["reasons"])
+    if (
+        command["exit_code"] == 0
+        and not command["timeout"]
+        and result["verdict"] == "PASS"
+    ):
+        record["status"], record["missing_reason"] = "complete", None
         result = oracle(scenario, record)
+    elif record["missing_reason"] is None:
+        reasons = result["reasons"] or (
+            ["command timeout"]
+            if command["timeout"]
+            else [f"exit code {command['exit_code']}"]
+        )
+        record["missing_reason"] = "; ".join(reasons)
+        result = oracle(scenario, record)
+    record["oracle"] = result
     (run_dir / "oracle.json").write_bytes(canonical(result) + b"\n")
     artifacts["digests"]["oracle.json"] = digest_file(run_dir / "oracle.json")
-    chain = {
-        "schema": "ecpa-runner-content-chain/v1",
-        "intake_digest": record["intake_digest"],
-        "artifact_digests": dict(sorted(artifacts["digests"].items())),
+    receipt = {
+        "schema": "ecpa-runner-receipt/v1",
+        "core_digest": digest_bytes(canonical(canonical_record_core(record))),
+        "status": record["status"],
+        "cell_id": record["cell_id"],
+        "command_digest": artifacts["digests"]["command.json"],
+        "oracle_digest": artifacts["digests"]["oracle.json"],
+        "exit_code": command["exit_code"],
+        "timeout": command["timeout"],
+        "excluded_fields": ["artifact_root", "receipt_digest"],
     }
-    (run_dir / "chain.json").write_bytes(canonical(chain) + b"\n")
-    artifacts["chain"] = "chain.json"
-    record["chain_digest"] = digest_file(run_dir / "chain.json")
-    record["oracle"] = result
+    (run_dir / "runner-receipt.json").write_bytes(canonical(receipt) + b"\n")
+    record["receipt_digest"] = digest_file(run_dir / "runner-receipt.json")
+    artifacts["digests"]["runner-receipt.json"] = record["receipt_digest"]
     (run_dir / "record.json").write_bytes(canonical(record) + b"\n")
     validate_record(record, root, scenario=scenario, protocol=protocol, schema=schema)
     return record
+
+
+def run_reference_start(
+    root: Path,
+    scenario: dict[str, Any],
+    arm: str,
+    repetition: int,
+    arm_order: int,
+    *,
+    fail: bool = False,
+    timeout_s: float = 5,
+    **_: Any,
+):
+    helper = Path(__file__).with_name("helper_service.py").resolve()
+    argv = [sys.executable, str(helper), "--arm", arm, "--scenario", scenario["id"]]
+    if fail:
+        argv.append("--fail")
+    identity = measured_identity(
+        {
+            "model": "reference-helper",
+            "dataset": "reference-events-v1",
+            "workload": "deterministic-selftest",
+            "software": {"python": sys.version.split()[0]},
+            "observer": "helper-json-events/v1",
+            "plugin_commits": [],
+            "topology": "one helper process",
+            "fault_plan": scenario["id"],
+            "fault": scenario["id"],
+            "warm_state": "cold",
+            "container_digest": "not-containerized",
+            "gpu": "not-applicable",
+            "npu": "not-applicable",
+            "driver": "not-applicable",
+        },
+        arm,
+        dict(os.environ),
+    )
+    return _run_start(
+        root,
+        scenario,
+        arm,
+        repetition,
+        arm_order,
+        argv=argv,
+        env=dict(os.environ),
+        timeout_s=timeout_s,
+        evidence_class="reference-synthetic",
+        measurement_source="reference-helper-subprocess",
+        identity=identity,
+        observations_from_stdout=True,
+    )
 
 
 def run_formal_start(
@@ -199,49 +306,70 @@ def run_formal_start(
     arguments: list[str],
     identity: dict[str, Any],
     timeout_s: float,
-) -> dict[str, Any]:
-    frozen = json.loads((HERE / "protocol.json").read_text())
-    if protocol != frozen:
+):
+    if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
-    if any(value is None for value in identity.values()):
-        raise ValueError("formal identity fields must not be null")
-    return run_reference_start(
+    helper = str((HERE / "helper_service.py").resolve())
+    if helper in [
+        str(Path(value).resolve()) for value in arguments if not value.startswith("-")
+    ]:
+        raise ValueError("reference helper is forbidden for formal evidence")
+    required = {
+        "model",
+        "dataset",
+        "workload",
+        "software",
+        "observer",
+        "plugin_commits",
+        "topology",
+        "fault_plan",
+        "fault",
+        "warm_state",
+        "container_digest",
+        "gpu",
+        "npu",
+        "driver",
+    }
+    if required.difference(identity) or any(
+        identity.get(key) is None for key in required
+    ):
+        raise ValueError("formal declared identity is incomplete")
+    argv, env = adapter.launch(executable, arguments, dict(os.environ))
+    return _run_start(
         root,
         scenario,
         adapter.arm,
         repetition,
         arm_order,
+        argv=argv,
+        env=env,
         timeout_s=timeout_s,
-        adapter=adapter,
-        executable=executable,
-        arguments=arguments,
-        formal_identity=identity,
+        evidence_class="formal-real",
+        measurement_source="independent-result-file-observer",
+        identity=measured_identity(identity, adapter.arm, env),
+        observations_from_stdout=False,
     )
 
 
 def planned_records(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for scenario in scenarios:
-        for arm in ARMS:
-            rows.append(
-                {
-                    "schema": "ecpa-false-effective-start/v1",
-                    "status": "planned",
-                    "evidence_class": "formal-real",
-                    "measurement_source": "external-command-adapter",
-                    "cell_id": scenario["id"],
-                    "scenario": scenario["id"],
-                    "arm": arm,
-                    "start_id": f"planned-{scenario['id']}-{arm}",
-                    "repetition": 1,
-                    "arm_order": 1,
-                    "identity": {},
-                    "command": None,
-                    "artifacts": {},
-                    "observations": [],
-                    "missing_reason": (
-                        "real service command and raw observer not configured"
-                    ),
-                }
-            )
-    return rows
+    return [
+        {
+            "schema": "ecpa-false-effective-start/v1",
+            "status": "planned",
+            "evidence_class": "formal-real",
+            "measurement_source": "external-command-adapter",
+            "cell_id": scenario["id"],
+            "scenario": scenario["id"],
+            "arm": arm,
+            "start_id": f"planned-{scenario['id']}-{arm}",
+            "repetition": 1,
+            "arm_order": 1,
+            "identity": {},
+            "command": None,
+            "artifacts": {},
+            "observations": [],
+            "missing_reason": "real service and independent observer not configured",
+        }
+        for scenario in scenarios
+        for arm in ARMS
+    ]

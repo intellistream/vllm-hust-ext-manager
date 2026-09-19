@@ -30,6 +30,7 @@ def main() -> int:
     }.get(args.scenario, "not-applicable")
     observations = [
         {"event": "service-ready", "value": True, "monotonic_ns": now},
+        {"event": "workload-complete", "value": True, "monotonic_ns": now},
         {"event": "fault-injected", "value": args.scenario, "monotonic_ns": now},
         {"event": "effective-claim", "value": args.arm in false_claim_arms},
         {"event": "plugin-invoked", "value": False},
@@ -43,6 +44,13 @@ def main() -> int:
     observations.extend(
         {"event": event, "value": True}
         for event in scenario_events.get(args.scenario, [])
+    )
+    observations.append(
+        {
+            "event": "observer-captured",
+            "value": True,
+            "monotonic_ns": time.monotonic_ns(),
+        }
     )
     observations.append(
         {
