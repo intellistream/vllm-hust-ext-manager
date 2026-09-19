@@ -1,0 +1,532 @@
+"""Reference self-test and independently observed formal command runner."""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from harness import (
+    ARMS,
+    SEMANTIC_ENV,
+    canonical,
+    canonical_record_core,
+    digest_bytes,
+    digest_file,
+    oracle,
+    run_command,
+    safe_path,
+    validate_record,
+)
+
+HERE = Path(__file__).resolve().parent
+
+
+@dataclass(frozen=True)
+class FormalArmAdapter:
+    arm: str
+    activation_contract: str
+
+    def launch(self, executable: str, arguments: list[str], env: dict[str, str]):
+        launched = dict(env)
+        launched["ECPA_EVALUATION_ARM"] = self.arm
+        launched["ECPA_ACTIVATION_CONTRACT"] = self.activation_contract
+        return [executable, *arguments], launched
+
+
+class VanillaVLLMAdapter(FormalArmAdapter):
+    def __init__(self):
+        super().__init__("vanilla-vllm-entry-points", "entry-points-unmanaged")
+
+
+class ManualIntegrationAdapter(FormalArmAdapter):
+    def __init__(self):
+        super().__init__("manual-integration", "explicit-manual-hooks")
+
+
+class ECPAAdapter(FormalArmAdapter):
+    def __init__(self):
+        super().__init__("ecpa", "manager-controlled-activation")
+
+
+def _git_measurement() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=HERE,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=HERE,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+        return commit, dirty
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable", True
+
+
+def measured_identity(declared: dict[str, Any], arm: str, env: dict[str, str]):
+    commit, dirty = _git_measurement()
+    return dict(declared) | {
+        "arm": arm,
+        "hardware": platform.machine(),
+        "cpu": platform.processor() or platform.machine(),
+        "runtime": platform.python_version(),
+        "runtime_commit": commit,
+        "git_dirty": dirty,
+        "semantic_environment": {
+            name: env.get(name, "<unset>") for name in SEMANTIC_ENV
+        },
+        "evaluation_arm": env.get("ECPA_EVALUATION_ARM", arm),
+        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT", "reference-only"),
+    }
+
+
+def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        events = json.loads(path.read_text())["events"]
+        if not isinstance(events, list):
+            raise TypeError("events is not a list")
+        return events, None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return [], f"observer result unavailable or invalid: {type(exc).__name__}"
+
+
+def _run_start(
+    root: Path,
+    scenario: dict[str, Any],
+    arm: str,
+    repetition: int,
+    arm_order: int,
+    *,
+    argv: list[str],
+    env: dict[str, str],
+    timeout_s: float,
+    evidence_class: str,
+    measurement_source: str,
+    identity: dict[str, Any],
+    observations_from_stdout: bool,
+    observer_argv: list[str] | None = None,
+) -> dict[str, Any]:
+    start_id = f"{scenario['id']}-r{repetition}-{arm}"
+    run_dir = root / "starts" / start_id
+    result_path = run_dir / "observer-result.json"
+    if observer_argv is None:
+        command = run_command(run_dir, argv, env=dict(env), timeout_s=timeout_s)
+        command_digest = command.pop("command_sha256")
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        manifest = __import__("harness").sanitized_env(env)
+        (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
+        sut_stdout = (run_dir / "stdout.bin").open("wb")
+        sut_stderr = (run_dir / "stderr.bin").open("wb")
+        sut_start = time.monotonic_ns()
+        sut = subprocess.Popen(
+            argv, cwd=run_dir, env=env, stdout=sut_stdout, stderr=sut_stderr
+        )
+        base = time.monotonic_ns()
+        lifecycle = [
+            "service-ready",
+            "workload-complete",
+            "fault-injected",
+            "observer-captured",
+            "service-shutdown",
+        ]
+        phase_bounds = {
+            name: [base + index, base + index]
+            for index, name in enumerate(lifecycle, 1)
+        }
+        observer_env = dict(env)
+        observer_env["ECPA_OBSERVER_RESULT_FILE"] = str(result_path.resolve())
+        observer_env["ECPA_RUNNER_PHASE_BOUNDS"] = json.dumps(phase_bounds)
+        observer_env["ECPA_FROZEN_SCENARIO"] = scenario["id"]
+        observer_start = time.monotonic_ns()
+        observer = subprocess.Popen(
+            observer_argv,
+            cwd=run_dir,
+            env=observer_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        observer_timed_out = False
+        try:
+            observed_stdout, observed_stderr = observer.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            observer_timed_out = True
+            observer.kill()
+            observed_stdout, observed_stderr = observer.communicate()
+        observer_end = time.monotonic_ns()
+        premature_exit = sut.poll() is not None
+        if not premature_exit:
+            sut.terminate()
+        try:
+            sut_exit = sut.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            sut.kill()
+            sut_exit = sut.wait()
+        sut_end = time.monotonic_ns()
+        sut_stdout.close()
+        sut_stderr.close()
+        (run_dir / "observer-stdout.bin").write_bytes(observed_stdout)
+        (run_dir / "observer-stderr.bin").write_bytes(observed_stderr)
+        command = {
+            "argv": argv,
+            "cwd": str(run_dir.resolve()),
+            "environment_manifest": "environment.json",
+            "wall_start_ns": time.time_ns(),
+            "wall_end_ns": time.time_ns(),
+            "monotonic_start_ns": sut_start,
+            "monotonic_end_ns": sut_end,
+            "exit_code": 0
+            if not premature_exit and sut_exit == -15 and observer.returncode == 0
+            else sut_exit,
+            "signal": 15 if sut_exit == -15 else None,
+            "timeout": observer_timed_out,
+            "premature_exit": premature_exit,
+            "stdout": "stdout.bin",
+            "stdout_sha256": digest_file(run_dir / "stdout.bin"),
+            "stderr": "stderr.bin",
+            "stderr_sha256": digest_file(run_dir / "stderr.bin"),
+            "environment_sha256": digest_file(run_dir / "environment.json"),
+            "sut_process": {
+                "argv": argv,
+                "pid": sut.pid,
+                "start_identity": f"pid:{sut.pid}@{sut_start}",
+            },
+            "observer_process": {
+                "argv": observer_argv,
+                "pid": observer.pid,
+                "start_identity": f"pid:{observer.pid}@{observer_start}",
+                "exit_code": observer.returncode,
+                "monotonic_start_ns": observer_start,
+                "monotonic_end_ns": observer_end,
+            },
+            "phase_bounds": phase_bounds,
+        }
+        (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
+        command_digest = digest_file(run_dir / "command.json")
+    stdout_path = run_dir / command["stdout"]
+    if observations_from_stdout:
+        try:
+            observations = json.loads(stdout_path.read_text())["events"]
+            observation_error = None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            observations, observation_error = (
+                [],
+                f"stdout observations invalid: {type(exc).__name__}",
+            )
+        result_path.write_bytes(canonical({"events": observations}) + b"\n")
+    elif observer_argv is None:
+        observations, observation_error = _read_events(result_path)
+        if not result_path.exists():
+            result_path.write_bytes(canonical({"events": []}) + b"\n")
+    else:
+        observations, observation_error = _read_events(result_path)
+        if not result_path.exists():
+            result_path.write_bytes(canonical({"events": []}) + b"\n")
+    protocol = json.loads((HERE / "protocol.json").read_text())
+    schema = json.loads((HERE / "raw-record.schema.json").read_text())
+    for name, value in (
+        ("observations.json", {"events": observations}),
+        ("scenario.json", scenario),
+        ("protocol.json", protocol),
+    ):
+        (run_dir / name).write_bytes(canonical(value) + b"\n")
+    intake = {
+        "schema": "ecpa-runner-intake/v1",
+        "evidence_class": evidence_class,
+        "measurement_source": measurement_source,
+        "scenario": scenario["id"],
+        "scenario_digest": digest_bytes(canonical(scenario)),
+        "protocol_digest": digest_bytes(canonical(protocol)),
+        "arm": arm,
+        "start_id": start_id,
+        "repetition": repetition,
+        "arm_order": arm_order,
+        "identity": identity,
+        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT"),
+        "semantic_environment": {
+            name: env.get(name, "<unset>") for name in SEMANTIC_ENV
+        },
+    }
+    (run_dir / "intake.json").write_bytes(canonical(intake) + b"\n")
+    artifacts = {
+        "raw_log": command["stdout"],
+        "environment": "environment.json",
+        "command": "command.json",
+        "oracle": "oracle.json",
+        "intake": "intake.json",
+        "observations": "observations.json",
+        "scenario": "scenario.json",
+        "protocol": "protocol.json",
+        "receipt": "runner-receipt.json",
+        "evidence_bytes": stdout_path.stat().st_size,
+        "message_bytes": len(canonical(observations)),
+        "digests": {},
+    }
+    for name in (
+        command["stdout"],
+        command["stderr"],
+        "environment.json",
+        "command.json",
+        "observations.json",
+        "scenario.json",
+        "protocol.json",
+        "intake.json",
+    ):
+        artifacts["digests"][name] = digest_file(run_dir / name)
+    for name in ("observer-stdout.bin", "observer-stderr.bin"):
+        if (run_dir / name).is_file():
+            artifacts["digests"][name] = digest_file(run_dir / name)
+    assert artifacts["digests"]["command.json"] == command_digest
+    record = {
+        "schema": "ecpa-false-effective-start/v1",
+        "status": "failed",
+        "evidence_class": evidence_class,
+        "measurement_source": measurement_source,
+        "cell_id": scenario["id"],
+        "scenario": scenario["id"],
+        "arm": arm,
+        "start_id": start_id,
+        "repetition": repetition,
+        "arm_order": arm_order,
+        "identity": identity,
+        "command": command,
+        "artifacts": artifacts,
+        "observations": observations,
+        "missing_reason": observation_error,
+        "intake_digest": artifacts["digests"]["intake.json"],
+        "artifact_root": f"starts/{start_id}",
+    }
+    result = oracle(scenario, record)
+    if (
+        command["exit_code"] == 0
+        and not command["timeout"]
+        and result["verdict"] == "PASS"
+    ):
+        record["status"], record["missing_reason"] = "complete", None
+        result = oracle(scenario, record)
+    elif record["missing_reason"] is None:
+        reasons = result["reasons"] or (
+            ["command timeout"]
+            if command["timeout"]
+            else [f"exit code {command['exit_code']}"]
+        )
+        record["missing_reason"] = "; ".join(reasons)
+        result = oracle(scenario, record)
+    record["oracle"] = result
+    (run_dir / "oracle.json").write_bytes(canonical(result) + b"\n")
+    artifacts["digests"]["oracle.json"] = digest_file(run_dir / "oracle.json")
+    receipt = {
+        "schema": "ecpa-runner-receipt/v1",
+        "core_digest": digest_bytes(canonical(canonical_record_core(record))),
+        "status": record["status"],
+        "cell_id": record["cell_id"],
+        "command_digest": artifacts["digests"]["command.json"],
+        "oracle_digest": artifacts["digests"]["oracle.json"],
+        "exit_code": command["exit_code"],
+        "timeout": command["timeout"],
+        "excluded_fields": ["artifact_root", "receipt_digest"],
+    }
+    (run_dir / "runner-receipt.json").write_bytes(canonical(receipt) + b"\n")
+    record["receipt_digest"] = digest_file(run_dir / "runner-receipt.json")
+    artifacts["digests"]["runner-receipt.json"] = record["receipt_digest"]
+    (run_dir / "record.json").write_bytes(canonical(record) + b"\n")
+    validate_record(record, root, scenario=scenario, protocol=protocol, schema=schema)
+    if evidence_class == "formal-real":
+        persisted = [
+            json.loads(path.read_text())
+            for path in sorted((root / "starts").glob("*/record.json"))
+        ]
+        write_formal_manifest(root, persisted)
+    return record
+
+
+def run_reference_start(
+    root: Path,
+    scenario: dict[str, Any],
+    arm: str,
+    repetition: int,
+    arm_order: int,
+    *,
+    fail: bool = False,
+    timeout_s: float = 5,
+    **_: Any,
+):
+    helper = Path(__file__).with_name("helper_service.py").resolve()
+    argv = [sys.executable, str(helper), "--arm", arm, "--scenario", scenario["id"]]
+    if fail:
+        argv.append("--fail")
+    identity = measured_identity(
+        {
+            "model": "reference-helper",
+            "dataset": "reference-events-v1",
+            "workload": "deterministic-selftest",
+            "software": {"python": sys.version.split()[0]},
+            "observer": "helper-json-events/v1",
+            "plugin_commits": [],
+            "topology": "one helper process",
+            "fault_plan": scenario["id"],
+            "fault": scenario["id"],
+            "warm_state": "cold",
+            "container_digest": "not-containerized",
+            "gpu": "not-applicable",
+            "npu": "not-applicable",
+            "driver": "not-applicable",
+        },
+        arm,
+        dict(os.environ),
+    )
+    return _run_start(
+        root,
+        scenario,
+        arm,
+        repetition,
+        arm_order,
+        argv=argv,
+        env=dict(os.environ),
+        timeout_s=timeout_s,
+        evidence_class="reference-synthetic",
+        measurement_source="reference-helper-subprocess",
+        identity=identity,
+        observations_from_stdout=True,
+    )
+
+
+def run_formal_start(
+    root: Path,
+    scenario: dict[str, Any],
+    protocol: dict[str, Any],
+    adapter: FormalArmAdapter,
+    repetition: int,
+    arm_order: int,
+    *,
+    executable: str,
+    arguments: list[str],
+    observer_executable: str,
+    observer_arguments: list[str],
+    identity: dict[str, Any],
+    timeout_s: float,
+):
+    if protocol != json.loads((HERE / "protocol.json").read_text()):
+        raise ValueError("formal protocol differs from frozen protocol")
+    required = {
+        "model",
+        "dataset",
+        "workload",
+        "software",
+        "observer",
+        "plugin_commits",
+        "topology",
+        "fault_plan",
+        "fault",
+        "warm_state",
+        "container_digest",
+        "gpu",
+        "npu",
+        "driver",
+    }
+    if required.difference(identity) or any(
+        identity.get(key) is None for key in required
+    ):
+        raise ValueError("formal declared identity is incomplete")
+    argv, env = adapter.launch(executable, arguments, dict(os.environ))
+    return _run_start(
+        root,
+        scenario,
+        adapter.arm,
+        repetition,
+        arm_order,
+        argv=argv,
+        env=env,
+        timeout_s=timeout_s,
+        evidence_class="formal-real",
+        measurement_source="independent-result-file-observer",
+        identity=measured_identity(identity, adapter.arm, env),
+        observations_from_stdout=False,
+        observer_argv=[observer_executable, *observer_arguments],
+    )
+
+
+def planned_records(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "schema": "ecpa-false-effective-start/v1",
+            "status": "planned",
+            "evidence_class": "formal-real",
+            "measurement_source": "external-command-adapter",
+            "cell_id": scenario["id"],
+            "scenario": scenario["id"],
+            "arm": arm,
+            "start_id": f"planned-{scenario['id']}-{arm}",
+            "repetition": 1,
+            "arm_order": 1,
+            "identity": {},
+            "command": None,
+            "artifacts": {},
+            "observations": [],
+            "missing_reason": "real service and independent observer not configured",
+        }
+        for scenario in scenarios
+        for arm in ARMS
+    ]
+
+
+def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
+    """Publish the runner-owned record index consumed by the paper pipeline."""
+    jsonl = root / "formal-records.jsonl"
+    jsonl.write_bytes(b"".join(canonical(row) + b"\n" for row in records))
+    entries = []
+    for row in records:
+        record_path = safe_path(root, f"{row['artifact_root']}/record.json")
+        if json.loads(record_path.read_text()) != row:
+            raise ValueError("record.json differs from runner record")
+        entries.append(
+            {
+                "start_id": row["start_id"],
+                "record": str(record_path.relative_to(root)),
+                "digest": digest_file(record_path),
+            }
+        )
+    manifest = {
+        "schema": "ecpa-formal-record-index/v1",
+        "records_jsonl": jsonl.name,
+        "records_jsonl_digest": digest_file(jsonl),
+        "records": entries,
+    }
+    path = root / "formal-record-index.json"
+    path.write_bytes(canonical(manifest) + b"\n")
+    return path
+
+
+def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
+    manifest = json.loads(path.read_text())
+    if manifest.get("schema") != "ecpa-formal-record-index/v1":
+        raise ValueError("formal input must be a runner index manifest")
+    root = path.parent
+    jsonl = safe_path(root, manifest["records_jsonl"])
+    if digest_file(jsonl) != manifest["records_jsonl_digest"]:
+        raise ValueError("formal JSONL digest mismatch")
+    indexed = [json.loads(line) for line in jsonl.read_text().splitlines() if line]
+    records = []
+    for entry in manifest["records"]:
+        record_path = safe_path(root, entry["record"])
+        if digest_file(record_path) != entry["digest"]:
+            raise ValueError("indexed record digest mismatch")
+        records.append(json.loads(record_path.read_text()))
+    if records != indexed:
+        raise ValueError("formal JSONL and indexed records differ")
+    return records, root

@@ -1,0 +1,12 @@
+{"schema":"ecpa-false-effective-scenarios/v1","scenarios":[
+{"id":"namespace-mismatch","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":false},"expected_observable":["service_started","plugin_not_invoked"]},
+{"id":"resource-conflict","truth":{"activation_possible":false,"conflict":"conflict","rollback_required":false},"expected_observable":["conflict_inputs","decision"]},
+{"id":"partial-worker-coverage","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":false},"expected_observable":["worker_inventory","worker_evidence"]},
+{"id":"worker-replacement","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":false},"expected_observable":["worker_epoch_changed","stale_worker_evidence"]},
+{"id":"stale-evidence","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":false},"expected_observable":["evidence_expired","decision"]},
+{"id":"manager-crash","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":true},"expected_observable":["manager_crash","recovery_state"]},
+{"id":"external-lease-loss","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":true},"expected_observable":["lease_lost","recovery_state"]},
+{"id":"rollback-failure","truth":{"activation_possible":false,"conflict":"not-applicable","rollback_required":true},"expected_observable":["rollback_attempt","rollback_class"]},
+{"id":"compatible-resource-pair","truth":{"activation_possible":true,"conflict":"compatible","rollback_required":false},"expected_observable":["conflict_inputs","decision"]},
+{"id":"conditional-resource-pair","truth":{"activation_possible":true,"conflict":"conditional","rollback_required":false},"expected_observable":["conflict_inputs","decision"]}
+]}
