@@ -500,6 +500,32 @@ def test_real_formal_rejects_caller_assertion_and_empty_registry(tmp_path):
         run_formal_start(identity=asserted, **kwargs)
 
 
+def test_real_formal_requires_target_process_snapshot_before_launch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        runner_module,
+        "verified_adapter_contract",
+        lambda *args, **kwargs: {"verification_id": "reviewed"},
+    )
+    with pytest.raises(ValueError, match="target process snapshot"):
+        run_formal_start(
+            tmp_path,
+            scenarios()[0],
+            json.loads((ROOT / "protocol.json").read_text()),
+            ECPAAdapter(),
+            1,
+            3,
+            executable=sys.executable,
+            arguments=["unused"],
+            observer_executable=sys.executable,
+            observer_arguments=["unused-observer"],
+            identity=_minimal_formal_identity(),
+            timeout_s=1,
+            adapter_verification_id="reviewed",
+        )
+
+
 def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
     tmp_path, monkeypatch
 ):
@@ -1125,6 +1151,164 @@ def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
     else:
         events[0]["sut_process_identity"]["start_ticks"] += 1
     assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
+
+
+def _effect_identity(
+    linux_identity,
+    *,
+    role: str,
+    ordinal: int,
+    epoch: int = 7,
+    host: str = "host-a",
+):
+    return {
+        "host": host,
+        "role": role,
+        "ordinal": ordinal,
+        "process_epoch": epoch,
+        "pid": linux_identity["pid"],
+        "start_ticks": linux_identity["start_ticks"],
+        "start_identity": (
+            f"pid:{linux_identity['pid']}:start_ticks:{linux_identity['start_ticks']}"
+        ),
+        "argv": linux_identity["argv"],
+        "assignment_source": "host",
+    }
+
+
+def _formal_process_record(tmp_path):
+    record = copy.deepcopy(formal_complete_records(tmp_path)[0])
+    record["evidence_class"] = "formal-real"
+    record["identity"]["adapter_verification"] = {
+        "evidence_owner": "vllm-hust-host",
+        "evidence_channel": "host-owned-event-stream",
+    }
+    for event in record["observations"]:
+        event["source_role"] = "host-observer"
+    return record
+
+
+def test_formal_oracle_rejects_controller_only_full_coverage_claim(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0)
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+    next(item for item in record["observations"] if item["event"] == "effective-claim")[
+        "value"
+    ] = True
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "INCOMPLETE"
+    assert result["outcome"]["activation_event_coverage"] == 0.5
+    assert result["outcome"]["false_effective"] is True
+    assert "reported coverage disagrees with process evidence" in result["reasons"]
+
+
+def test_formal_oracle_rejects_one_linux_identity_covering_two_roles(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0),
+        _effect_identity(controller, role="worker", ordinal=0),
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "INCOMPLETE"
+    assert "formal effect process identities contain duplicates" in result["reasons"]
+
+
+def test_formal_oracle_rejects_stale_process_epoch(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 8}
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="worker", ordinal=0, epoch=7)
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "INCOMPLETE"
+    assert "formal effect process is outside the target snapshot" in result["reasons"]
+
+
+def test_formal_oracle_accepts_distinct_complete_effect_processes(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    worker = {"pid": controller["pid"] + 1000, "start_ticks": 12345, "argv": ["worker"]}
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0),
+        _effect_identity(worker, role="worker", ordinal=0),
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "PASS"
+    assert result["outcome"]["activation_event_coverage"] == 1.0
+
+
+def test_formal_oracle_accepts_same_numeric_identity_on_distinct_hosts(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-b", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0, host="host-a"),
+        _effect_identity(controller, role="worker", ordinal=0, host="host-b"),
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "PASS"
+    assert result["outcome"]["activation_event_coverage"] == 1.0
 
 
 def test_oracle_rejects_duplicate_or_reordered_phase_invocations(tmp_path):
