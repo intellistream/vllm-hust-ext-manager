@@ -622,6 +622,70 @@ def test_real_formal_rejects_invalid_target_snapshot_before_adapter_probe(
         )
 
 
+def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
+    tmp_path, monkeypatch
+):
+    protocol = json.loads((ROOT / "protocol.json").read_text())
+    scenario = scenarios()[0]
+    adapter = ECPAAdapter()
+    caller_identity = _minimal_formal_identity()
+    declared_before_probe = copy.deepcopy(caller_identity)
+    verification = {"verification_id": "reviewed"}
+
+    def mutate_caller_during_probe(*args, **kwargs):
+        caller_identity["required_processes"].append(
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 0,
+                "process_epoch": 8,
+            }
+        )
+        caller_identity["software"]["runtime"] = "mutated-during-probe"
+        return verification
+
+    monkeypatch.setattr(
+        runner_module, "verified_adapter_contract", mutate_caller_during_probe
+    )
+    monkeypatch.setattr(runner_module, "_run_start", lambda *args, **kwargs: kwargs)
+    captured = run_formal_start(
+        tmp_path,
+        scenario,
+        protocol,
+        adapter,
+        1,
+        3,
+        executable=sys.executable,
+        arguments=["unused"],
+        observer_executable=sys.executable,
+        observer_arguments=["unused-observer"],
+        identity=caller_identity,
+        timeout_s=1,
+        adapter_verification_id="reviewed",
+    )
+
+    assert len(caller_identity["required_processes"]) == 2
+    assert (
+        captured["identity"]["required_processes"]
+        == declared_before_probe["required_processes"]
+    )
+    assert captured["identity"]["software"] == declared_before_probe["software"]
+    frozen_declared = declared_before_probe | {
+        "fixture_only": False,
+        "adapter_verification": verification,
+    }
+    expected_plan = {
+        "protocol_digest": harness_module.digest_bytes(canonical(protocol)),
+        "scenario_digest": harness_module.digest_bytes(canonical(scenario)),
+        "arm": adapter.arm,
+        "activation_contract": adapter.activation_contract,
+        "declared_identity": frozen_declared,
+    }
+    assert captured["execution_identity"]["plan_id"] == harness_module.digest_bytes(
+        canonical(expected_plan)
+    )
+
+
 def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
     tmp_path, monkeypatch
 ):
