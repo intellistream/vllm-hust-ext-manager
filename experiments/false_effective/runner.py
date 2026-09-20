@@ -369,6 +369,110 @@ class ManualIntegrationAdapter(FormalArmAdapter):
         )
 
 
+def _freeze_plan_snapshot(event_root: Path, artifact: Any) -> tuple[Path, Any]:
+    """Atomically publish validated Plan bytes inside the private run directory."""
+    event_metadata = event_root.stat()
+    if (
+        event_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(event_metadata.st_mode) & 0o022
+    ):
+        raise ValueError("host event directory must be private and owned")
+    token = secrets.token_hex(16)
+    partial_name = f".ecpa-plan-partial-{token}"
+    snapshot_name = f".ecpa-plan-{token}"
+    event_fd = -1
+    snapshot_fd = -1
+    plan_fd = -1
+    created = False
+    published = False
+    try:
+        event_fd = os.open(
+            event_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        opened_event_metadata = os.fstat(event_fd)
+        if (
+            (opened_event_metadata.st_dev, opened_event_metadata.st_ino)
+            != (event_metadata.st_dev, event_metadata.st_ino)
+            or opened_event_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_event_metadata.st_mode) & 0o022
+        ):
+            raise ValueError("host event directory changed while opening")
+        os.mkdir(partial_name, mode=0o700, dir_fd=event_fd)
+        created = True
+        snapshot_fd = os.open(
+            partial_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=event_fd,
+        )
+        plan_fd = os.open(
+            "plan.json",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o400,
+            dir_fd=snapshot_fd,
+        )
+        remaining = memoryview(artifact.raw)
+        while remaining:
+            written = os.write(plan_fd, remaining)
+            if written <= 0:
+                raise OSError("execution-plan snapshot write made no progress")
+            remaining = remaining[written:]
+        os.fsync(plan_fd)
+        os.close(plan_fd)
+        plan_fd = -1
+        os.fsync(snapshot_fd)
+        partial_path = event_root / partial_name / "plan.json"
+        frozen_artifact = read_plan_artifact(partial_path)
+        if (
+            frozen_artifact.raw != artifact.raw
+            or frozen_artifact.plan_id != artifact.plan_id
+        ):
+            raise ValueError("execution-plan snapshot differs from validated input")
+        os.fchmod(snapshot_fd, 0o500)
+        os.fsync(snapshot_fd)
+        os.rename(
+            partial_name,
+            snapshot_name,
+            src_dir_fd=event_fd,
+            dst_dir_fd=event_fd,
+        )
+        published = True
+        os.fsync(event_fd)
+        plan = event_root / snapshot_name / "plan.json"
+        published_artifact = read_plan_artifact(plan)
+        if (
+            published_artifact.raw != artifact.raw
+            or published_artifact.plan_id != artifact.plan_id
+        ):
+            raise ValueError("published execution-plan snapshot differs")
+        return plan, published_artifact
+    except BaseException:
+        if plan_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(plan_fd)
+            plan_fd = -1
+        if snapshot_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.fchmod(snapshot_fd, 0o700)
+            with contextlib.suppress(OSError):
+                os.unlink("plan.json", dir_fd=snapshot_fd)
+        if event_fd >= 0 and created:
+            cleanup_name = snapshot_name if published else partial_name
+            with contextlib.suppress(OSError):
+                os.rmdir(cleanup_name, dir_fd=event_fd)
+        raise
+    finally:
+        if plan_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(plan_fd)
+        if snapshot_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(snapshot_fd)
+        if event_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(event_fd)
+
+
 class ECPAAdapter(FormalArmAdapter):
     def __init__(self):
         super().__init__(
@@ -428,79 +532,8 @@ class ECPAAdapter(FormalArmAdapter):
             or event_root.resolve(strict=True) != event_root
         ):
             raise ValueError("host event directory is not canonical")
-        event_metadata = event_root.stat()
-        if (
-            event_metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(event_metadata.st_mode) & 0o022
-        ):
-            raise ValueError("host event directory must be private and owned")
-        event_fd = os.open(
-            event_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-        opened_event_metadata = os.fstat(event_fd)
-        if (
-            (opened_event_metadata.st_dev, opened_event_metadata.st_ino)
-            != (event_metadata.st_dev, event_metadata.st_ino)
-            or opened_event_metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(opened_event_metadata.st_mode) & 0o022
-        ):
-            os.close(event_fd)
-            raise ValueError("host event directory changed while opening")
-        snapshot_name = f".ecpa-plan-{secrets.token_hex(16)}"
-        snapshot_fd = -1
-        plan_fd = -1
-        created = False
-        try:
-            os.mkdir(snapshot_name, mode=0o700, dir_fd=event_fd)
-            created = True
-            snapshot_fd = os.open(
-                snapshot_name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=event_fd,
-            )
-            plan_fd = os.open(
-                "plan.json",
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o400,
-                dir_fd=snapshot_fd,
-            )
-            remaining = memoryview(artifact.raw)
-            while remaining:
-                written = os.write(plan_fd, remaining)
-                if written <= 0:
-                    raise OSError("execution-plan snapshot write made no progress")
-                remaining = remaining[written:]
-            os.fsync(plan_fd)
-            os.close(plan_fd)
-            plan_fd = -1
-            os.fchmod(snapshot_fd, 0o500)
-            os.fsync(snapshot_fd)
-            os.fsync(event_fd)
-        except BaseException:
-            if plan_fd >= 0:
-                os.close(plan_fd)
-                plan_fd = -1
-            if snapshot_fd >= 0:
-                os.fchmod(snapshot_fd, 0o700)
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink("plan.json", dir_fd=snapshot_fd)
-            if created:
-                with contextlib.suppress(FileNotFoundError):
-                    os.rmdir(snapshot_name, dir_fd=event_fd)
-            raise
-        finally:
-            if plan_fd >= 0:
-                os.close(plan_fd)
-            if snapshot_fd >= 0:
-                os.close(snapshot_fd)
-            os.close(event_fd)
-        plan = str(event_root / snapshot_name / "plan.json")
-        frozen_artifact = read_plan_artifact(plan)
-        if (
-            frozen_artifact.raw != artifact.raw
-            or frozen_artifact.plan_id != artifact.plan_id
-        ):
-            raise ValueError("execution-plan snapshot differs from validated input")
+        frozen_path, frozen_artifact = _freeze_plan_snapshot(event_root, artifact)
+        plan = str(frozen_path)
         argv = [
             manager_executable,
             "formal-run",

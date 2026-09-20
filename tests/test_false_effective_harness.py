@@ -605,6 +605,57 @@ def test_ecpa_managed_launch_has_no_injectable_manager_argument_prefix():
     assert "manager_arguments" not in ECPAAdapter.managed_launch.__annotations__
 
 
+def test_ecpa_managed_launch_closes_event_fd_when_fstat_fails(tmp_path, monkeypatch):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    real_fstat = os.fstat
+
+    def reject_directory(descriptor):
+        metadata = real_fstat(descriptor)
+        if runner_module.stat.S_ISDIR(metadata.st_mode):
+            raise OSError("injected event fstat failure")
+        return metadata
+
+    before = len(list(Path("/proc/self/fd").iterdir()))
+    monkeypatch.setattr(runner_module.os, "fstat", reject_directory)
+    with pytest.raises(OSError, match="injected event fstat failure"):
+        ECPAAdapter().managed_launch(
+            manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+            plan_path=plan_path,
+            launch_id="launch:fstat-failure",
+            controller_instance="controller:fstat-failure",
+            host_event_dir=event_dir,
+            target_argv=[sys.executable, "-c", "pass"],
+            env=dict(os.environ),
+        )
+    assert len(list(Path("/proc/self/fd").iterdir())) == before
+
+
+def test_ecpa_managed_launch_cleans_partial_snapshot_on_publish_failure(
+    tmp_path, monkeypatch
+):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+
+    def reject_fchmod(*args, **kwargs):
+        raise OSError("injected snapshot chmod failure")
+
+    monkeypatch.setattr(runner_module.os, "fchmod", reject_fchmod)
+    with pytest.raises(OSError, match="injected snapshot chmod failure"):
+        ECPAAdapter().managed_launch(
+            manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+            plan_path=plan_path,
+            launch_id="launch:chmod-failure",
+            controller_instance="controller:chmod-failure",
+            host_event_dir=event_dir,
+            target_argv=[sys.executable, "-c", "pass"],
+            env=dict(os.environ),
+        )
+    assert list(event_dir.iterdir()) == []
+
+
 def _minimal_formal_identity() -> dict:
     return {
         "model": "test",

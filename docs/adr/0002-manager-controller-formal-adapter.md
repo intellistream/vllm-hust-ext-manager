@@ -49,6 +49,12 @@ prefix arguments, and constructs
 executes the real manager CLI and verifies the resulting Plan and target
 binding.
 
+The snapshot is an accidental-mutation and validation-to-use safeguard within
+a trusted same-UID runner boundary, not a security boundary against a malicious
+launcher with the same operating-system identity. It is published only after a
+canonical re-read by atomically renaming a `.partial` generation. Formal truth
+must still be reconciled against the Plan ID in manager/host-owned evidence.
+
 Its activation probe does not launch the target. The command is not yet in the
 verified adapter registry and therefore cannot produce a formal-real result.
 
