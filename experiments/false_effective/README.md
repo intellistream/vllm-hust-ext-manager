@@ -64,7 +64,14 @@ host-owned evidence and must carry the same plan/launch/controller/invocation
 identity. Linux process identity is PID plus `/proc/PID/stat` start ticks and
 exact `/proc/PID/cmdline` argv. The runner reads start ticks both before and
 after argv to reject PID-reuse races, and the observer independently records
-the SUT identity it saw. Controlled services are labeled
+the SUT identity it saw. A formal run must additionally freeze a non-empty
+`required_processes` target snapshot (host, role, ordinal, and process epoch)
+in the runner-bound identity. `plugin-invoked` carries the distinct
+host-assigned process identities observed at the real effect boundary. The
+oracle derives coverage from those identities and rejects caller- or
+observer-reported coverage that does not match; a controller ACK therefore
+cannot stand in for EngineCore/worker execution, and one process identity
+cannot cover multiple target roles. Controlled services are labeled
 `interface-fixture`, may test protocol mechanics, never create a formal
 manifest, and are rejected from formal aggregation even if copied, renamed, or
 reached through a symlink. Direct and textual interpreter references to known

@@ -44,6 +44,7 @@ FORMAL_HOST_OBSERVABLES = {
     "activation-path",
     "effective-claim",
     "plugin-invoked",
+    "coverage",
 }
 
 
@@ -929,6 +930,13 @@ def run_formal_start(
             observer_executable,
             observer_arguments,
         )
+        if (
+            not isinstance(identity.get("required_processes"), list)
+            or not identity["required_processes"]
+        ):
+            raise ValueError(
+                "formal-real execution requires a non-empty target process snapshot"
+            )
         evidence_class = "formal-real"
         measurement_source = "registry-pinned-host-evidence-observer"
     identity["adapter_verification"] = verification

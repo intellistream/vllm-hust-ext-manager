@@ -52,6 +52,7 @@ FORMAL_HOST_OBSERVABLES = {
     "activation-path",
     "effective-claim",
     "plugin-invoked",
+    "coverage",
 }
 
 
@@ -366,6 +367,138 @@ def run_command(
     return {**command, "command_sha256": digest_file(command_path)}
 
 
+def formal_process_coverage(
+    record: dict[str, Any],
+    invoked_event: dict[str, Any] | None,
+    coverage_event: dict[str, Any] | None,
+    reasons: list[str],
+) -> float | None:
+    """Recompute formal hook coverage from a Plan-bound target snapshot.
+
+    The runner-owned controller identity proves only which process answered the
+    phase protocol. Runtime-effect coverage is instead derived from distinct
+    host-assigned process identities observed at the hook boundary.
+    """
+    required = record.get("identity", {}).get("required_processes")
+    required_fields = {"host", "role", "ordinal", "process_epoch"}
+    if not isinstance(required, list) or not required:
+        reasons.append("formal target process snapshot is missing")
+        return None
+
+    required_keys: list[tuple[str, str, int, int]] = []
+    for item in required:
+        if not isinstance(item, dict) or set(item) != required_fields:
+            reasons.append("formal target process snapshot is malformed")
+            return None
+        host, role = item.get("host"), item.get("role")
+        ordinal, epoch = item.get("ordinal"), item.get("process_epoch")
+        if (
+            not isinstance(host, str)
+            or not host
+            or not isinstance(role, str)
+            or not role
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 0
+            or isinstance(epoch, bool)
+            or not isinstance(epoch, int)
+            or epoch < 0
+        ):
+            reasons.append("formal target process snapshot is malformed")
+            return None
+        required_keys.append((host, role, ordinal, epoch))
+    if len(required_keys) != len(set(required_keys)):
+        reasons.append("formal target process snapshot contains duplicates")
+        return None
+
+    observed = (
+        invoked_event.get("effect_process_identities")
+        if isinstance(invoked_event, dict)
+        else None
+    )
+    if not isinstance(observed, list):
+        reasons.append("formal invocation lacks effect process identities")
+        return None
+
+    observed_fields = {
+        "host",
+        "role",
+        "ordinal",
+        "process_epoch",
+        "pid",
+        "start_ticks",
+        "start_identity",
+        "argv",
+        "assignment_source",
+    }
+    observed_keys: list[tuple[str, str, int, int]] = []
+    linux_identities: list[tuple[int, int, tuple[str, ...]]] = []
+    malformed = False
+    for item in observed:
+        if not isinstance(item, dict) or set(item) != observed_fields:
+            malformed = True
+            break
+        host, role = item.get("host"), item.get("role")
+        ordinal, epoch = item.get("ordinal"), item.get("process_epoch")
+        pid, start_ticks, argv = (
+            item.get("pid"),
+            item.get("start_ticks"),
+            item.get("argv"),
+        )
+        if (
+            not isinstance(host, str)
+            or not host
+            or not isinstance(role, str)
+            or not role
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 0
+            or isinstance(epoch, bool)
+            or not isinstance(epoch, int)
+            or epoch < 0
+            or isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or pid <= 0
+            or isinstance(start_ticks, bool)
+            or not isinstance(start_ticks, int)
+            or start_ticks <= 0
+            or not isinstance(argv, list)
+            or not argv
+            or any(not isinstance(arg, str) or not arg for arg in argv)
+            or item.get("start_identity") != f"pid:{pid}:start_ticks:{start_ticks}"
+            or item.get("assignment_source") != "host"
+        ):
+            malformed = True
+            break
+        observed_keys.append((host, role, ordinal, epoch))
+        linux_identities.append((pid, start_ticks, tuple(argv)))
+    if malformed:
+        reasons.append("formal effect process identity is malformed")
+        return None
+    if len(observed_keys) != len(set(observed_keys)) or len(linux_identities) != len(
+        set(linux_identities)
+    ):
+        reasons.append("formal effect process identities contain duplicates")
+        return None
+    if not set(observed_keys).issubset(required_keys):
+        reasons.append("formal effect process is outside the target snapshot")
+        return None
+
+    invoked = invoked_event.get("value") if invoked_event else None
+    if not isinstance(invoked, bool) or invoked != bool(observed_keys):
+        reasons.append("plugin invocation claim disagrees with process evidence")
+    computed = len(observed_keys) / len(required_keys)
+    reported = coverage_event.get("value") if coverage_event else None
+    if (
+        isinstance(reported, bool)
+        or not isinstance(reported, (int, float))
+        or not math.isfinite(reported)
+        or not math.isclose(reported, computed, rel_tol=0.0, abs_tol=1e-12)
+    ):
+        reasons.append("reported coverage disagrees with process evidence")
+    return computed
+
+
 def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     observations = record["observations"]
     forbidden = {"truth", "false_effective", "conflict_truth"}
@@ -384,6 +517,8 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         "plugin-invoked",
         "service-shutdown",
     ]
+    if record.get("evidence_class") == "formal-real":
+        required.append("coverage")
     reasons = [f"missing observable: {name}" for name in required if name not in events]
     reasons.extend(f"duplicate observable: {name}" for name in duplicate)
     causal_evidence = record.get("evidence_class") in {
@@ -496,9 +631,20 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     claimed = bool(events.get("effective-claim", {}).get("value", False))
     invoked = bool(events.get("plugin-invoked", {}).get("value", False))
     covered = events.get("coverage", {}).get("value")
+    if record.get("evidence_class") == "formal-real":
+        covered = formal_process_coverage(
+            record,
+            events.get("plugin-invoked"),
+            events.get("coverage"),
+            reasons,
+        )
     decision = events.get("conflict-decision", {}).get("value")
     rollback = events.get("rollback-class", {}).get("value")
-    false_effective = claimed and (not truth["activation_possible"] or not invoked)
+    false_effective = claimed and (
+        not truth["activation_possible"]
+        or not invoked
+        or (record.get("evidence_class") == "formal-real" and covered != 1.0)
+    )
     rollback_success = None
     if truth["rollback_required"]:
         rollback_success = rollback in {"RESTORED_STRONG", "BEHAVIORAL"}
