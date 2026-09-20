@@ -53,20 +53,26 @@ The snapshot is an accidental-mutation and validation-to-use safeguard within
 a trusted same-UID runner boundary, not a security boundary against a malicious
 launcher with the same operating-system identity. It is published only after a
 canonical re-read by atomically renaming a `.partial` generation. Formal truth
-must still be reconciled against the Plan ID in manager/host-owned evidence.
+is reconciled against the Plan ID in manager/host-owned evidence. The runner
+also seals the snapshot digest in the command binding, and offline validation
+re-reads the Plan artifact, recomputes its Plan ID and digest, and binds both to
+the executed launch/controller identities.
 
-Its activation probe does not launch the target. The command is not yet in the
-verified adapter registry and therefore cannot produce a formal-real result.
+Its activation probe exercises the real manager `formal-run` parser without
+launching the target. ECPA formal-real admission independently fingerprints the
+manager, target, and observer; the executed argv must match the manager-owned
+launch envelope and the separately pinned target argv. The generic adapter
+verifier rejects ECPA, so there is no fallback path based on appending synthetic
+activation flags to the target. The registry remains empty, so this mechanism
+cannot yet produce a formal-real result.
 
 ## Remaining gate
 
-The runner still must make this constructor the only ECPA formal-real launch
-path, bind registry verification to both manager and target fingerprints, and
-independently associate host-assigned EngineCore/worker identities with the
-same launch. A causal phase controller and real workload/fault driver must be
-added without treating its ACKs as effect evidence. Registration is forbidden
-until vLLM-HUST PR #27 is human-reviewed and merged and the first real cell is
-independently reproduced.
+The remaining gate is to independently associate host-assigned
+EngineCore/worker identities with this same Plan/launch/controller tuple under
+a real workload and fault driver, without treating controller ACKs as effect
+evidence. Registration is forbidden until vLLM-HUST PR #27 is human-reviewed
+and merged and the first real cell is independently reproduced.
 
 BidKV remains an unchanged case-study candidate; this decision neither changes
 its algorithm nor adds a second inference engine.
