@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -27,6 +28,29 @@ def main() -> int:
     corpus_schema = load(ROOT / "docs/corpus/plugins.schema.json")
     corpus = load(ROOT / "docs/corpus/plugins.json")
     jsonschema.Draft7Validator(corpus_schema).validate(corpus)
+    planner = ROOT / "experiments/contract_planner"
+    for schema_path, artifact_path in (
+        (spec / "contract-taxonomy.schema.json", spec / "contract-taxonomy.json"),
+        (planner / "cases.schema.json", planner / "cases.json"),
+        (planner / "oracle.schema.json", planner / "oracle.json"),
+    ):
+        schema = load(schema_path)
+        jsonschema.Draft7Validator.check_schema(schema)
+        jsonschema.Draft7Validator(schema).validate(load(artifact_path))
+    planner_cases = load(planner / "cases.json")
+    planner_oracle = load(planner / "oracle.json")
+    assert (
+        planner_oracle["cases_sha256"]
+        == hashlib.sha256((planner / "cases.json").read_bytes()).hexdigest()
+    )
+    assert (
+        planner_oracle["taxonomy_sha256"]
+        == hashlib.sha256((spec / "contract-taxonomy.json").read_bytes()).hexdigest()
+    )
+    assert (
+        planner_oracle["source_corpus_sha256"]
+        == hashlib.sha256((ROOT / "docs/corpus/plugins.json").read_bytes()).hexdigest()
+    )
     jsonschema.Draft7Validator(load(spec / "protocol.schema.json")).validate(
         load(spec / "protocol-instance.json")
     )
@@ -51,7 +75,9 @@ def main() -> int:
     print(
         "ECPA 0.1 draft: manifest and protocol examples valid, "
         f"2 invalid examples rejected, 2 host events valid, corpus valid, "
-        f"{len(vectors['cases'])} attestation vectors indexed"
+        f"{len(vectors['cases'])} attestation vectors indexed, "
+        f"{len(planner_cases['cases'])} L2 cases structurally validated "
+        f"with a {planner_oracle['status']} oracle"
     )
     return 0
 

@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/spec/ecpa/0.1/contract-taxonomy.schema.json",
+  "type": "object",
+  "required": ["schema", "scope", "decision_precedence", "capabilities", "resources"],
+  "properties": {
+    "schema": {"const": "ecpa-contract-taxonomy/0.1-draft"},
+    "scope": {"const": "vLLM-HUST-static-contract-study"},
+    "decision_precedence": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["unknown-resource", "invalid-mode", "capability-cardinality", "resource-mode", "mediator-consistency", "mediator-presence"]}
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "description"],
+        "properties": {
+          "name": {"$ref": "#/definitions/identifier"},
+          "description": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["canonical", "aliases", "allowed_modes", "description"],
+        "properties": {
+          "canonical": {"$ref": "#/definitions/identifier"},
+          "aliases": {"type": "array", "items": {"$ref": "#/definitions/identifier"}},
+          "allowed_modes": {"type": "array", "minItems": 1, "items": {"enum": ["exclusive", "shared-read", "mediated"]}},
+          "description": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "definitions": {
+    "identifier": {"type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"}
+  },
+  "additionalProperties": false
+}
