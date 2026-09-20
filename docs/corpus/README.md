@@ -28,6 +28,15 @@ Unavailable or unverified fields use the literal `unknown`. Ownership is copied
 only from the authoritative llm-optimizations ledger; an empty/unknown owner is
 not inferred from commit authorship.
 
+`source-snapshots.json` freezes the requested and GitHub-resolved repository
+identity, numeric repository identity, default branch, exact commit/tree, and
+every corpus evidence object's Git object ID. The snapshot is source identity
+evidence only: it prevents a later branch move or repository redirect from
+silently changing the modeled inputs, but it does not establish that a plugin
+was invoked, affected a runtime decision, or remained effective. A corpus path
+must resolve inside its repository's frozen tree; line suffixes are annotations
+on a pinned blob rather than independent identities.
+
 Audit limitation: the read-only shallow clones for
 `Qixin-Gaoke/kvdelta-plugin` and `Qixin-Gaoke/adaptive-selector-plugin` did not
 complete during this pass. They are therefore not admitted from repository

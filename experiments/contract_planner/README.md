@@ -49,7 +49,8 @@ obligation, invokes the reference compiler with the frozen taxonomy, and writes
 canonical per-case decisions plus aggregate and per-dimension confusion
 matrices. The checked-in `results/` artifacts bind the three reviewed inputs,
 the exact reviewed oracle bytes and review commits, the evaluator source, the
-compiler source, and the raw-decision digest. The evaluator contains the
+compiler source, the exact repository/tree/evidence-object source snapshot,
+and the raw-decision digest. The evaluator contains the
 reviewed oracle digest as a code-reviewed constant, so editing status/verdict
 or regenerating labels from compiler output fails before scoring.
 
@@ -71,3 +72,7 @@ external validity. Every conflicting composition includes a synthetic boundary
 control, and the evidence-backed descriptors remain study abstractions rather
 than source-shipped ECPA manifests. Real manifest migration and runtime cells
 remain separate work.
+
+The source snapshot binds repository identity, redirect resolution, commits,
+trees, and evidence-object Git IDs. It does not turn a modeled descriptor into
+a source-shipped ECPA manifest and does not prove runtime effectiveness.

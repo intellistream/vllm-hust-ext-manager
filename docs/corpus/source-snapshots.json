@@ -1,0 +1,228 @@
+{
+  "schema": "ecpa-corpus-source-snapshots/0.1",
+  "observed_at": "2026-09-21T06:24:00+08:00",
+  "authority": "GitHub repository, commit, tree, and evidence-object observations; source identity only, not runtime-effect evidence",
+  "sources": [
+    {
+      "requested_repository": "vLLM-HUST/vllm-hust-bidkv",
+      "resolved_repository": "vLLM-HUST/vllm-hust-bidkv",
+      "repository_id": 1240350965,
+      "node_id": "R_kgDOSe5A9Q",
+      "visibility": "public",
+      "default_branch": "main",
+      "commit_sha": "a0cba97d9abdc99908e46616db622f0e0099127f",
+      "tree_sha": "c74c2762ad9175d59bac7b24f647e0ebcd2b9b22",
+      "evidence_objects": [
+        {"path": "README.md", "type": "blob", "git_object_sha": "f743fe20d075b9acfb911c8a5ad19567f415d5b1"},
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "d2b2b0e1d5a4632ee5213fb99db0d83fb3716432"},
+        {"path": "src/bidkv/manifests/vllm-hust-extension-v0.2.json", "type": "blob", "git_object_sha": "28834665fb7a73556630599cee48a66385f78359"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/vllm-hust-ext-manager",
+      "resolved_repository": "intellistream/vllm-hust-ext-manager",
+      "repository_id": 1373907598,
+      "node_id": "R_kgDOUeQqjg",
+      "visibility": "public",
+      "default_branch": "main",
+      "commit_sha": "9a1369d23ee32f3bb84583fb1695b2ff7cf4eb43",
+      "tree_sha": "ef9151532e2c34eb42554795f67b248e11ee92ef",
+      "evidence_objects": [
+        {"path": "docs/evidence/mooncake-store-vllm-ascend-180-2026-09-01.md", "type": "blob", "git_object_sha": "6049be45ca55953b6646228883d5cfc24014733e"},
+        {"path": "docs/evidence/production-stack-real-model-180-2026-09-01.md", "type": "blob", "git_object_sha": "0805e28385e6950fe5c771f7b271dcf37da46501"},
+        {"path": "examples/mooncake-provider/pyproject.toml", "type": "blob", "git_object_sha": "4acb127809bca892b5d9de0b318cdbe70d7d0c2b"},
+        {"path": "examples/mooncake-provider/src/vllm_hust_mooncake_provider/manifests/vllm-hust-extension-v0.2.json", "type": "blob", "git_object_sha": "3ab0835f2bc157b0f09d8792bce033590008151d"},
+        {"path": "examples/production-stack-provider/pyproject.toml", "type": "blob", "git_object_sha": "5837012e74fb52e0e1898ed351137f1ea6899de2"},
+        {"path": "examples/production-stack-provider/src/vllm_hust_production_stack_provider/manifests/vllm-hust-extension-v0.2.json", "type": "blob", "git_object_sha": "f7c4502f77b697266069d7c4cc3f28d8b42fdc63"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/kv-admission-plugin",
+      "resolved_repository": "Qixin-Gaoke/kv-admission-plugin",
+      "repository_id": 1182193480,
+      "node_id": "R_kgDORnbXSA",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "b19003b3bb81648c0fff5f037aa10c0fcabf2f1f",
+      "tree_sha": "357f5b8dac88617b32de4c0b1fa7d36d62d8050d",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "e6d52d1c56c2ca662a0acf0c5b7f7bc6bd2cc459"},
+        {"path": "src/vllm_kv_admission/plugin.py", "type": "blob", "git_object_sha": "47256971dfa7935f065fc0464efcf3447b1811c9"},
+        {"path": "tests/test_plugin.py", "type": "blob", "git_object_sha": "654466a8608dd740d67ad5365b4019df152b2307"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/vllm-request-lifecycle-profiler-plugin",
+      "resolved_repository": "vLLM-HUST/vllm-hust-request-lifecycle-profiler",
+      "repository_id": 1296664162,
+      "node_id": "R_kgDOTUmGYg",
+      "visibility": "public",
+      "default_branch": "main",
+      "commit_sha": "e32a0e91027ae7a2b96bf48d2dcb7db1b3c42c87",
+      "tree_sha": "87a4fe5439ed5ee947ada677d9677d4170e56b12",
+      "evidence_objects": [
+        {"path": "README.md", "type": "blob", "git_object_sha": "9016cd6ab1b6b749c9d9d1d685ecf458457289c6"},
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "7b38f4296b121afd82910da62be83ab1f143570a"},
+        {"path": "scripts/verify_g0_pinned_pair.py", "type": "blob", "git_object_sha": "132623c563c020b8b1135d2cedecba9cc08e3df8"},
+        {"path": "src/vllm_request_lifecycle_profiler/plugin.py", "type": "blob", "git_object_sha": "e25304c3eb3f4fea4df8ba22a3443529817e49f3"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/kv-prefix-sharing-plugin",
+      "resolved_repository": "Qixin-Gaoke/kv-prefix-sharing-plugin",
+      "repository_id": 1204682110,
+      "node_id": "R_kgDOR839fg",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "ea82808a95ec4b33ea8e026afbc3689781cba87c",
+      "tree_sha": "bfff127bde5d68770ed8be5049062fe04b00fd20",
+      "evidence_objects": [
+        {"path": "README.md", "type": "blob", "git_object_sha": "7bc645fc2199da292c9ff000a8d775fcf8ee57c5"},
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "04aa832c43cd994c63036feb03c7fa70766eb980"},
+        {"path": "src/vllm_kv_prefix_sharing/plugin.py", "type": "blob", "git_object_sha": "bc414c7e84ee253f22012d81dfd70139ca69e889"},
+        {"path": "tests/test_native_runtime_contract.py", "type": "blob", "git_object_sha": "02fb6e233c7836bf3ea74d90dd4aa0ef5330ce4d"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/tiered-kv-cache-plugin",
+      "resolved_repository": "Qixin-Gaoke/tiered-kv-cache-plugin",
+      "repository_id": 1204406347,
+      "node_id": "R_kgDOR8nISw",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "d65bbebe4c5217f9cbfa72947ffc6c1b8554d96f",
+      "tree_sha": "2dfddf945ea2aba9f7a36a1804e37e7b66c88791",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "f8be80be4d92107ec8a17319ced38538fa740888"},
+        {"path": "src/vllm_tiered_kv_cache/plugin.py", "type": "blob", "git_object_sha": "8f6ac399739992efb81a4bf65977d9315c052d40"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/platform-backend-plugin",
+      "resolved_repository": "Qixin-Gaoke/platform-backend-plugin",
+      "repository_id": 1219151889,
+      "node_id": "R_kgDOSKrIEQ",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "2a7b9634721ae706b300e422a636e506af303b73",
+      "tree_sha": "2d557dff278210fbca08746e3be75ecb9f6ab9f3",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "b1ed058ddb821f69fcecef267811ab057ceeed05"},
+        {"path": "src/vllm_platform_backend/plugin.py", "type": "blob", "git_object_sha": "b7a356b31f8bad0a2c4fee3640c209b2302ead56"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/state-scheduler-plugin",
+      "resolved_repository": "Qixin-Gaoke/state-scheduler-plugin",
+      "repository_id": 1216505277,
+      "node_id": "R_kgDOSIJlvQ",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "65e81fa6d1ba3eefc343f3c648ad99f0c4e93e4f",
+      "tree_sha": "6fd88964626d992407047c5181cbf41ac48a3983",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "7b04110462bd3b1b12480e77f670be1717c03cb3"},
+        {"path": "src/vllm_state_scheduler/plugin.py", "type": "blob", "git_object_sha": "2fc3408f472afe647365c0382205c9208590319b"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/vllm-token-budget-governor-plugin",
+      "resolved_repository": "Qixin-Gaoke/vllm-token-budget-governor-plugin",
+      "repository_id": 1296663896,
+      "node_id": "R_kgDOTUmFWA",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "6cd046d63cb311454e6f36bacdc1587131990475",
+      "tree_sha": "ea6785d2c1f03236dc661f16f32b0c48c9e078e1",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "62b40b4111480d5945b3609c43e0c45d6bfed94c"},
+        {"path": "src/vllm_token_budget_governor/plugin.py", "type": "blob", "git_object_sha": "ca014ef5de292baf70e1c677a5c8812ccd3ef9bc"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/quality-bounded-inference-plugin",
+      "resolved_repository": "intellistream/quality-bounded-inference-plugin",
+      "repository_id": 1216505336,
+      "node_id": "R_kgDOSIJl-A",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "3c833eac9157faee1dea6130819a2905e61da9cc",
+      "tree_sha": "4b84bbab9cfb320cb28d5e4febda6db11c31b340",
+      "evidence_objects": [
+        {"path": "pyproject.toml", "type": "blob", "git_object_sha": "ce1e77202ce0721a7c9ff49608c22f149761fba2"},
+        {"path": "src/vllm_quality_bounded_inference/plugin.py", "type": "blob", "git_object_sha": "59e15501c18a45f468775eae97c13082d2451925"},
+        {"path": "src/vllm_quality_bounded_inference/source_backed_candidate_adapters.py", "type": "blob", "git_object_sha": "46a79d7ab94a030b44f185dfc2deb6d992136204"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/memory-evolution-plugin",
+      "resolved_repository": "intellistream/memory-evolution-plugin",
+      "repository_id": 1219523099,
+      "node_id": "R_kgDOSLByGw",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "9e78fe5ac29b0432b58ff2147096f9595f0e3922",
+      "tree_sha": "4f940dd183237205bfa53bf53934950a25661fe1",
+      "evidence_objects": [
+        {"path": "README.md", "type": "blob", "git_object_sha": "5f52618df94729dbbd870fc3dce4fee8e776412c"},
+        {"path": "src", "type": "tree", "git_object_sha": "80f16eb1486fdbc28750f77572b17a6501bd16ac"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/vllm-agent-state-tiering",
+      "resolved_repository": "intellistream/vllm-agent-state-tiering",
+      "repository_id": 1315653658,
+      "node_id": "R_kgDOTmtIGg",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "64e006965f917d6fbd440017743fdc6b035cd64f",
+      "tree_sha": "63e3bcee84dff3e215f98f7b0205ff6d9f1f2949",
+      "evidence_objects": [
+        {"path": "schemas/common_schema.json", "type": "blob", "git_object_sha": "1176e6454bda682c2b4d424de5d5d593aaede424"},
+        {"path": "src/agent_state_tiering/policy", "type": "tree", "git_object_sha": "b00e12f8669a52602746a42c27a213eb2321aa41"}
+      ]
+    },
+    {
+      "requested_repository": "intellistream/adapter-serving-plugin",
+      "resolved_repository": "intellistream/adapter-serving-plugin",
+      "repository_id": 1219143586,
+      "node_id": "R_kgDOSKqnog",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "a90b60f108778719ef451a9417e2f4c1e60a0caa",
+      "tree_sha": "090226b475613270553138fbb38702589ea2574d",
+      "evidence_objects": [
+        {"path": "README.md", "type": "blob", "git_object_sha": "412404b04f1f660aa7ce275555586ff007c6a73d"},
+        {"path": "src", "type": "tree", "git_object_sha": "f2dcffccc1f45f6c44967fe25dff13f4cef0215c"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/compilation-plugin",
+      "resolved_repository": "Qixin-Gaoke/compilation-plugin",
+      "repository_id": 1219158778,
+      "node_id": "R_kgDOSKri-g",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "7a918ae5d3b9ad5d7d0e7b218ccfbfb15034b348",
+      "tree_sha": "f8effc00adfa05a2cd765f31e5073e6f69ed4fe0",
+      "evidence_objects": [
+        {"path": "manifests/compilation_failure_quarantine_gate.json", "type": "blob", "git_object_sha": "03e264c517964307bce7244d6103b5a6e0ab5ec6"},
+        {"path": "src/vllm_compilation", "type": "tree", "git_object_sha": "9dab291e36612795c235a8a916e84f176bf4d378"}
+      ]
+    },
+    {
+      "requested_repository": "Qixin-Gaoke/attention-kernel-plugin",
+      "resolved_repository": "Qixin-Gaoke/attention-kernel-plugin",
+      "repository_id": 1219158330,
+      "node_id": "R_kgDOSKrhOg",
+      "visibility": "private",
+      "default_branch": "main",
+      "commit_sha": "b04ccc4973711553cf9b1dcb047977634141fd01",
+      "tree_sha": "4e899f9f367ed3be2c0990c500ec99620a5ba2b6",
+      "evidence_objects": [
+        {"path": "evidence/attention_dispatch_action_gate_manifest.json", "type": "blob", "git_object_sha": "2a482269587e846af69d8eaa68ca2fe6cd721e3e"},
+        {"path": "src/vllm_attention_kernel/attention_kernel_probe.py", "type": "blob", "git_object_sha": "ab665c309267c34c8c48549e04e563963433310a"}
+      ]
+    }
+  ]
+}

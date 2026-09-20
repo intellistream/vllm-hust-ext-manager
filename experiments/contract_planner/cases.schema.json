@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://vllm-hust.example/experiments/contract-planner/cases.schema.json",
   "type": "object",
-  "required": ["schema", "classification", "host", "source_corpus", "taxonomy", "contracts", "cases", "excluded_candidates"],
+  "required": ["schema", "classification", "host", "source_corpus", "source_snapshots", "taxonomy", "contracts", "cases", "excluded_candidates"],
   "properties": {
     "schema": {"const": "ecpa-contract-planner-cases/0.1"},
     "classification": {"const": "modeled-static-contract-corpus"},
@@ -13,6 +13,7 @@
       "additionalProperties": false
     },
     "source_corpus": {"const": "docs/corpus/plugins.json"},
+    "source_snapshots": {"const": "docs/corpus/source-snapshots.json"},
     "taxonomy": {"const": "spec/0.1/contract-taxonomy.json"},
     "contracts": {
       "type": "array",

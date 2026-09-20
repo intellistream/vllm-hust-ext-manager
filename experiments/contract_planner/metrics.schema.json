@@ -18,11 +18,12 @@
     },
     "inputs": {
       "type": "object",
-      "required": ["cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "oracle_sha256"],
+      "required": ["cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "source_snapshots_sha256", "oracle_sha256"],
       "properties": {
         "cases_sha256": {"$ref": "#/definitions/digest"},
         "taxonomy_sha256": {"$ref": "#/definitions/digest"},
         "source_corpus_sha256": {"$ref": "#/definitions/digest"},
+        "source_snapshots_sha256": {"$ref": "#/definitions/digest"},
         "oracle_sha256": {"$ref": "#/definitions/digest"}
       },
       "additionalProperties": false

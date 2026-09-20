@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import jsonschema
@@ -17,6 +18,10 @@ def load(path: Path):
     return json.loads(path.read_text())
 
 
+def corpus_evidence_path(value: str) -> str:
+    return re.sub(r":[0-9]+(?:-[0-9]+)?$", "", value).rstrip("/")
+
+
 def main() -> int:
     spec = ROOT / "spec/0.1"
     validator = jsonschema.Draft7Validator(load(spec / "manifest.schema.json"))
@@ -28,6 +33,27 @@ def main() -> int:
     corpus_schema = load(ROOT / "docs/corpus/plugins.schema.json")
     corpus = load(ROOT / "docs/corpus/plugins.json")
     jsonschema.Draft7Validator(corpus_schema).validate(corpus)
+    source_snapshots_path = ROOT / corpus["source_snapshots"]
+    source_snapshots_schema = load(ROOT / "docs/corpus/source-snapshots.schema.json")
+    source_snapshots = load(source_snapshots_path)
+    jsonschema.Draft7Validator.check_schema(source_snapshots_schema)
+    jsonschema.Draft7Validator(source_snapshots_schema).validate(source_snapshots)
+    snapshots_by_repository = {
+        item["requested_repository"]: item for item in source_snapshots["sources"]
+    }
+    assert len(snapshots_by_repository) == len(source_snapshots["sources"])
+    corpus_records = [*corpus["plugins"], *corpus["candidates"]]
+    assert set(snapshots_by_repository) == {
+        item["repository"] for item in corpus_records
+    }
+    for item in corpus_records:
+        paths = {corpus_evidence_path(value) for value in item["evidence"]}
+        snapshot_objects = snapshots_by_repository[item["repository"]][
+            "evidence_objects"
+        ]
+        object_paths = [value["path"] for value in snapshot_objects]
+        assert len(object_paths) == len(set(object_paths))
+        assert paths <= set(object_paths)
     planner = ROOT / "experiments/contract_planner"
     for schema_path, artifact_path in (
         (spec / "contract-taxonomy.schema.json", spec / "contract-taxonomy.json"),
@@ -51,6 +77,10 @@ def main() -> int:
         planner_oracle["source_corpus_sha256"]
         == hashlib.sha256((ROOT / "docs/corpus/plugins.json").read_bytes()).hexdigest()
     )
+    assert (
+        planner_oracle["source_snapshots_sha256"]
+        == hashlib.sha256(source_snapshots_path.read_bytes()).hexdigest()
+    )
     decisions_path = planner / "results/decisions.jsonl"
     decisions = [json.loads(line) for line in decisions_path.read_text().splitlines()]
     decision_validator = jsonschema.Draft7Validator(
@@ -71,6 +101,7 @@ def main() -> int:
         "cases_sha256": planner_oracle["cases_sha256"],
         "taxonomy_sha256": planner_oracle["taxonomy_sha256"],
         "source_corpus_sha256": planner_oracle["source_corpus_sha256"],
+        "source_snapshots_sha256": planner_oracle["source_snapshots_sha256"],
         "oracle_sha256": hashlib.sha256(
             (planner / "oracle.json").read_bytes()
         ).hexdigest(),

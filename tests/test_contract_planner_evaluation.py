@@ -13,6 +13,7 @@ from experiments.contract_planner.evaluate import (
     DEFAULT_CASES,
     DEFAULT_CORPUS,
     DEFAULT_ORACLE,
+    DEFAULT_SOURCE_SNAPSHOTS,
     DEFAULT_TAXONOMY,
     REVIEWED_ORACLE_ARTIFACT_COMMIT,
     REVIEWED_ORACLE_CONTENT_COMMIT,
@@ -48,6 +49,10 @@ def test_evaluator_matches_independent_oracle_and_preserves_raw_decisions() -> N
         ).hexdigest(),
     }
     assert metrics["inputs"]["oracle_sha256"] == REVIEWED_ORACLE_SHA256
+    assert (
+        metrics["inputs"]["source_snapshots_sha256"]
+        == hashlib.sha256(DEFAULT_SOURCE_SNAPSHOTS.read_bytes()).hexdigest()
+    )
     assert metrics["oracle"] == {
         "sha256": REVIEWED_ORACLE_SHA256,
         "content_review_commit": REVIEWED_ORACLE_CONTENT_COMMIT,
