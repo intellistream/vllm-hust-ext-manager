@@ -76,6 +76,85 @@ def activation_probe(adapter, arguments):
     }
 
 
+def lifecycle_registry_fields(tmp_path):
+    source = tmp_path / "lifecycle_fact_source.py"
+    source.write_text(
+        """import json, os, sys, time
+from pathlib import Path
+request = json.loads(sys.stdin.readline())
+assert request['fact'] == sys.argv[1]
+pid = request['sut_pid']
+identity = request['sut_process_identity']
+if request['fact'] != 'service-shutdown':
+    stat = Path(f'/proc/{pid}/stat').read_text()
+    close = stat.rfind(')')
+    ticks = int(stat[close + 2:].split()[19])
+    argv = Path(f'/proc/{pid}/cmdline').read_bytes().rstrip(b'\\0').split(b'\\0')
+    assert ticks == identity['start_ticks']
+    assert [part.decode() for part in argv] == identity['argv']
+else:
+    process_path = Path(f'/proc/{pid}')
+    if process_path.exists():
+        stat = (process_path / 'stat').read_text()
+        assert stat[stat.rfind(')') + 2:].split()[0] == 'Z'
+payload = {
+    'schema': 'ecpa-formal-lifecycle-fact/v1',
+    'fact': request['fact'],
+    'source_kind': request['source_kind'],
+    'plan_id': request['plan_id'],
+    'launch_id': request['launch_id'],
+    'controller_instance': request['controller_instance'],
+    'invocation_id': request['invocation_id'],
+    'sequence': request['sequence'],
+    'challenge': request['challenge'],
+    'monotonic_ns': time.monotonic_ns(),
+    'value': request['scenario'] if request['fact'] == 'fault-injected' else True,
+    'sut_process_identity': identity,
+}
+print(json.dumps(payload, sort_keys=True, separators=(',', ':')), flush=True)
+"""
+    )
+    commands = {
+        phase: (sys.executable, [str(source), phase])
+        for phase in runner_module.FORMAL_LIFECYCLE_FACT_SOURCES
+    }
+    fields = {
+        "lifecycle_fact_schema": "ecpa-formal-lifecycle-fact/v1",
+        "lifecycle_fact_schema_digest": digest_file(
+            runner_module.FORMAL_LIFECYCLE_FACT_SCHEMA_PATH
+        ),
+        "lifecycle_fact_sources": runner_module.FORMAL_LIFECYCLE_FACT_SOURCES,
+        "lifecycle_fact_command_digests": {
+            phase: command_fingerprint(executable, arguments)["digest"]
+            for phase, (executable, arguments) in commands.items()
+        },
+    }
+    return fields, commands
+
+
+def lifecycle_process_records(fingerprints):
+    metadata = Path(sys.executable).resolve().stat()
+    return {
+        phase: {
+            "argv": [fingerprint["executable"], *fingerprint["arguments"]],
+            "pid": 9000 + index,
+            "start_identity": f"pid:{9000 + index}@ticks:{1000 + index}",
+            "linux_identity": {
+                "pid": 9000 + index,
+                "start_ticks": 1000 + index,
+                "argv": [fingerprint["executable"], *fingerprint["arguments"]],
+            },
+            "executable_identity": {
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+            },
+            "command_digest": fingerprint["digest"],
+            "exit_code": 0,
+        }
+        for index, (phase, fingerprint) in enumerate(sorted(fingerprints.items()))
+    }
+
+
 def test_formal_planned_aggregate_has_zero_cells_and_null_metrics(tmp_path):
     result = aggregate(planned(), tmp_path, formal=True)
     assert result["completed_cells"] == 0
@@ -1071,6 +1150,7 @@ if args.ecpa_formal_activation_probe:
         sys.executable, [str(sut), *adapter.activation_arguments]
     )
     observer_fingerprint = command_fingerprint(sys.executable, [str(observer)])
+    lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
         "schema": "ecpa-formal-adapter-registry/v1",
         "adapters": [
@@ -1081,6 +1161,7 @@ if args.ecpa_formal_activation_probe:
                 "evidence_owner": "vllm-hust-host",
                 "evidence_channel": "host-owned-event-stream",
                 "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                **lifecycle_fields,
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
@@ -1098,6 +1179,7 @@ if args.ecpa_formal_activation_probe:
         [str(sut)],
         sys.executable,
         [str(observer)],
+        lifecycle_commands,
     )
     assert verified["sut_command"] == sut_fingerprint
     rejected_sources = [
@@ -1155,6 +1237,7 @@ sys.stderr.write('-manager\",\"--manual-hooks\"]}')
                 [str(sut)],
                 sys.executable,
                 [str(observer)],
+                lifecycle_commands,
             )
     descendant_pid_file = tmp_path / "probe-descendant.pid"
     sut.write_text(
@@ -1186,6 +1269,7 @@ sys.stderr.write('-manager\",\"--manual-hooks\"]}')
             [str(sut)],
             sys.executable,
             [str(observer)],
+            lifecycle_commands,
         )
     descendant_pid = int(descendant_pid_file.read_text())
     descendant_stat = Path(f"/proc/{descendant_pid}/stat")
@@ -1211,6 +1295,7 @@ sys.stderr.write('-manager\",\"--manual-hooks\"]}')
             [str(sut)],
             sys.executable,
             [str(observer)],
+            lifecycle_commands,
         )
 
     fixture_link = tmp_path / "renamed-sut.py"
@@ -1223,6 +1308,7 @@ sys.stderr.write('-manager\",\"--manual-hooks\"]}')
             [str(fixture_link)],
             sys.executable,
             [str(observer)],
+            lifecycle_commands,
         )
 
 
@@ -1252,6 +1338,7 @@ if args.ecpa_formal_activation_probe:
     observer_arguments = [str(observer)]
     sut_fingerprint = command_fingerprint(sys.executable, sut_arguments)
     observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
+    lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
         "schema": "ecpa-formal-adapter-registry/v1",
         "adapters": [
@@ -1262,6 +1349,7 @@ if args.ecpa_formal_activation_probe:
                 "evidence_owner": "vllm-hust-host",
                 "evidence_channel": "host-owned-event-stream",
                 "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                **lifecycle_fields,
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
@@ -1280,6 +1368,7 @@ if args.ecpa_formal_activation_probe:
         [str(sut)],
         sys.executable,
         observer_arguments,
+        lifecycle_commands,
     )
     record = {
         "arm": adapter.arm,
@@ -1301,6 +1390,10 @@ if args.ecpa_formal_activation_probe:
                 "inode": observer_fingerprint["executable_inode"],
             },
         },
+        "lifecycle_fact_processes": lifecycle_process_records(
+            verification["lifecycle_fact_commands"]
+        ),
+        "lifecycle_fact_errors": {},
     }
     harness_module.validate_formal_adapter_verification(record, command)
 
@@ -1383,6 +1476,7 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
             "--ecpa-formal-activation-probe",
         ],
     )
+    lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
         "schema": "ecpa-formal-adapter-registry/v1",
         "adapters": [
@@ -1393,6 +1487,7 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
                 "evidence_owner": "vllm-hust-host",
                 "evidence_channel": "host-owned-event-stream",
                 "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                **lifecycle_fields,
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "manager_command_digest": manager_fingerprint["digest"],
                 "target_command_digest": target_fingerprint["digest"],
@@ -1420,6 +1515,7 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
         target_arguments,
         sys.executable,
         observer_arguments,
+        lifecycle_commands,
     )
     assert verification["manager_command"] == manager_fingerprint
     assert verification["target_command"] == target_fingerprint
@@ -1464,6 +1560,10 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
             "controller_instance": controller,
         },
         "managed_binding": binding,
+        "lifecycle_fact_processes": lifecycle_process_records(
+            verification["lifecycle_fact_commands"]
+        ),
+        "lifecycle_fact_errors": {},
     }
     command["sut_process"]["executable_identity"] = {
         "device": manager_fingerprint["executable_device"],
@@ -1580,6 +1680,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
     )
     sut_fingerprint = command_fingerprint(sys.executable, sut_arguments)
     observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
+    lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
         "schema": "ecpa-formal-adapter-registry/v1",
         "adapters": [
@@ -1590,6 +1691,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
                 "evidence_owner": "vllm-hust-host",
                 "evidence_channel": "host-owned-event-stream",
                 "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                **lifecycle_fields,
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
@@ -1608,6 +1710,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
             ["-c", sut_source],
             sys.executable,
             observer_arguments,
+            lifecycle_commands,
         )
 
 
@@ -1637,6 +1740,89 @@ def test_fixture_evidence_is_nonformal_and_execution_identity_is_bound(tmp_path)
     assert oracle(scenarios()[0], counterexample)["verdict"] == "INCOMPLETE"
     with pytest.raises(ValueError, match="fixture-only"):
         validate_batch([record], tmp_path, formal=True)
+
+
+def test_formal_observer_receives_no_phase_material(tmp_path, monkeypatch):
+    observer = tmp_path / "capture_formal_observer.py"
+    observer.write_text(
+        """import json, os, sys
+messages = [json.loads(raw) for raw in sys.stdin]
+print(json.dumps(messages), flush=True)
+os.write(int(os.environ['ECPA_OBSERVER_FD']), b'{"events":[]}')
+"""
+    )
+    sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
+    execution = {
+        "plan_id": "sha256:" + "1" * 64,
+        "launch_id": "launch:formal-message",
+        "controller_instance": "controller:formal-message",
+    }
+    identity = _minimal_formal_identity()
+    identity["required_processes"] = [
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 1}
+    ]
+    _, lifecycle_commands = lifecycle_registry_fields(tmp_path)
+    lifecycle_fingerprints = {
+        phase: command_fingerprint(executable, arguments)
+        for phase, (executable, arguments) in lifecycle_commands.items()
+    }
+    monkeypatch.setattr(runner_module, "validate_record", lambda *args, **kwargs: None)
+
+    record = runner_module._run_start(
+        tmp_path / "formal-message",
+        scenarios()[0],
+        "ecpa",
+        1,
+        3,
+        argv=[sys.executable, sut],
+        env=dict(os.environ),
+        timeout_s=2,
+        evidence_class="formal-real",
+        measurement_source="formal-message-boundary-test",
+        identity=identity,
+        observations_from_stdout=False,
+        observer_argv=[sys.executable, str(observer)],
+        execution_identity=execution,
+        activation_contract="manager-controlled-activation",
+        lifecycle_fact_commands=lifecycle_fingerprints,
+        sut_executable_fingerprint=command_fingerprint(sys.executable, [sut]),
+        observer_executable_fingerprint=command_fingerprint(
+            sys.executable, [str(observer)]
+        ),
+    )
+    run_dir = tmp_path / "formal-message" / record["artifact_root"]
+    messages = json.loads((run_dir / "observer-stdout.bin").read_text())
+
+    assert messages == []
+    assert set(record["command"]["lifecycle_fact_processes"]) == set(
+        runner_module.FORMAL_LIFECYCLE_FACT_SOURCES
+    )
+    assert record["command"]["lifecycle_fact_errors"] == {}
+    lifecycle_events = {
+        item["event"]: item
+        for item in record["observations"]
+        if item["event"] in runner_module.FORMAL_LIFECYCLE_FACT_SOURCES
+    }
+    assert set(lifecycle_events) == set(runner_module.FORMAL_LIFECYCLE_FACT_SOURCES)
+    assert all("causal_ack" not in item for item in lifecycle_events.values())
+
+
+def test_lifecycle_fact_source_output_is_bounded(tmp_path):
+    source = tmp_path / "oversized_lifecycle_source.py"
+    source.write_text(
+        "import sys\nsys.stdin.readline()\nsys.stdout.write('x' * (1024 * 1024 + 1))\n"
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source)])
+
+    with pytest.raises(ValueError, match="output exceeds"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request={"schema": "test"},
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=2,
+        )
 
 
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):
@@ -1911,13 +2097,147 @@ def _effect_identity(
 def _formal_process_record(tmp_path):
     record = copy.deepcopy(formal_complete_records(tmp_path)[0])
     record["evidence_class"] = "formal-real"
+    for invocation in record["command"]["phase_invocations"]:
+        invocation["fact_collected"] = True
     record["identity"]["adapter_verification"] = {
         "evidence_owner": "vllm-hust-host",
         "evidence_channel": "host-owned-event-stream",
     }
+    lifecycle_processes = {}
     for event in record["observations"]:
-        event["source_role"] = "host-observer"
+        event["source_role"] = (
+            "lifecycle-fact-source"
+            if event["event"] in harness_module.FORMAL_LIFECYCLE_FACT_SOURCES
+            else "host-observer"
+        )
+        event.pop("causal_ack", None)
+        source_kind = harness_module.FORMAL_LIFECYCLE_FACT_SOURCES.get(event["event"])
+        if source_kind is not None:
+            ordinal = len(lifecycle_processes)
+            source_identity = {
+                "pid": 10000 + ordinal,
+                "start_ticks": 20000 + ordinal,
+                "argv": ["/usr/bin/source", event["event"]],
+            }
+            source_digest = "sha256:" + f"{ordinal + 1:064x}"
+            lifecycle_processes[event["event"]] = {
+                "linux_identity": source_identity,
+                "command_digest": source_digest,
+                "monotonic_start_ns": event["monotonic_ns"] - 1,
+                "monotonic_end_ns": event["monotonic_ns"] + 1,
+            }
+            payload = {
+                "schema": "ecpa-formal-lifecycle-fact/v1",
+                "fact": event["event"],
+                "source_kind": source_kind,
+                "plan_id": event["plan_id"],
+                "launch_id": event["launch_id"],
+                "controller_instance": event["controller_instance"],
+                "invocation_id": event["invocation_id"],
+                "sequence": event["sequence"],
+                "challenge": event["challenge"],
+                "monotonic_ns": event["monotonic_ns"],
+                "value": event["value"],
+                "sut_process_identity": event["sut_process_identity"],
+            }
+            raw = canonical(payload)
+            event["fact_receipt"] = {
+                "source_kind": source_kind,
+                "source_process_identity": copy.deepcopy(source_identity),
+                "source_command_digest": source_digest,
+                "raw_base64": base64.b64encode(raw).decode(),
+                "raw_sha256": harness_module.digest_bytes(raw),
+            }
+    record["command"]["lifecycle_fact_processes"] = lifecycle_processes
+    record["command"]["lifecycle_fact_errors"] = {}
     return record
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "missing or malformed"),
+        ("digest", "digest mismatch"),
+        ("source", "binding mismatch"),
+        ("source-process", "binding mismatch"),
+        ("source-command", "binding mismatch"),
+        ("payload", "binding mismatch"),
+        ("noncanonical", "not canonical"),
+        ("nonfinite", "not canonical"),
+        ("schema", "schema mismatch"),
+    ],
+)
+def test_formal_oracle_rejects_invalid_lifecycle_fact_receipt(
+    tmp_path, mutation, reason
+):
+    record = _formal_process_record(tmp_path)
+    ready = next(
+        item for item in record["observations"] if item["event"] == "service-ready"
+    )
+    receipt = ready["fact_receipt"]
+    if mutation == "missing":
+        ready.pop("fact_receipt")
+    elif mutation == "digest":
+        receipt["raw_sha256"] = "sha256:" + "0" * 64
+    elif mutation == "source":
+        receipt["source_kind"] = "sut-stdout"
+    elif mutation == "source-process":
+        receipt["source_process_identity"]["start_ticks"] += 1
+    elif mutation == "source-command":
+        receipt["source_command_digest"] = "sha256:" + "0" * 64
+    else:
+        if mutation == "nonfinite":
+            raw = b'{"value":NaN}'
+        else:
+            payload = json.loads(base64.b64decode(receipt["raw_base64"]))
+            if mutation == "payload":
+                payload["challenge"] = "replayed"
+                raw = canonical(payload)
+            elif mutation == "schema":
+                payload["unreviewed"] = True
+                raw = canonical(payload)
+            else:
+                raw = json.dumps(payload, indent=2, sort_keys=True).encode()
+        receipt["raw_base64"] = base64.b64encode(raw).decode()
+        receipt["raw_sha256"] = harness_module.digest_bytes(raw)
+
+    result = oracle(scenarios()[0], record)
+
+    assert result["verdict"] == "INCOMPLETE"
+    assert any(reason in item for item in result["reasons"])
+
+
+def test_formal_oracle_rejects_generic_observer_fabricated_lifecycle(tmp_path):
+    record = _formal_process_record(tmp_path)
+    record["command"]["lifecycle_fact_processes"] = {}
+    for event in record["observations"]:
+        if event["event"] in harness_module.FORMAL_LIFECYCLE_FACT_SOURCES:
+            event["source_role"] = "host-observer"
+
+    result = oracle(scenarios()[0], record)
+
+    assert result["verdict"] == "INCOMPLETE"
+    assert any("untrusted observable source" in reason for reason in result["reasons"])
+    assert any("receipt binding mismatch" in reason for reason in result["reasons"])
+
+
+def test_formal_oracle_rejects_causal_ack_on_extra_observable(tmp_path):
+    record = _formal_process_record(tmp_path)
+    record["observations"].append(
+        {
+            "event": "unrequired-self-report",
+            "causal_ack": True,
+            "source_role": "sut",
+        }
+    )
+
+    result = oracle(scenarios()[0], record)
+
+    assert result["verdict"] == "INCOMPLETE"
+    assert any(
+        "improperly carries SUT acknowledgement" in reason
+        for reason in result["reasons"]
+    )
 
 
 def test_formal_oracle_rejects_controller_only_full_coverage_claim(tmp_path):

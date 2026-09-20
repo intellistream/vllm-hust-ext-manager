@@ -49,9 +49,21 @@ and its stdout cannot become formal truth. Each instruction carries a random
 challenge and sequence plus a runner-generated plan ID, launch ID, controller
 instance, and invocation ID. An ACK proves only that this process answered that
 instruction; it is not evidence that the requested workload, fault, hook, or
-policy effect occurred. Every observer event must echo the matching ACK result,
-challenge, sequence, and invocation identity; duplicate, missing, reordered, or
-inconsistent phase bindings fail closed.
+policy effect occurred. Formal-real observer instructions do not include the
+SUT stdout response, and a formal observation carrying `causal_ack` is rejected.
+Readiness, workload completion, fault application, effect capture, and shutdown
+instead carry exact canonical receipt bytes from their declared probe, driver,
+actuator, host observer, or process monitor. Those bytes and their digest bind
+the challenge, sequence, invocation, Plan/launch/controller, value, timestamp,
+and observed process identity. The runner launches each source through its own
+dedicated stdin/stdout channel and records its Linux PID/start-ticks/argv plus
+the registry-pinned executable fingerprint; the generic observer receives no
+phase message in formal-real runs. Duplicate, missing, reordered, inconsistent,
+unregistered, or source-process-mismatched bindings fail closed. The canonical
+receipt payload is machine-checked by `formal-lifecycle-fact.schema.json`; the
+enclosing observation retains the exact payload bytes as base64 and a SHA-256
+digest. Registry review remains responsible for establishing that each source
+command measures or actuates its named fact rather than echoing the request.
 
 `formal-real` is fail closed behind the canonical `verified-adapters.json`
 registry. A registered entry pins the resolved executable, every file-backed
@@ -59,12 +71,13 @@ argv component, observer command, arm contract, and a `vllm-hust-host`-owned
 event channel. The registry is intentionally empty until a real vLLM-HUST
 adapter and host observer are reviewed. The runner gives no SUT-authored
 telemetry path to the observer. Effectiveness, invocation, activation path, and
-lifecycle facts must be emitted by the registry-pinned observer after reading
-host-owned evidence and must carry the same plan/launch/controller/invocation
-identity. Linux process identity is PID plus `/proc/PID/stat` start ticks and
-exact `/proc/PID/cmdline` argv. The runner reads start ticks both before and
-after argv to reject PID-reuse races, and the observer independently records
-the SUT identity it saw. A formal run must additionally freeze a non-empty
+coverage must be emitted by the registry-pinned observer after reading
+host-owned evidence; lifecycle facts come from the separately pinned sources
+described above. Every event must carry the same
+plan/launch/controller/invocation identity. Linux process identity is PID plus
+`/proc/PID/stat` start ticks and exact `/proc/PID/cmdline` argv. The runner reads
+start ticks both before and after argv to reject PID-reuse races, and each
+evidence source records the SUT identity it saw. A formal run must additionally freeze a non-empty
 `required_processes` target snapshot (host, role, ordinal, and process epoch)
 in the runner-bound identity. The runner validates exact fields, values, and
 uniqueness before it executes the registered activation probe or starts the

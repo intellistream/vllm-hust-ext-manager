@@ -45,6 +45,10 @@ ALLOW_ENV = {
     *SEMANTIC_ENV,
 }
 VERIFIED_ADAPTER_REGISTRY = Path(__file__).with_name("verified-adapters.json")
+FORMAL_LIFECYCLE_FACT_SCHEMA_PATH = Path(__file__).with_name(
+    "formal-lifecycle-fact.schema.json"
+)
+FORMAL_LIFECYCLE_FACT_SCHEMA = json.loads(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH.read_text())
 FORMAL_HOST_OBSERVABLES = {
     "service-ready",
     "workload-complete",
@@ -55,6 +59,13 @@ FORMAL_HOST_OBSERVABLES = {
     "effective-claim",
     "plugin-invoked",
     "coverage",
+}
+FORMAL_LIFECYCLE_FACT_SOURCES = {
+    "service-ready": "readiness-probe",
+    "workload-complete": "workload-driver",
+    "fault-injected": "fault-actuator",
+    "observer-captured": "host-observer",
+    "service-shutdown": "process-monitor",
 }
 
 
@@ -109,6 +120,10 @@ def validate_formal_adapter_verification(
         or entry.get("evidence_owner") != "vllm-hust-host"
         or entry.get("evidence_channel") != "host-owned-event-stream"
         or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or entry.get("lifecycle_fact_schema") != "ecpa-formal-lifecycle-fact/v1"
+        or entry.get("lifecycle_fact_schema_digest")
+        != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
+        or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -119,10 +134,14 @@ def validate_formal_adapter_verification(
         "verification_id": entry["id"],
         "registry_digest": digest_bytes(registry_bytes),
         "observer_command": verification.get("observer_command"),
+        "lifecycle_fact_commands": verification.get("lifecycle_fact_commands"),
         "activation_probe": verification.get("activation_probe"),
         "evidence_owner": entry.get("evidence_owner"),
         "evidence_channel": entry.get("evidence_channel"),
         "host_event_schema": entry.get("host_event_schema"),
+        "lifecycle_fact_schema": entry.get("lifecycle_fact_schema"),
+        "lifecycle_fact_schema_digest": entry.get("lifecycle_fact_schema_digest"),
+        "lifecycle_fact_sources": entry.get("lifecycle_fact_sources"),
         "required_observables": sorted(entry.get("required_observables", [])),
     }
     if record["arm"] == "ecpa":
@@ -198,6 +217,23 @@ def validate_formal_adapter_verification(
             registered_probe.get("command_digest"),
         ),
     ]
+    fact_commands = verification.get("lifecycle_fact_commands")
+    registered_fact_digests = entry.get("lifecycle_fact_command_digests")
+    if (
+        not isinstance(fact_commands, dict)
+        or set(fact_commands) != set(FORMAL_LIFECYCLE_FACT_SOURCES)
+        or not isinstance(registered_fact_digests, dict)
+        or set(registered_fact_digests) != set(FORMAL_LIFECYCLE_FACT_SOURCES)
+    ):
+        raise ValueError("formal lifecycle fact command metadata is incomplete")
+    fingerprints.extend(
+        (
+            f"lifecycle fact source {phase}",
+            fact_commands[phase],
+            registered_fact_digests[phase],
+        )
+        for phase in sorted(FORMAL_LIFECYCLE_FACT_SOURCES)
+    )
     if record["arm"] == "ecpa":
         fingerprints.extend(
             (
@@ -424,6 +460,46 @@ def validate_formal_adapter_verification(
             "inode"
         ) != fingerprint.get("executable_inode"):
             raise ValueError(f"{role} executable identity differs from its fingerprint")
+    fact_processes = command.get("lifecycle_fact_processes")
+    if (
+        not isinstance(fact_processes, dict)
+        or set(fact_processes) != set(FORMAL_LIFECYCLE_FACT_SOURCES)
+        or command.get("lifecycle_fact_errors") != {}
+    ):
+        raise ValueError("formal lifecycle fact process set is incomplete")
+    occupied_identities = {
+        (
+            command.get(process_name, {}).get("linux_identity", {}).get("pid"),
+            command.get(process_name, {}).get("linux_identity", {}).get("start_ticks"),
+        )
+        for process_name in ("sut_process", "observer_process")
+    }
+    fact_identities: set[tuple[Any, Any]] = set()
+    for phase, process in fact_processes.items():
+        fingerprint = fact_commands[phase]
+        linux_identity = process.get("linux_identity", {})
+        actual = process.get("executable_identity", {})
+        identity_key = (linux_identity.get("pid"), linux_identity.get("start_ticks"))
+        expected_start = (
+            f"pid:{process.get('pid')}@ticks:{linux_identity.get('start_ticks')}"
+        )
+        if (
+            process.get("pid") != linux_identity.get("pid")
+            or process.get("argv") != linux_identity.get("argv")
+            or process.get("start_identity") != expected_start
+            or process.get("command_digest") != fingerprint.get("digest")
+            or process.get("argv")
+            != [fingerprint.get("executable"), *fingerprint.get("arguments", [])]
+            or actual.get("device") != fingerprint.get("executable_device")
+            or actual.get("inode") != fingerprint.get("executable_inode")
+            or process.get("exit_code") != 0
+            or identity_key in occupied_identities
+            or identity_key in fact_identities
+        ):
+            raise ValueError(
+                f"lifecycle fact source {phase} execution identity is invalid"
+            )
+        fact_identities.add(identity_key)
 
 
 def canonical_record_core(record: dict[str, Any]) -> dict[str, Any]:
@@ -684,6 +760,77 @@ def formal_process_coverage(
     return computed
 
 
+def validate_formal_lifecycle_receipt(
+    name: str,
+    event: dict[str, Any],
+    source_process: dict[str, Any] | None,
+    reasons: list[str],
+) -> None:
+    """Validate exact bytes from the owner of one formal lifecycle fact."""
+    receipt = event.get("fact_receipt")
+    expected_source = FORMAL_LIFECYCLE_FACT_SOURCES[name]
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "source_kind",
+        "source_process_identity",
+        "source_command_digest",
+        "raw_base64",
+        "raw_sha256",
+    }:
+        reasons.append(f"formal lifecycle receipt missing or malformed: {name}")
+        return
+    try:
+        raw = base64.b64decode(receipt["raw_base64"], validate=True)
+    except (TypeError, ValueError):
+        reasons.append(f"formal lifecycle receipt bytes are invalid: {name}")
+        return
+    if receipt.get("raw_sha256") != digest_bytes(raw):
+        reasons.append(f"formal lifecycle receipt digest mismatch: {name}")
+        return
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        reasons.append(f"formal lifecycle receipt JSON is invalid: {name}")
+        return
+    try:
+        canonical_payload = canonical(payload)
+    except (TypeError, ValueError, UnicodeEncodeError):
+        canonical_payload = None
+    if not isinstance(payload, dict) or raw != canonical_payload:
+        reasons.append(f"formal lifecycle receipt is not canonical: {name}")
+        return
+    if list(Draft7Validator(FORMAL_LIFECYCLE_FACT_SCHEMA).iter_errors(payload)):
+        reasons.append(f"formal lifecycle receipt schema mismatch: {name}")
+        return
+    expected = {
+        "schema": "ecpa-formal-lifecycle-fact/v1",
+        "fact": name,
+        "source_kind": expected_source,
+        "plan_id": event.get("plan_id"),
+        "launch_id": event.get("launch_id"),
+        "controller_instance": event.get("controller_instance"),
+        "invocation_id": event.get("invocation_id"),
+        "sequence": event.get("sequence"),
+        "challenge": event.get("challenge"),
+        "monotonic_ns": event.get("monotonic_ns"),
+        "value": event.get("value"),
+        "sut_process_identity": event.get("sut_process_identity"),
+    }
+    if (
+        not isinstance(source_process, dict)
+        or receipt.get("source_process_identity")
+        != source_process.get("linux_identity")
+        or receipt.get("source_command_digest") != source_process.get("command_digest")
+        or receipt.get("source_kind") != expected_source
+        or payload != expected
+        or not isinstance(source_process.get("monotonic_start_ns"), int)
+        or not isinstance(source_process.get("monotonic_end_ns"), int)
+        or not source_process["monotonic_start_ns"]
+        <= event.get("monotonic_ns", -1)
+        <= source_process["monotonic_end_ns"]
+    ):
+        reasons.append(f"formal lifecycle receipt binding mismatch: {name}")
+
+
 def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     observations = record["observations"]
     forbidden = {"truth", "false_effective", "conflict_truth"}
@@ -711,6 +858,13 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         "interface-fixture",
     }
     if causal_evidence:
+        if record.get("evidence_class") == "formal-real":
+            for event in observations:
+                if "causal_ack" in event:
+                    reasons.append(
+                        "formal observable improperly carries SUT "
+                        f"acknowledgement: {event.get('event')}"
+                    )
         if not record.get("command", {}).get("phase_complete"):
             reasons.append("runner did not confirm every lifecycle phase")
         if record.get("command", {}).get("premature_exit"):
@@ -722,7 +876,7 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             "observer-captured",
             "service-shutdown",
         ]
-        expected_source = (
+        expected_observer_source = (
             "host-observer"
             if record.get("evidence_class") == "formal-real"
             else "interface-observer"
@@ -747,6 +901,10 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             or len({item.get("invocation_id") for item in invocation_rows})
             != len(lifecycle)
             or any(not item.get("acknowledged") for item in invocation_rows)
+            or (
+                record.get("evidence_class") == "formal-real"
+                and any(not item.get("fact_collected") for item in invocation_rows)
+            )
         ):
             reasons.append("phase invocation identity is incomplete")
         sut_identity = (
@@ -754,6 +912,12 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         )
         for name in required:
             event = events.get(name)
+            expected_source = (
+                "lifecycle-fact-source"
+                if record.get("evidence_class") == "formal-real"
+                and name in FORMAL_LIFECYCLE_FACT_SOURCES
+                else expected_observer_source
+            )
             if event and event.get("source_role") != expected_source:
                 reasons.append(f"untrusted observable source: {name}")
             if event and event.get("clock") != "monotonic":
@@ -770,8 +934,19 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             if event and (
                 event.get("sequence") != invocation.get("sequence")
                 or event.get("challenge") != invocation.get("challenge")
-                or event.get("causal_ack") is not True
             ):
+                reasons.append(f"phase invocation binding mismatch: {name}")
+            if event and record.get("evidence_class") == "formal-real":
+                if name in FORMAL_LIFECYCLE_FACT_SOURCES:
+                    validate_formal_lifecycle_receipt(
+                        name,
+                        event,
+                        record.get("command", {})
+                        .get("lifecycle_fact_processes", {})
+                        .get(name),
+                        reasons,
+                    )
+            elif event and event.get("causal_ack") is not True:
                 reasons.append(f"causal acknowledgement mismatch: {name}")
             if event and event.get("sut_process_identity") != sut_identity:
                 reasons.append(f"observer SUT identity mismatch: {name}")
@@ -801,7 +976,7 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         elif activation.get("value") != expected_contract:
             reasons.append("activation path does not match adapter contract")
         elif (
-            activation.get("source_role") != expected_source
+            activation.get("source_role") != expected_observer_source
             or activation.get("clock") != "monotonic"
         ):
             reasons.append("activation path lacks trusted observer provenance")

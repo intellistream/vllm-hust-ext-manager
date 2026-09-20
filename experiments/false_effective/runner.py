@@ -23,6 +23,9 @@ from typing import Any
 
 from harness import (
     ARMS,
+    FORMAL_HOST_OBSERVABLES,
+    FORMAL_LIFECYCLE_FACT_SCHEMA_PATH,
+    FORMAL_LIFECYCLE_FACT_SOURCES,
     SEMANTIC_ENV,
     canonical,
     canonical_record_core,
@@ -31,6 +34,7 @@ from harness import (
     oracle,
     run_command,
     safe_path,
+    validate_formal_lifecycle_receipt,
     validate_record,
     validate_required_process_snapshot,
 )
@@ -56,17 +60,6 @@ ECPA_FORMAL_ACTIVATION_OPTIONS = (
     "--target-executable-sha256",
     "formal-run",
 )
-FORMAL_HOST_OBSERVABLES = {
-    "service-ready",
-    "workload-complete",
-    "fault-injected",
-    "observer-captured",
-    "service-shutdown",
-    "activation-path",
-    "effective-claim",
-    "plugin-invoked",
-    "coverage",
-}
 CHILD_TERMINATION_GRACE_S = 2.0
 
 
@@ -225,6 +218,45 @@ def command_fingerprint_for_launch(
     return command_fingerprint(prefix[0], [*prefix[1:], *arguments])
 
 
+def verified_lifecycle_fact_commands(
+    entry: dict[str, Any],
+    commands: dict[str, tuple[str, list[str]]] | None,
+    forbidden_digests: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Pin one independent command/process boundary per lifecycle fact."""
+    phases = set(FORMAL_LIFECYCLE_FACT_SOURCES)
+    registered = entry.get("lifecycle_fact_command_digests")
+    if (
+        not isinstance(commands, dict)
+        or set(commands) != phases
+        or not isinstance(registered, dict)
+        or set(registered) != phases
+    ):
+        raise ValueError("verified adapter lifecycle fact commands are incomplete")
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for phase in sorted(phases):
+        command = commands[phase]
+        if (
+            not isinstance(command, tuple)
+            or len(command) != 2
+            or not isinstance(command[0], str)
+            or not isinstance(command[1], list)
+            or any(not isinstance(value, str) for value in command[1])
+        ):
+            raise ValueError("lifecycle fact command is malformed")
+        executable, arguments = command
+        if command_references_fixture([executable, *arguments]):
+            raise ValueError("fixture-referencing lifecycle fact source is forbidden")
+        fingerprint = command_fingerprint_for_launch(executable, arguments)
+        if fingerprint["digest"] != registered.get(phase):
+            raise ValueError("lifecycle fact command differs from the registry")
+        fingerprints[phase] = fingerprint
+    digests = [item["digest"] for item in fingerprints.values()]
+    if len(digests) != len(set(digests)) or forbidden_digests.intersection(digests):
+        raise ValueError("lifecycle fact commands are not independent")
+    return fingerprints
+
+
 def run_bounded_command(
     argv: list[str],
     timeout_s: int,
@@ -313,6 +345,143 @@ def popen_pinned(
         )
     finally:
         os.close(executable_fd)
+
+
+def run_lifecycle_fact_source(
+    phase: str,
+    fingerprint: dict[str, Any],
+    *,
+    request: dict[str, Any],
+    cwd: Path,
+    env: dict[str, str],
+    timeout_s: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Collect one fact over a dedicated, registry-pinned process channel."""
+    argv = [fingerprint["executable"], *fingerprint["arguments"]]
+    started = time.monotonic_ns()
+    process = popen_pinned(
+        argv,
+        fingerprint,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+        start_new_session=True,
+    )
+    try:
+        identity = wait_for_linux_process_identity(
+            process, argv, timeout_s, fingerprint
+        )
+        executable_identity = {
+            "device": identity.pop("executable_device"),
+            "inode": identity.pop("executable_inode"),
+        }
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise RuntimeError("lifecycle fact source pipes were not created")
+        process.stdin.write(canonical(request) + b"\n")
+        process.stdin.close()
+        streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+        active = set(streams)
+        for stream in active:
+            os.set_blocking(stream.fileno(), False)
+        deadline = time.monotonic() + timeout_s
+        while active:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError(f"lifecycle fact source timed out: {phase}")
+            readable, _, _ = select.select(list(active), [], [], remaining)
+            if not readable:
+                raise ValueError(f"lifecycle fact source timed out: {phase}")
+            for stream in readable:
+                captured = sum(len(value) for value in streams.values())
+                try:
+                    chunk = os.read(
+                        stream.fileno(), min(65536, 1024 * 1024 - captured + 1)
+                    )
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    stream.close()
+                    active.remove(stream)
+                    continue
+                streams[stream].extend(chunk)
+                if captured + len(chunk) > 1024 * 1024:
+                    raise ValueError(
+                        f"lifecycle fact source output exceeds the limit: {phase}"
+                    )
+        try:
+            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(f"lifecycle fact source timed out: {phase}") from exc
+        stdout = bytes(streams[process.stdout])
+        stderr = bytes(streams[process.stderr])
+    finally:
+        if process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+    ended = time.monotonic_ns()
+    if process.returncode != 0 or len(stdout) + len(stderr) > 1024 * 1024:
+        raise ValueError(f"lifecycle fact source failed: {phase}")
+    if not stdout.endswith(b"\n") or stdout.count(b"\n") != 1:
+        raise ValueError(f"lifecycle fact source output is not one record: {phase}")
+    raw = stdout[:-1]
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"lifecycle fact source JSON is invalid: {phase}") from exc
+    event = {
+        "event": phase,
+        "value": payload.get("value") if isinstance(payload, dict) else None,
+        "source_role": "lifecycle-fact-source",
+        "clock": "monotonic",
+        "monotonic_ns": (
+            payload.get("monotonic_ns") if isinstance(payload, dict) else None
+        ),
+        "plan_id": payload.get("plan_id") if isinstance(payload, dict) else None,
+        "launch_id": payload.get("launch_id") if isinstance(payload, dict) else None,
+        "controller_instance": (
+            payload.get("controller_instance") if isinstance(payload, dict) else None
+        ),
+        "invocation_id": (
+            payload.get("invocation_id") if isinstance(payload, dict) else None
+        ),
+        "sequence": payload.get("sequence") if isinstance(payload, dict) else None,
+        "challenge": payload.get("challenge") if isinstance(payload, dict) else None,
+        "sut_process_identity": (
+            payload.get("sut_process_identity") if isinstance(payload, dict) else None
+        ),
+        "fact_receipt": {
+            "source_kind": FORMAL_LIFECYCLE_FACT_SOURCES[phase],
+            "source_process_identity": identity,
+            "source_command_digest": fingerprint["digest"],
+            "raw_base64": base64.b64encode(raw).decode(),
+            "raw_sha256": digest_bytes(raw),
+        },
+    }
+    source_process = {
+        "argv": identity["argv"],
+        "pid": process.pid,
+        "start_identity": f"pid:{process.pid}@ticks:{identity['start_ticks']}",
+        "linux_identity": identity,
+        "executable_identity": executable_identity,
+        "command_digest": fingerprint["digest"],
+        "exit_code": process.returncode,
+        "monotonic_start_ns": started,
+        "monotonic_end_ns": ended,
+        "stderr_base64": base64.b64encode(stderr).decode(),
+        "stderr_sha256": digest_bytes(stderr),
+    }
+    reasons: list[str] = []
+    validate_formal_lifecycle_receipt(phase, event, source_process, reasons)
+    if reasons:
+        raise ValueError(reasons[0])
+    return event, source_process
 
 
 def run_activation_probe(
@@ -451,6 +620,7 @@ def verified_adapter_contract(
     arguments: list[str],
     observer_executable: str,
     observer_arguments: list[str],
+    lifecycle_fact_commands: dict[str, tuple[str, list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Resolve a code-reviewed adapter entry; caller assertions are not authority."""
     if isinstance(adapter, ECPAAdapter):
@@ -477,6 +647,10 @@ def verified_adapter_contract(
         or entry.get("evidence_owner") != "vllm-hust-host"
         or entry.get("evidence_channel") != "host-owned-event-stream"
         or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or entry.get("lifecycle_fact_schema") != "ecpa-formal-lifecycle-fact/v1"
+        or entry.get("lifecycle_fact_schema_digest")
+        != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
+        or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -493,6 +667,11 @@ def verified_adapter_contract(
         raise ValueError("SUT command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
         raise ValueError("observer command differs from the verified adapter artifact")
+    fact_commands = verified_lifecycle_fact_commands(
+        entry,
+        lifecycle_fact_commands,
+        {sut["digest"], observer["digest"]},
+    )
     activation_probe = run_activation_probe(entry, adapter, executable, arguments)
     return {
         "registry_schema": registry.get("schema"),
@@ -500,10 +679,14 @@ def verified_adapter_contract(
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": sut,
         "observer_command": observer,
+        "lifecycle_fact_commands": fact_commands,
         "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
         "host_event_schema": entry["host_event_schema"],
+        "lifecycle_fact_schema": entry["lifecycle_fact_schema"],
+        "lifecycle_fact_schema_digest": entry["lifecycle_fact_schema_digest"],
+        "lifecycle_fact_sources": entry["lifecycle_fact_sources"],
         "required_observables": sorted(entry["required_observables"]),
     }
 
@@ -516,6 +699,7 @@ def verified_ecpa_adapter_contract(
     target_arguments: list[str],
     observer_executable: str,
     observer_arguments: list[str],
+    lifecycle_fact_commands: dict[str, tuple[str, list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Pin manager, target, and observer independently for managed ECPA."""
     if not verification_id:
@@ -540,6 +724,10 @@ def verified_ecpa_adapter_contract(
         or entry.get("evidence_owner") != "vllm-hust-host"
         or entry.get("evidence_channel") != "host-owned-event-stream"
         or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or entry.get("lifecycle_fact_schema") != "ecpa-formal-lifecycle-fact/v1"
+        or entry.get("lifecycle_fact_schema_digest")
+        != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
+        or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -564,6 +752,15 @@ def verified_ecpa_adapter_contract(
         raise ValueError("target command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
         raise ValueError("observer command differs from the verified adapter artifact")
+    fact_commands = verified_lifecycle_fact_commands(
+        entry,
+        lifecycle_fact_commands,
+        {
+            manager["digest"],
+            target["digest"],
+            observer["digest"],
+        },
+    )
     activation_probe = run_ecpa_activation_probe(entry, adapter, manager_executable)
     return {
         "registry_schema": registry.get("schema"),
@@ -572,10 +769,14 @@ def verified_ecpa_adapter_contract(
         "manager_command": manager,
         "target_command": target,
         "observer_command": observer,
+        "lifecycle_fact_commands": fact_commands,
         "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
         "host_event_schema": entry["host_event_schema"],
+        "lifecycle_fact_schema": entry["lifecycle_fact_schema"],
+        "lifecycle_fact_schema_digest": entry["lifecycle_fact_schema_digest"],
+        "lifecycle_fact_sources": entry["lifecycle_fact_sources"],
         "required_observables": sorted(entry["required_observables"]),
     }
 
@@ -931,6 +1132,7 @@ def _run_start_impl(
     execution_identity: dict[str, str] | None = None,
     activation_contract: str | None = None,
     managed_binding: dict[str, Any] | None = None,
+    lifecycle_fact_commands: dict[str, dict[str, Any]] | None = None,
     sut_executable_fingerprint: dict[str, Any] | None = None,
     observer_executable_fingerprint: dict[str, Any] | None = None,
     _resources: dict[str, Any],
@@ -1034,6 +1236,9 @@ def _run_start_impl(
         _resources["fds"].discard(write_fd)
         phase_bounds: dict[str, list[int]] = {}
         phase_invocations: list[dict[str, Any]] = []
+        lifecycle_fact_events: list[dict[str, Any]] = []
+        lifecycle_fact_processes: dict[str, dict[str, Any]] = {}
+        lifecycle_fact_errors: dict[str, str] = {}
         sut_lines: list[str] = []
 
         def drive(phase: str, instruction: str, sequence: int) -> bool:
@@ -1060,8 +1265,7 @@ def _run_start_impl(
                     pass
             ready, _, _ = select.select([sut.stdout], [], [], timeout_s)
             line = sut.stdout.readline().strip() if ready and sut.stdout else ""
-            end = time.monotonic_ns()
-            phase_bounds[phase] = [start, end]
+            ack_end = time.monotonic_ns()
             if line:
                 sut_lines.append(line)
             try:
@@ -1079,33 +1283,66 @@ def _run_start_impl(
                 and acknowledgement.get("invocation_id") == invocation_id
                 and acknowledgement.get("ack") is True
             )
-            phase_invocations.append(
-                {
+            invocation = {
+                "phase": phase,
+                "sequence": sequence,
+                "challenge": challenge,
+                "invocation_id": invocation_id,
+                "acknowledged": causal,
+                "fact_collected": evidence_class != "formal-real",
+            }
+            phase_invocations.append(invocation)
+            if evidence_class == "formal-real":
+                command_fingerprint = (lifecycle_fact_commands or {}).get(phase)
+                if causal and command_fingerprint is not None:
+                    try:
+                        fact_event, fact_process = run_lifecycle_fact_source(
+                            phase,
+                            command_fingerprint,
+                            request={
+                                "schema": "ecpa-lifecycle-fact-request/v1",
+                                "fact": phase,
+                                "source_kind": FORMAL_LIFECYCLE_FACT_SOURCES[phase],
+                                "plan_id": execution_identity["plan_id"],
+                                "launch_id": execution_identity["launch_id"],
+                                "controller_instance": execution_identity[
+                                    "controller_instance"
+                                ],
+                                "invocation_id": invocation_id,
+                                "sequence": sequence,
+                                "challenge": challenge,
+                                "scenario": scenario["id"],
+                                "sut_pid": sut.pid,
+                                "sut_process_identity": sut_identity,
+                            },
+                            cwd=run_dir,
+                            env=sut_env,
+                            timeout_s=timeout_s,
+                        )
+                        lifecycle_fact_events.append(fact_event)
+                        lifecycle_fact_processes[phase] = fact_process
+                        invocation["fact_collected"] = True
+                    except (OSError, ValueError) as exc:
+                        lifecycle_fact_errors[phase] = type(exc).__name__
+                        causal = False
+                else:
+                    lifecycle_fact_errors[phase] = "source-unavailable"
+                    causal = False
+            elif observer.stdin is not None:
+                observer_message = {
                     "phase": phase,
+                    "monotonic_ns": ack_end,
+                    "scenario": scenario["id"],
                     "sequence": sequence,
                     "challenge": challenge,
+                    "runner_acknowledged": causal,
+                    **execution_identity,
                     "invocation_id": invocation_id,
-                    "acknowledged": causal,
                 }
-            )
-            if observer.stdin is not None:
-                observer.stdin.write(
-                    json.dumps(
-                        {
-                            "phase": phase,
-                            "signal": line,
-                            "monotonic_ns": end,
-                            "scenario": scenario["id"],
-                            "sequence": sequence,
-                            "challenge": challenge,
-                            "causal_ack": causal,
-                            **execution_identity,
-                            "invocation_id": invocation_id,
-                        }
-                    )
-                    + "\n"
-                )
+                observer_message.update({"signal": line, "causal_ack": causal})
+                observer.stdin.write(json.dumps(observer_message) + "\n")
                 observer.stdin.flush()
+            phase_bounds[phase] = [start, time.monotonic_ns()]
             return causal
 
         phase_ok = drive("service-ready", "ready", 1)
@@ -1203,6 +1440,8 @@ def _run_start_impl(
             "phase_invocations": phase_invocations,
             "execution_identity": execution_identity,
             "managed_binding": managed_binding,
+            "lifecycle_fact_processes": lifecycle_fact_processes,
+            "lifecycle_fact_errors": lifecycle_fact_errors,
             "observer_pipe_sha256": pipe_digest,
         }
         (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
@@ -1226,6 +1465,8 @@ def _run_start_impl(
         observations, observation_error = _read_events(result_path)
         if not result_path.exists():
             result_path.write_bytes(canonical({"events": []}) + b"\n")
+    if evidence_class == "formal-real":
+        observations = [*observations, *lifecycle_fact_events]
     protocol = json.loads((HERE / "protocol.json").read_text())
     schema = json.loads((HERE / "raw-record.schema.json").read_text())
     for name, value in (
@@ -1451,6 +1692,7 @@ def run_formal_start(
     manager_executable: str | None = None,
     execution_plan_path: str | Path | None = None,
     host_event_dir: str | Path | None = None,
+    lifecycle_fact_commands: dict[str, tuple[str, list[str]]] | None = None,
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
@@ -1533,6 +1775,7 @@ def run_formal_start(
                 arguments,
                 observer_executable,
                 observer_arguments,
+                lifecycle_fact_commands,
             )
             argv, env, binding = adapter.managed_launch(
                 manager_executable=manager_executable,
@@ -1559,6 +1802,7 @@ def run_formal_start(
                 arguments,
                 observer_executable,
                 observer_arguments,
+                lifecycle_fact_commands,
             )
             _, env = adapter.launch(executable, arguments, dict(os.environ))
             argv = [
@@ -1604,6 +1848,11 @@ def run_formal_start(
         activation_contract=adapter.activation_contract,
         managed_binding=(
             binding if not fixture_mode and isinstance(adapter, ECPAAdapter) else None
+        ),
+        lifecycle_fact_commands=(
+            verification.get("lifecycle_fact_commands")
+            if verification is not None
+            else None
         ),
         sut_executable_fingerprint=(
             verification.get("manager_command") or verification.get("sut_command")
