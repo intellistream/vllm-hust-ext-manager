@@ -14,6 +14,10 @@ import pytest
 
 import vllm_hust_ext.formal_lifecycle_source as source
 from vllm_hust_ext.ecpa_model import canonical_bytes
+from vllm_hust_ext.quarantine_transaction import (
+    finalize_quarantine_transaction,
+    read_quarantine_record,
+)
 
 
 def request_for(fact: str, *, pid: int | None = None) -> dict[str, object]:
@@ -98,6 +102,53 @@ def lifecycle_event(descriptor, request, *, ordinal, journal):
         "entry_point": descriptor["entry_point"],
     }
     return SimpleNamespace(event=event, raw=b"event", journal=journal, line_number=1)
+
+
+def mock_quarantine_transaction(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        source,
+        "acquire_quarantine_transaction_lease",
+        lambda *args, **kwargs: SimpleNamespace(close=lambda: None),
+    )
+
+    def reconcile(*args, **kwargs):
+        calls["reconcile"] = calls.get("reconcile", 0) + 1
+        return SimpleNamespace(restored=(), finalized=())
+
+    monkeypatch.setattr(source, "reconcile_quarantine_transactions", reconcile)
+    monkeypatch.setattr(
+        source,
+        "snapshot_journal",
+        lambda *args, **kwargs: SimpleNamespace(
+            journal=args[1], raw=b"event\n", device=11, inode=12
+        ),
+    )
+
+    def prepare(*args, **kwargs):
+        calls["prepare"] = (args, kwargs)
+        return SimpleNamespace(raw=b"intent\n", digest="sha256:" + "1" * 64)
+
+    def applied(*args, **kwargs):
+        calls["applied"] = (args, kwargs)
+        return SimpleNamespace(raw=b"applied\n", digest="sha256:" + "2" * 64)
+
+    monkeypatch.setattr(source, "prepare_quarantine_transaction", prepare)
+    monkeypatch.setattr(source, "read_quarantine_record", lambda *args, **kwargs: None)
+
+    def install_fence(*args, **kwargs):
+        calls["fence"] = (args, kwargs)
+        return SimpleNamespace(raw=b"fence\n", digest="sha256:" + "3" * 64)
+
+    monkeypatch.setattr(source, "install_quarantine_source_fence", install_fence)
+    monkeypatch.setattr(source, "mark_quarantine_applied", applied)
+    monkeypatch.setattr(
+        source, "mark_quarantine_restored", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        source, "remove_quarantine_source_fence", lambda *args, **kwargs: None
+    )
+    return calls
 
 
 def run_source(arguments: list[str], request: dict[str, object]):
@@ -332,6 +383,7 @@ def test_journal_capture_requires_bound_dispatch_for_controller(monkeypatch, tmp
 
 
 def test_partial_coverage_fault_quarantines_one_worker_journal(monkeypatch, tmp_path):
+    transaction_calls = mock_quarantine_transaction(monkeypatch)
     request = partial_coverage_request()
     descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
         tmp_path, request
@@ -373,11 +425,18 @@ def test_partial_coverage_fault_quarantines_one_worker_journal(monkeypatch, tmp_
     prepared = source._partial_coverage_fault(args, request)
     assert prepared.value == request["scenario"]
     assert not quarantine_call
-    prepared.commit()
+    assert transaction_calls.keys() == {"reconcile", "prepare"}
+    try:
+        prepared.commit()
+    finally:
+        prepared.release()
     assert quarantine_call["args"][2] == "target.jsonl"
     assert quarantine_call["kwargs"]["expected_root_identity"] == (1, 2)
     assert quarantine_call["kwargs"]["expected_quarantine_identity"] == (3, 4)
     assert audit["kind"] == "partial-worker-evidence-quarantine"
+    assert transaction_calls.keys() == {"reconcile", "prepare", "fence", "applied"}
+    assert audit["transaction_intent_sha256"] == "sha256:" + "1" * 64
+    assert audit["transaction_applied_sha256"] == "sha256:" + "2" * 64
     assert base64.b64decode(audit["descriptor_base64"]) == descriptor_raw
     assert base64.b64decode(audit["quarantined_base64"]) == quarantined.raw
     assert audit["peer_slots"] == [
@@ -394,7 +453,103 @@ def test_partial_coverage_fault_quarantines_one_worker_journal(monkeypatch, tmp_
     assert base64.b64decode(audit["peer_records"][0]["raw_base64"]) == peer.raw
 
 
+def test_partial_coverage_fault_persists_real_transaction_chain(monkeypatch, tmp_path):
+    request = partial_coverage_request()
+    descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    target = lifecycle_event(descriptor, request, ordinal=0, journal="target.jsonl")
+    peer = lifecycle_event(descriptor, request, ordinal=1, journal="peer.jsonl")
+    reads = iter(([target, peer], [peer]))
+    monkeypatch.setattr(source, "read_events", lambda *args, **kwargs: next(reads))
+    events = tmp_path / "events"
+    quarantine = tmp_path / "quarantine"
+    events.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    (events / "target.jsonl").write_bytes(b"event\n")
+    event_identity = (events.stat().st_dev, events.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    audit = {}
+    monkeypatch.setattr(
+        source,
+        "_audit",
+        lambda kind, **values: audit.update(kind=kind, **values),
+    )
+    args = SimpleNamespace(
+        event_dir=str(events),
+        device=event_identity[0],
+        inode=event_identity[1],
+        quarantine_dir=str(quarantine),
+        quarantine_device=quarantine_identity[0],
+        quarantine_inode=quarantine_identity[1],
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    prepared = source._partial_coverage_fault(args, request)
+    assert not list(events.glob(".ecpa-quarantine-*.fence"))
+    try:
+        prepared.commit()
+    finally:
+        prepared.release()
+
+    assert not (events / "target.jsonl").exists()
+    assert (quarantine / "target.jsonl").read_bytes() == b"event\n"
+    assert len(list(quarantine.glob("*.intent.json"))) == 1
+    assert len(list(quarantine.glob("*.applied.json"))) == 1
+    assert not list(quarantine.glob("*.finalized.json"))
+    assert audit["transaction_id"] in next(quarantine.glob("*.intent.json")).name
+    before_source = {
+        path.name: (path.stat().st_ino, path.read_bytes()) for path in events.iterdir()
+    }
+    before_quarantine = {
+        path.name: (path.stat().st_ino, path.read_bytes())
+        for path in quarantine.iterdir()
+    }
+    with pytest.raises(source.LifecycleSourceError, match="already settled"):
+        prepared.commit()
+    assert before_source == {
+        path.name: (path.stat().st_ino, path.read_bytes()) for path in events.iterdir()
+    }
+    assert before_quarantine == {
+        path.name: (path.stat().st_ino, path.read_bytes())
+        for path in quarantine.iterdir()
+    }
+    transaction_id = audit["transaction_id"]
+    applied = read_quarantine_record(
+        quarantine, quarantine_identity, transaction_id, "applied"
+    )
+    assert applied is not None
+    finalize_quarantine_transaction(
+        quarantine,
+        quarantine_identity,
+        transaction_id,
+        source_root=events,
+        source_identity=event_identity,
+        applied_digest=applied.digest,
+        fact_receipt_sha256="sha256:" + "4" * 64,
+        source_process_identity={
+            "pid": os.getpid(),
+            "start_ticks": 1,
+            "argv": ["source-test"],
+            "executable_device": 1,
+            "executable_inode": 1,
+        },
+    )
+    finalized_state = {
+        path.name: (path.stat().st_ino, path.read_bytes())
+        for path in quarantine.iterdir()
+    }
+    with pytest.raises(source.LifecycleSourceError, match="already settled"):
+        prepared.commit()
+    assert finalized_state == {
+        path.name: (path.stat().st_ino, path.read_bytes())
+        for path in quarantine.iterdir()
+    }
+
+
 def test_partial_coverage_fault_rejects_missing_peer(monkeypatch, tmp_path):
+    mock_quarantine_transaction(monkeypatch)
     request = partial_coverage_request()
     descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
         tmp_path, request
@@ -419,6 +574,7 @@ def test_partial_coverage_fault_rejects_missing_peer(monkeypatch, tmp_path):
 def test_partial_coverage_fault_rejects_replacement_epoch_as_peer(
     monkeypatch, tmp_path
 ):
+    mock_quarantine_transaction(monkeypatch)
     request = partial_coverage_request()
     request["required_processes"][1]["ordinal"] = 0
     request["required_processes"][1]["process_epoch"] = 8
@@ -442,6 +598,7 @@ def test_partial_coverage_fault_rejects_replacement_epoch_as_peer(
 
 
 def test_partial_coverage_fault_rejects_target_reappearance(monkeypatch, tmp_path):
+    mock_quarantine_transaction(monkeypatch)
     request = partial_coverage_request()
     descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
         tmp_path, request
@@ -481,6 +638,7 @@ def test_partial_coverage_fault_rejects_target_reappearance(monkeypatch, tmp_pat
 
 
 def test_partial_coverage_fault_rejects_mixed_target_journal(monkeypatch, tmp_path):
+    mock_quarantine_transaction(monkeypatch)
     request = partial_coverage_request()
     descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
         tmp_path, request

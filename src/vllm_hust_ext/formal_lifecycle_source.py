@@ -32,6 +32,20 @@ from .host_event_sink import (
     quarantine_journal,
     read_events,
     restore_quarantined_journal,
+    snapshot_journal,
+)
+from .quarantine_transaction import (
+    QuarantineTransactionError,
+    QuarantineTransactionLease,
+    acquire_quarantine_transaction_lease,
+    install_quarantine_source_fence,
+    mark_quarantine_applied,
+    mark_quarantine_restored,
+    prepare_quarantine_transaction,
+    quarantine_transaction_id,
+    read_quarantine_record,
+    reconcile_quarantine_transactions,
+    remove_quarantine_source_fence,
 )
 
 FACT_SCHEMA = "ecpa-formal-lifecycle-fact/v1"
@@ -73,6 +87,7 @@ class PreparedFact:
 
     value: bool | str
     commit: Callable[[], None]
+    release: Callable[[], None] = lambda: None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -340,6 +355,30 @@ def _partial_coverage_fault(
         raise LifecycleSourceError(
             "partial-coverage source refuses another frozen scenario"
         )
+    lease = acquire_quarantine_transaction_lease(
+        Path(args.event_dir),
+        (args.device, args.inode),
+    )
+    try:
+        prepared = _partial_coverage_fault_locked(args, request, lease)
+    except BaseException:
+        lease.close()
+        raise
+    lease.close()
+    return prepared
+
+
+def _partial_coverage_fault_locked(
+    args: argparse.Namespace,
+    request: dict[str, Any],
+    lease: QuarantineTransactionLease,
+) -> PreparedFact:
+    if request["fact"] != "fault-injected":
+        raise LifecycleSourceError("partial-coverage source received another phase")
+    if request["scenario"] != "partial-worker-coverage":
+        raise LifecycleSourceError(
+            "partial-coverage source refuses another frozen scenario"
+        )
     descriptor_raw, descriptor = _canonical_descriptor_file(
         args.descriptor, args.descriptor_sha256
     )
@@ -400,6 +439,16 @@ def _partial_coverage_fault(
 
     root = Path(args.event_dir)
     source_identity = (args.device, args.inode)
+    quarantine_root = Path(args.quarantine_dir)
+    quarantine_identity = (args.quarantine_device, args.quarantine_inode)
+    reconciliation = reconcile_quarantine_transactions(
+        root,
+        quarantine_root,
+        expected_source_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=MAX_JOURNAL_BYTES,
+        lease=lease,
+    )
     records = read_events(
         root,
         source_identity,
@@ -481,20 +530,115 @@ def _partial_coverage_fault(
         )
         in set(peer_slots)
     ]
-    quarantine_identity = (args.quarantine_device, args.quarantine_inode)
+    snapshot = snapshot_journal(
+        root,
+        journal,
+        expected_root_identity=source_identity,
+        max_bytes=MAX_JOURNAL_BYTES,
+    )
+    if snapshot.raw != target_journal_raw:
+        raise LifecycleSourceError("fault target journal changed during prepare")
+    transaction_binding = {
+        "schema": "ecpa-quarantine-transaction-binding/v1",
+        "scenario": request["scenario"],
+        "plan_id": request["plan_id"],
+        "launch_id": request["launch_id"],
+        "controller_instance": request["controller_instance"],
+        "invocation_id": request["invocation_id"],
+        "challenge": request["challenge"],
+        "target": target,
+        "entry_point": entry_point,
+        "journal": journal,
+        "descriptor_sha256": "sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    }
+    transaction_id = quarantine_transaction_id(transaction_binding)
+    intent = prepare_quarantine_transaction(
+        quarantine_root,
+        quarantine_identity,
+        transaction_id,
+        binding=transaction_binding,
+        source_identity=source_identity,
+        snapshot=snapshot,
+    )
+    settled = False
+
+    def abort_prepare() -> None:
+        nonlocal settled
+        if settled:
+            return
+        abort_lease = acquire_quarantine_transaction_lease(root, source_identity)
+        try:
+            reconcile_quarantine_transactions(
+                root,
+                quarantine_root,
+                expected_source_identity=source_identity,
+                expected_quarantine_identity=quarantine_identity,
+                max_bytes=MAX_JOURNAL_BYTES,
+                lease=abort_lease,
+            )
+            settled = True
+        finally:
+            abort_lease.close()
 
     def commit_fault() -> None:
-        quarantined = quarantine_journal(
-            root,
-            Path(args.quarantine_dir),
-            journal,
-            expected_root_identity=source_identity,
-            expected_quarantine_identity=quarantine_identity,
-            max_bytes=MAX_JOURNAL_BYTES,
-        )
+        nonlocal settled
+        if settled:
+            raise LifecycleSourceError("fault transaction is already settled")
+        commit_lease = acquire_quarantine_transaction_lease(root, source_identity)
+        quarantined = None
+        applied = None
+        fence_installed = False
         try:
+            if any(
+                read_quarantine_record(
+                    quarantine_root,
+                    quarantine_identity,
+                    transaction_id,
+                    stage,
+                    required=False,
+                )
+                is not None
+                for stage in ("applied", "finalized", "restored", "blocked")
+            ):
+                raise LifecycleSourceError(
+                    "fault transaction changed before runner commit"
+                )
+            committed_snapshot = snapshot_journal(
+                root,
+                journal,
+                expected_root_identity=source_identity,
+                max_bytes=MAX_JOURNAL_BYTES,
+            )
+            if committed_snapshot != snapshot:
+                raise LifecycleSourceError(
+                    "fault target journal changed before runner commit"
+                )
+            install_quarantine_source_fence(
+                root,
+                source_identity,
+                transaction_id,
+                intent_digest=intent.digest,
+                snapshot=snapshot,
+            )
+            fence_installed = True
+            quarantined = quarantine_journal(
+                root,
+                quarantine_root,
+                journal,
+                expected_root_identity=source_identity,
+                expected_quarantine_identity=quarantine_identity,
+                max_bytes=MAX_JOURNAL_BYTES,
+                expected_journal=snapshot,
+            )
             if quarantined.raw != target_journal_raw:
                 raise LifecycleSourceError("fault target journal changed after prepare")
+            applied = mark_quarantine_applied(
+                quarantine_root,
+                quarantine_identity,
+                transaction_id,
+                intent_digest=intent.digest,
+                quarantined=quarantined,
+            )
             remaining = read_events(
                 root,
                 source_identity,
@@ -530,6 +674,14 @@ def _partial_coverage_fault(
                 launch_id=request["launch_id"],
                 controller_instance=request["controller_instance"],
                 lifecycle_invocation_id=request["invocation_id"],
+                transaction_id=transaction_id,
+                transaction_directory=str(quarantine_root),
+                transaction_directory_device=quarantine_identity[0],
+                transaction_directory_inode=quarantine_identity[1],
+                transaction_intent_sha256=intent.digest,
+                transaction_applied_sha256=applied.digest,
+                reconciled_restored=list(reconciliation.restored),
+                reconciled_finalized=list(reconciliation.finalized),
                 descriptor_base64=base64.b64encode(descriptor_raw).decode(),
                 descriptor_sha256="sha256:"
                 + hashlib.sha256(descriptor_raw).hexdigest(),
@@ -571,23 +723,45 @@ def _partial_coverage_fault(
                 quarantined_sha256="sha256:"
                 + hashlib.sha256(quarantined.raw).hexdigest(),
             )
+            settled = True
         except BaseException as exc:
             try:
-                restore_quarantined_journal(
-                    root,
-                    Path(args.quarantine_dir),
-                    quarantined,
-                    expected_root_identity=source_identity,
-                    expected_quarantine_identity=quarantine_identity,
-                    max_bytes=MAX_JOURNAL_BYTES,
-                )
+                if quarantined is not None:
+                    restore_quarantined_journal(
+                        root,
+                        quarantine_root,
+                        quarantined,
+                        expected_root_identity=source_identity,
+                        expected_quarantine_identity=quarantine_identity,
+                        max_bytes=MAX_JOURNAL_BYTES,
+                    )
+                if fence_installed:
+                    remove_quarantine_source_fence(
+                        root,
+                        source_identity,
+                        transaction_id,
+                        intent_digest=intent.digest,
+                        snapshot=snapshot,
+                    )
+                if quarantined is not None:
+                    mark_quarantine_restored(
+                        quarantine_root,
+                        quarantine_identity,
+                        transaction_id,
+                        intent_digest=intent.digest,
+                        applied_digest=applied.digest if applied is not None else None,
+                        reason="catchable-post-move-failure",
+                    )
+                    settled = True
             except BaseException as rollback_exc:
                 raise LifecycleSourceError(
                     "partial-coverage fault failed and rollback failed"
                 ) from rollback_exc
             raise exc
+        finally:
+            commit_lease.close()
 
-    return PreparedFact(request["scenario"], commit_fault)
+    return PreparedFact(request["scenario"], commit_fault, abort_prepare)
 
 
 def _journal(args: argparse.Namespace, request: dict[str, Any]) -> bool:
@@ -793,6 +967,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "journal-capture": _journal,
         "shutdown-process": _shutdown,
     }
+    result: bool | str | PreparedFact | None = None
     try:
         request = _read_request(sys.stdin)
         result = handlers[args.source](args, request)
@@ -800,9 +975,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         _send_fact(request, value, stream=sys.stdin)
         if isinstance(result, PreparedFact):
             result.commit()
-    except (HostEventSinkError, LifecycleSourceError, OSError) as exc:
+    except (
+        HostEventSinkError,
+        LifecycleSourceError,
+        OSError,
+        QuarantineTransactionError,
+    ) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    finally:
+        if isinstance(result, PreparedFact):
+            result.release()
     return 0
 
 
