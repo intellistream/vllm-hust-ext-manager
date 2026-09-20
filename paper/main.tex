@@ -150,9 +150,11 @@ external service.  Each launch has a unique identity $\ell$ and an expected
 process set $W_\ell$.
 
 An activation plan $A=(H,P,G,W,R,V)$ is admissible only if capability
-requirements resolve, version predicates hold, resource ownership is
-conflict-free or explicitly mediated, and every non-optional evidence
-obligation has an authority.  Runtime effectiveness is:
+requirements resolve under a frozen public-PEP-440 comparison profile,
+resource ownership is conflict-free or mediated by a selected claimant, and
+every evidence obligation names an exact role/event/direction/capability
+authority grant and its selected capability provider plus, when applicable, a
+positive quorum threshold.  Runtime effectiveness is:
 \begin{align*}
 effective(A) \iff{}& \forall w \in W_A^{required},\\
                    & evidence(w,A,\ell)\text{ is valid and fresh}.
@@ -309,12 +311,17 @@ process-owned observer can establish runtime effectiveness.  Existing evidence
 includes provider-specific integration campaigns, but those campaigns were not
 designed as the matched experiment required by this paper.
 
-Two important pieces are incomplete.  First, capability and conflict data need
-one frozen machine-readable taxonomy with an independently labeled oracle.
-Second, process-owned evidence needs a common launch identity and aggregation
-protocol across parent/worker topologies.  Consequently we claim an
-implementation foundation and a verified namespace failure, not a completed
-end-to-end \system evaluation.
+Two important evaluation pieces are incomplete.  The implementation now has a
+pure contract compiler that resolves normalized public-PEP-440 requirements to
+exactly one provider, derives deterministic dependency order, rejects cycles,
+binds typed observation authority and quorum policy, and checks exclusive,
+shared-read, and selected-mediator resource ownership.  However,
+capability and conflict data still need one frozen machine-readable taxonomy
+with an independently labeled oracle.  Process-owned evidence also needs a
+completed real launch and aggregation experiment across parent/worker
+topologies.  Consequently we claim an implementation foundation and admission
+mechanics, not a completed end-to-end \system evaluation or measured conflict
+accuracy.
 
 The coordinator persists an immutable canonical plan before launching work.
 Each plan has a monotonically increasing generation, predecessor, launch ID,

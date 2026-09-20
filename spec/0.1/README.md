@@ -41,14 +41,34 @@ transition window and must identify their replacement.
 
 - Discovery is static and does not import implementation code.
 - Negotiation resolves every required capability to one authoritative provider.
-- Exclusive resources have one owner or an explicit mediator; unknown
-  ownership fails closed.
+- Contract, host, and provided-capability versions are canonical public
+  [PEP 440](https://peps.python.org/pep-0440/) versions. Host and capability
+  requirements are PEP 440 specifier sets evaluated with the default
+  prerelease rules. Local labels are forbidden on both sides, so `==1.0`
+  cannot admit an unreviewed `1.0+local` build. The reference compiler stores
+  normalized versions and specifier sets in the immutable plan.
+- Exclusive resources have one owner. Mediated resources are admissible only
+  when every claimant names the same selected extension and that mediator has
+  its own claim on the same resource; an arbitrary mediator string grants no
+  authority. Unknown ownership fails closed.
 - `installed`, `configured`, `enabled`, and `runtime_effective` are independent.
 - Runtime evidence binds launch, process, role, artifact digest, runtime
   version, capability, event, and wall-clock observation timestamp. Freshness
   is checked against issuer/verifier policy; this field is not a monotonic clock.
+- Every process obligation names its evidence-authority class and an exact
+  role/event/capability-direction/capability tuple. The direction distinguishes
+  evidence for a capability the extension provides from evidence that its
+  process consumed a negotiated requirement. That tuple must have a matching structured
+  authority grant; free-form prose cannot satisfy an obligation. `loaded` and
+  `invoked` are runtime-owned facts and cannot be established by provider
+  or external self-report, including through an unused grant. The capability
+  must be declared by that contract as provided or
+  in the named direction; a required-capability obligation is frozen in the plan together
+  with the unique provider selected by capability negotiation.
 - Global effectiveness requires all processes named by the obligation (or its
-  explicit quorum policy); parent import never proves worker invocation.
+  explicit positive integer quorum); parent import never proves worker
+  invocation. Runtime planning must additionally reject a quorum larger than
+  the frozen target set.
 - A deterministic activation plan records its predecessor. Commit happens only
   after required evidence; rollback restores manager-owned inputs and never
   claims authority over external services, data, clusters, or drivers.
@@ -69,8 +89,11 @@ Levels are cumulative and cell-specific. A plugin may be L3 for one pinned
 runtime tuple and unverified for another.
 
 See `manifest.schema.json`, `conformance.md`, and `roadmap.md`. The checked-in
-CLI skeleton validates L0/L1 artifacts and negative fixtures; L2--L4 remain
-experimental gates.
+parser validates L0/L1 artifacts. The pure reference contract compiler now
+implements L2 admission mechanics for host/version compatibility, unambiguous
+capability resolution, deterministic dependency order, observation authority,
+and exclusive/shared/mediated resource ownership. L2 still requires the
+independently labeled corpus precision/recall gate; L3--L4 remain experimental.
 
 The executable 0.1 protocol vocabulary is in `protocol.schema.json`, with a
 checked instance in `protocol-instance.json`. Identifiers are SHA-256 content
