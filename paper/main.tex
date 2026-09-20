@@ -170,6 +170,30 @@ trusted.  We do \emph{not} sandbox malicious Python, defend a compromised host,
 or claim that signed metadata makes arbitrary plugin code safe.  This boundary
 follows the upstream warning that plugins execute with application authority
 \cite{vllm-security}.
+For the evaluation harness specifically, the experiment host, runner, and
+observer are trusted; the SUT may fail but is not modeled as same-user code
+actively inspecting file descriptors or rewriting artifacts.  Harness records
+are runner-consistent and tamper-evident within this boundary, not
+cryptographically unforgeable evidence against a malicious SUT.
+The runner sends challenge-bound phase commands carrying plan, launch,
+controller-instance, and invocation identities, and binds Linux PID/start-time
+identities, exact argv, and exact observer-pipe bytes.  An acknowledgement is
+only control-plane progress and is never treated as proof that a workload,
+fault, hook, or policy effect occurred.  Formal facts must come from a
+registry-pinned observer reading a vLLM-HUST-host-owned event channel; the SUT
+is not given a telemetry file whose self-reported contents can be relabeled as
+trusted observation.  Controlled fixture services are explicitly classified
+as interface-only and cannot produce a formal manifest or enter the paper
+aggregate.  The production adapter registry is empty until the real host seam,
+observer, and exact command fingerprints are reviewed, so no formal-real result
+is currently claimed.  Each observer event must match the phase's ACK result,
+challenge, sequence, and invocation identity.  The runner double-reads process
+start ticks around exact-argv capture to reject PID-reuse races, while the
+observer independently reports the SUT process identity it observed.
+Known fixture artifacts and textual interpreter references are excluded both at
+launch and offline validation; this remains a trusted-registry boundary, not a
+sandbox for malicious registered code.  Manifest ingestion opens every path
+component without following symlinks and hashes the same bytes it parses.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger
@@ -380,6 +404,21 @@ combination of corpus diversity, vLLM-HUST process scopes, the fault model, and
 the explicit contract/host boundary---not cross-framework validation.
 
 \section{Evaluation Methodology and Current Evidence}
+The executable false-effective harness preregisters three matched arms:
+vanilla vLLM entry points, manual integration, and ECPA.  Formal cells require
+three independent service starts per arm under a three-by-three Latin-square
+order.  A separate oracle derives outcomes from preregistered truth predicates
+and raw runtime observations; implementation decisions are not accepted as
+ground truth.  The current checked matrix has zero completed formal-real cells,
+so every paper metric remains null.  A 45-start helper-process run tests the
+harness lifecycle and failure classification, but is explicitly
+reference-synthetic and excluded from paper aggregates.  Formal ingestion is
+runner-owned and content-addresses the command, semantic environment, raw
+observations, preregistered scenario/protocol, and independently recomputed
+oracle.  Aggregation is stratified by scenario and arm with the matched
+repetition as the paired unit; failure and missingness remain explicit.  A
+fail-safe closure is reported as a rollback class, not counted as restored
+rollback success.
 The evaluation is organized around four falsifiable hypotheses aligned with
 issues M0--M3.  \textbf{H1:} in preregistered failure cells, \system has zero
 false-effective outcomes and at least 99\% required-event coverage.
