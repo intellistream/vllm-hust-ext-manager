@@ -215,9 +215,10 @@ def test_non_host_assigned_identity_is_auditable_but_not_formal(assignment_sourc
     assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
 
 
-def test_assignment_source_is_schema_checked_and_bound_into_event_id():
+@pytest.mark.parametrize("invalid_source", [None, "plugin-self-report"])
+def test_assignment_source_schema_and_parser_reject_invalid_values(invalid_source):
     value = json.loads(raw_event())
-    value["process"]["assignment_source"] = "plugin-self-report"
+    value["process"]["assignment_source"] = invalid_source
     schema = json.loads(
         open("spec/0.1/host-plugin-evidence.schema.json").read()  # noqa: SIM115
     )
@@ -225,6 +226,8 @@ def test_assignment_source_is_schema_checked_and_bound_into_event_id():
     with pytest.raises(AttestationError, match="assignment_source"):
         parse_host_event(json.dumps(value, separators=(",", ":")).encode())
 
+
+def test_assignment_source_is_bound_into_event_id():
     value = json.loads(raw_event())
     original_event_id = value["event_id"]
     value["process"]["assignment_source"] = "environment"

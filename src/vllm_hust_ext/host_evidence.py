@@ -125,7 +125,7 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
     if any(not isinstance(item, str) or not item for item in strings):
         _invalid("required host event strings must be non-empty")
     assignment_source = process.get("assignment_source")
-    if assignment_source is not None and assignment_source not in {
+    if "assignment_source" in process and assignment_source not in {
         "host",
         "environment",
     }:
