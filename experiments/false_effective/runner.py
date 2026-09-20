@@ -144,6 +144,57 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
     return {**fingerprint, "digest": digest_bytes(canonical(fingerprint))}
 
 
+def run_bounded_command(
+    argv: list[str], timeout_s: int, output_limit: int
+) -> tuple[int, bytes, bytes]:
+    """Capture a child incrementally and terminate before output exceeds the limit."""
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if process.stdout is None or process.stderr is None:
+        raise RuntimeError("bounded command pipes were not created")
+    buffers = {process.stdout: bytearray(), process.stderr: bytearray()}
+    active = set(buffers)
+    for stream in active:
+        os.set_blocking(stream.fileno(), False)
+    deadline = time.monotonic() + timeout_s
+    try:
+        while active:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout_s)
+            readable, _, _ = select.select(list(active), [], [], remaining)
+            if not readable:
+                raise subprocess.TimeoutExpired(argv, timeout_s)
+            for stream in readable:
+                try:
+                    captured = sum(len(value) for value in buffers.values())
+                    chunk = os.read(
+                        stream.fileno(), min(65536, output_limit - captured + 1)
+                    )
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    stream.close()
+                    active.remove(stream)
+                    continue
+                buffers[stream].extend(chunk)
+                if captured + len(chunk) > output_limit:
+                    raise ValueError(
+                        "activation probe output exceeds the evidence limit"
+                    )
+        returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return (
+            returncode,
+            bytes(buffers[process.stdout]),
+            bytes(buffers[process.stderr]),
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+
 def run_activation_probe(
     entry: dict[str, Any],
     adapter: FormalArmAdapter,
@@ -176,18 +227,14 @@ def run_activation_probe(
     if fingerprint["digest"] != probe.get("command_digest"):
         raise ValueError("activation probe command differs from the registry")
     try:
-        completed = subprocess.run(
-            [executable, *probe_arguments],
-            capture_output=True,
-            timeout=timeout_s,
+        returncode, stdout, stderr = run_bounded_command(
+            [executable, *probe_arguments], timeout_s, 1024 * 1024
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError("activation probe did not complete") from exc
-    output = completed.stdout + completed.stderr
-    if len(output) > 1024 * 1024:
-        raise ValueError("activation probe output exceeds the evidence limit")
+    output = stdout + stderr
     try:
-        receipt = json.loads(completed.stdout)
+        receipt = json.loads(stdout)
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError("activation probe did not emit a JSON receipt") from exc
     expected_receipt = {
@@ -195,15 +242,19 @@ def run_activation_probe(
         "activation_contract": adapter.activation_contract,
         "accepted_options": sorted(required),
     }
-    if completed.returncode != 0 or receipt != expected_receipt:
+    if (
+        returncode != 0
+        or receipt != expected_receipt
+        or stdout != canonical(expected_receipt) + b"\n"
+    ):
         raise ValueError("executable does not expose the registered activation options")
     return {
         "command": fingerprint,
         "required_options": sorted(required),
-        "exit_code": completed.returncode,
+        "exit_code": returncode,
         "output_sha256": digest_bytes(output),
-        "stdout_base64": base64.b64encode(completed.stdout).decode(),
-        "stderr_base64": base64.b64encode(completed.stderr).decode(),
+        "stdout_base64": base64.b64encode(stdout).decode(),
+        "stderr_base64": base64.b64encode(stderr).decode(),
         "receipt": receipt,
     }
 

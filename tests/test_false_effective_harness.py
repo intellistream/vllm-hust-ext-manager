@@ -558,6 +558,20 @@ if args.ecpa_formal_activation_probe:
     rejected_sources = [
         "print('--enable-ecpa-manager --disable-entrypoints')\n",
         """import argparse
+import json
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
+parser.parse_args()
+receipt = {
+    'schema': 'ecpa-activation-probe/v1',
+    'activation_contract': 'manager-controlled-activation',
+    'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+}
+print(json.dumps(receipt, indent=2))
+""",
+        """import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--enable-ecpa-manager-evil', action='store_true')
 parser.add_argument('--disable-entrypoints-other', action='store_true')
@@ -568,6 +582,7 @@ parser.parse_args()
 sys.stdout.write('{\"accepted_options\":[\"--disable-entry')
 sys.stderr.write('points\",\"--enable-ecpa-manager\"]}')
 """,
+        "import sys; sys.stdout.buffer.write(b'x' * (1024 * 1024 + 1))\n",
     ]
     for rejected_source in rejected_sources:
         sut.write_text(rejected_source)
@@ -585,7 +600,9 @@ sys.stderr.write('points\",\"--enable-ecpa-manager\"]}')
             command_fingerprint(sys.executable, broken_arguments)["digest"]
         )
         registry_path.write_bytes(canonical(broken_probe) + b"\n")
-        with pytest.raises(ValueError, match="JSON receipt|does not expose"):
+        with pytest.raises(
+            ValueError, match="JSON receipt|does not expose|output exceeds"
+        ):
             runner_module.verified_adapter_contract(
                 "test-host-v1",
                 adapter,
