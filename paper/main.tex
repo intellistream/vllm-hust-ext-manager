@@ -7,14 +7,13 @@
 \usepackage{xcolor}
 \usepackage{amsmath}
 \newcommand{\system}{\textsc{ECPA}}
-\newcommand{\tbd}{\textcolor{red!70!black}{\textbf{TBD}}}
 \newcommand{\code}[1]{\texttt{#1}}
 \raggedbottom
 \setlength{\emergencystretch}{2em}
 \def\UrlBreaks{\do\/\do-\do\_}
 \sloppy
 \hbadness=10000
-\title{\Large \bf ECPA: Evidence-Bound Activation for Extensible LLM Inference Systems}
+\title{\Large \bf ECPA: Extension Contracts and Transactional Activation for LLM Inference Systems}
 \author{Anonymous Submission}
 \date{}
 
@@ -27,27 +26,27 @@
 \maketitle
 
 \begin{abstract}
-Modern LLM inference engines are evolving from monolithic executors into
-extensible platforms that accommodate changing models, accelerators,
-scheduling policies, and memory services. Plugins provide a way to incorporate
-these innovations without modifying the runtime core. However, existing
-extension mechanisms remain package-centric: they establish that code is
-installed, discoverable, or configured, but not that the implementation is
-compatible, conflict-free, and active in every process that can serve a
-request. This gap permits false-effective states, in which the control plane
-reports success while workers execute a partial, stale, or conflicting
-configuration. We present ECPA, an evidence-bound activation architecture for
-extensible inference systems. ECPA represents activation as a durable
-transaction over an immutable plan and an epoch-scoped target set. Runtime
-authorities discharge evidence obligations, and an ExposureGate admits a
-generation only after fresh evidence covers all required processes. Generation
-fencing and predecessor-aware rollback preserve this property across crashes,
-process replacement, and external-service failures. We derive ECPA's
-abstractions from 11 extensions and five adaptation candidates, and implement
-a reference coordinator that exercises namespace errors, resource conflicts,
-incomplete worker coverage, evidence replay, crash recovery, lease expiration,
-and failed compensation. ECPA thus provides a contract-centered foundation for
-reasoning about extension correctness beyond installation and configuration.
+Modern LLM inference engines continually add KV-cache management, preemption,
+offload, tiered storage, scheduling, observability, and disaggregated serving.
+These extensions increasingly enter through forks, hard-coded hooks, or
+package entry points, which establish discovery and loading but do not show
+that independently developed extensions compose correctly or affect every
+process that can serve a request. This gap creates \emph{false-effective}
+states: deployment state reports success while workers execute a partial,
+stale, inert, or conflicting configuration. We present ECPA, an inference-system
+extension contract and runtime. Contracts declare capabilities, resource and
+lifecycle authority, dependencies, process coverage, failure policy, and
+verifiable effect conditions. A compiler turns multiple contracts into an
+immutable execution plan; a transactional runtime prepares, activates,
+observes, exposes, and rolls back that plan. Authority-owned evidence discharges
+plan obligations, and an ExposureGate makes a generation externally visible
+only after fresh evidence covers its epoch-scoped targets. We derive the model
+from 11 extensions and five adaptation candidates in vLLM-HUST, and implement
+a reference coordinator and adversarial evaluation harness covering namespace
+errors, resource conflicts, partial worker coverage, replay, crash recovery,
+lease expiration, and failed compensation. ECPA provides explicit extension
+semantics beyond API availability while preserving optimization-specific
+algorithms outside the runtime.
 \end{abstract}
 
 \section{Introduction}
@@ -78,20 +77,23 @@ the plugin was nevertheless absent from the activation path.  The incident is
 not important because of the spelling error itself.  It demonstrates that
 tests and static state can agree while authority and runtime effect disagree.
 
-We ask: \emph{how can a plugin architecture make extensions discoverable,
+We ask: \emph{how can an inference system make extensions discoverable,
 composable, verifiable, and rollback-safe when runtime effectiveness cannot be
-proved statically?}  We build \system, a plugin management system centered on
-an evidence-carrying interoperability contract.  The Extension Manager is its
+proved statically?}  We build \system, an extension contract and transactional
+runtime centered on evidence-bound activation.  The Extension Manager is its
 reference implementation; the contract, corpus, and conformance suite define
 what another implementation must reproduce.  A decision is not ``enable plugin $p$'' but an activation plan
 for a concrete host version, provider set, plugin set, process topology, and
-resource-ownership graph.  The plan records evidence obligations.  Processes
-that actually invoke implementations satisfy those obligations; a manager
-cannot manufacture runtime effectiveness from configuration.
+resource-ownership graph.  The plan records evidence obligations.  Each
+obligation must be discharged by its declared authority; a plan-bound process
+invocation can discharge only its corresponding process or invocation
+obligation.  A manager cannot manufacture runtime effectiveness from
+configuration.
 
 Our safety property is: \emph{no activation is exposed as effective unless
-every required target in the current epoch has supplied fresh evidence from
-the authority that can observe the planned effect}.  ECPA is not the first
+every required plan obligation in the current epoch has fresh evidence from
+the authority that can observe its planned effect}.  Process-scoped obligations
+also require coverage of their frozen target set.  ECPA is not the first
 plugin system, a deployment controller, or a software-supply-chain attestation
 scheme.  Its contribution is an evidence-bound activation transaction for
 extensions whose effect spans multiple inference processes and authority
@@ -105,23 +107,24 @@ process scopes, versions and topologies, authority boundaries, and fault modes.
 We do not claim cross-framework validation.  A second inference runtime is
 future external-validity work, not a prerequisite for the present study.
 
-This paper makes four intended contributions, with claim strength bounded by
+This paper makes three contributions, with claim strength bounded by
 the evidence available today:
 \begin{itemize}
-  \item a typed manifest and capability model that keeps discovery static and
-  separates project namespaces from delegated upstream hooks;
-  \item a compositional planner that negotiates capabilities and detects
-  multiply owned resources before launch;
-  \item an explicit lifecycle and evidence protocol in which process-owned
-  attestations, fail-closed activation, and deterministic rollback prevent
-  false-effective state; and
-  \item a provider/runtime authority model and falsifiable evaluation contract
-  spanning correctness, conflicts, skew, recovery, multi-process consistency,
-  and overhead.
+  \item an inference-extension contract that expresses capabilities,
+  resources, lifecycle authority, dependencies, process coverage, and
+  machine-checkable effect obligations rather than only loadable APIs;
+  \item a contract compiler and transactional runtime that produce immutable
+  execution plans and define multi-process prepare, activation, exposure,
+  replacement, failure, and rollback semantics; and
+  \item a host-evidence model and independent evaluation method for detecting
+  false-effective extensions across correctness, conflict, skew, recovery,
+  multi-process consistency, and overhead experiments.
 \end{itemize}
-The first and parts of the second are implemented.  Process-owned evidence and
-the full formal evaluation remain work in progress; we do not present the
-existing provider demonstrations as proof of the full paper claim.
+The contract compiler, reference coordinator, evidence protocol, and
+fail-closed formal harness are implemented.  The source-bound static corpus is
+measured; the real vLLM-HUST matched experiment and performance evaluation
+remain incomplete.  We do not present modeled decisions, interface fixtures,
+or provider demonstrations as proof of runtime effectiveness.
 
 \section{Background and Motivation}
 \subsection{Why Existing State Is Ambiguous}
@@ -154,13 +157,51 @@ requirements resolve under a frozen public-PEP-440 comparison profile,
 resource ownership is conflict-free or mediated by a selected claimant, and
 every evidence obligation names an exact role/event/direction/capability
 authority grant and its selected capability provider plus, when applicable, a
-positive quorum threshold.  Runtime effectiveness is:
-\begin{align*}
-effective(A) \iff{}& \forall w \in W_A^{required},\\
-                   & evidence(w,A,\ell)\text{ is valid and fresh}.
-\end{align*}
-Quorum or optional-process semantics must be declared by capability type; the
-manager may not silently weaken the quantifier.
+positive quorum threshold.  Let $O_A^{required}$ be the required process,
+resource, provider-operation, and external-authority obligations compiled into
+$A$, and let $E$ be the observed evidence set.  Runtime effectiveness is:
+\begin{equation*}
+effective(A,\ell,E) \iff
+\forall o \in O_A^{required}: complete(o,A,\ell,E).
+\end{equation*}
+Each completion predicate checks the obligation's authority, identity,
+freshness, and value; process obligations additionally check membership or an
+explicit positive quorum.  The manager may not silently remove an obligation
+or weaken its predicate.
+
+ECPA deliberately separates five facts that conventional extension state often
+collapses.  $D(p)$ means a contract declares extension $p$; $P(p,A)$ means an
+admissible immutable plan selects it; $I(p,w,A,\ell)$ means a plan-bound host
+path invoked it in process $w$; $F(A,\ell,E)$ abbreviates the effectiveness
+predicate above; and $X(A,\ell)$ means the ExposureGate admitted the generation
+to external traffic.  Compilation ensures $P\Rightarrow D$, valid invocation
+evidence ensures $I\Rightarrow P$, and the gate enforces $X\Rightarrow F$.
+No reverse implication is assumed, and $F$ does not reduce to $I$: a plan can
+also require resource effects, provider operations, and external-authority
+facts.  Loading is therefore an activation event, not an effectiveness
+verdict.  A false-effective outcome is
+\begin{equation*}
+reported\_effective(A,\ell) \land \neg F(A,\ell,E),
+\end{equation*}
+where the right-hand side is computed from the preregistered target and
+obligation sets together with authority-owned observations, rather than from
+the manager's status bit.
+
+\begin{table}[t]
+\centering\small
+\caption{Extension facts and the authority permitted to establish them.}
+\begin{tabularx}{\columnwidth}{@{}lXX@{}}
+\toprule
+Fact & Evidence & Owning authority \\
+\midrule
+Declared & static manifest and distribution metadata & package registry \\
+Planned & immutable plan and resolved provider graph & contract compiler \\
+Invoked & launch-bound hook or dispatch event & host execution path \\
+Effective & every required obligation completes & obligation authorities \\
+Exposed & generation admitted to external traffic & ExposureGate \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 \subsection{Threat Model}
 We address accidental incompatibility, stale or replayed evidence, conflicting
@@ -172,26 +213,37 @@ trusted.  We do \emph{not} sandbox malicious Python, defend a compromised host,
 or claim that signed metadata makes arbitrary plugin code safe.  This boundary
 follows the upstream warning that plugins execute with application authority
 \cite{vllm-security}.
-For the evaluation harness specifically, the experiment host, runner, and
-observer are trusted; the SUT may fail but is not modeled as same-user code
+For the evaluation harness specifically, the experiment host, runner,
+registered lifecycle sources, and registry-pinned generic observer are trusted
+evidence components; the SUT may fail but is not modeled as same-user code
 actively inspecting file descriptors or rewriting artifacts.  Harness records
 are runner-consistent and tamper-evident within this boundary, not
 cryptographically unforgeable evidence against a malicious SUT.
 The runner sends challenge-bound phase commands carrying plan, launch,
 controller-instance, and invocation identities, and binds Linux PID/start-time
-identities, exact argv, and exact observer-pipe bytes.  An acknowledgement is
+identities, exact argv, and exact source datagram bytes.  An acknowledgement is
 only control-plane progress and is never treated as proof that a workload,
-fault, hook, or policy effect occurred.  Formal facts must come from a
-registry-pinned observer reading a vLLM-HUST-host-owned event channel; the SUT
-is not given a telemetry file whose self-reported contents can be relabeled as
-trusted observation.  Controlled fixture services are explicitly classified
-as interface-only and cannot produce a formal manifest or enter the paper
-aggregate.  The production adapter registry is empty until the real host seam,
-observer, and exact command fingerprints are reviewed, so no formal-real result
-is currently claimed.  Each observer event must match the phase's ACK result,
-challenge, sequence, and invocation identity.  The runner double-reads process
-start ticks around exact-argv capture to reject PID-reuse races, while the
-observer independently reports the SUT process identity it observed.
+fault, hook, or policy effect occurred.  Formal lifecycle facts instead come
+from five separately registered commands: a readiness probe, workload driver,
+fault actuator, host observer, and process monitor.  Each source receives its
+own control pipe and kernel-credentialed Unix datagram channel and may emit one
+canonical receipt bound to the current challenge, sequence, execution identity,
+value, time, and observed SUT process.  The host observer owns only effect
+capture from the vLLM-HUST-host-owned journal; it does not stand in for
+readiness, workload, fault, or shutdown authority.  A formal observable carrying
+\code{causal\_ack} is rejected.  The generic observer derives activation path,
+effective claim, invocation, and coverage observations from the host-owned
+event stream, but receives no phase message in a formal-real run.  The SUT is
+not given a telemetry path whose self-reported contents can be relabeled as
+trusted observation.
+
+Controlled fixture services are explicitly classified as interface-only and
+cannot produce a formal manifest or enter the paper aggregate.  The production
+adapter registry is empty until the real host seam, sources, and exact command
+fingerprints are reviewed, so no formal-real result is currently claimed.  The
+runner double-reads process start ticks around exact-argv capture to reject
+PID-reuse races, and validates the datagram's kernel PID/UID/GID against the
+registered source before committing its receipt.
 Known fixture artifacts and textual interpreter references are excluded both at
 launch and offline validation; this remains a trusted-registry boundary, not a
 sandbox for malicious registered code.  Manifest ingestion opens every path
@@ -213,6 +265,30 @@ A missing worker attestation leaves the activation partial, never globally
 effective.  Stale evidence is rejected by launch, process, host, manifest, and
 runtime-version identity.  Rollback either restores the recorded predecessor
 or reports a bounded operator action; it never invents success.
+
+\subsection{Safety Argument}
+Assume that plan publication and generation compare-and-swap are atomic, each
+evidence source belongs to its declared administrative authority, the channel
+preserves sender identity, and target membership is frozen for one process
+epoch.  Then an ECPA-controlled route
+cannot expose a candidate generation before all of its required obligations
+are satisfied.  The planner fixes the obligations and target set in the plan
+digest.  Evidence validation rejects a different plan, launch, controller,
+process epoch, target identity, or invocation sequence.  The ExposureGate
+opens only for that digest after the validator reports a complete set, and its
+route fence names the same generation.  A delayed validator or controller
+therefore fails the generation compare-and-swap rather than opening a newer
+route.
+
+The argument covers admission safety, not arbitrary functional correctness.
+If any authorized obligation source---host, provider, or external
+authority---emits a semantically false event, or an effect outside the declared
+taxonomy matters, the premises do not hold.  Similarly,
+rollback preserves exposure safety by closing the candidate before restoring a
+predecessor, but cannot guarantee recovery of external state that the manager
+does not own.  These boundaries determine the observer-independence and
+failure-injection experiments rather than being treated as implementation
+details.
 
 \section{Design}
 \subsection{Typed Static Manifests}
@@ -248,24 +324,46 @@ providers differ.  Two plugins sharing a read-only health provider need not
 conflict.  The output is a deterministic, reviewable plan rather than an
 order-dependent sequence of mutations.
 
+\subsection{Contract Compilation and Plan Identity}
+The compiler normalizes version predicates and identifiers, resolves each
+requirement to one selected provider, topologically orders dependencies, and
+checks resource claims against typed ownership modes.  It then expands
+lifecycle declarations into process-specific evidence obligations.  The
+canonical serialization freezes plugin versions, provider choices, host
+compatibility, configuration digests, target roles, ordering, and failure
+policy under one plan ID.  Every launch adds a fresh launch ID and process
+epoch without changing the compiled semantics.
+
+This compilation boundary provides a limited static guarantee: an admitted
+plan has no unresolved requirement, dependency cycle, ghost mediator, or
+multiply owned exclusive resource under the declared taxonomy.  It cannot show
+that a hook executes, that a provider mutates the intended resource, or that
+the taxonomy captures every semantic interaction.  Those are explicit runtime
+or evaluation obligations rather than hidden assumptions of the compiler.
+
 \subsection{Explicit Lifecycle}
-The state vector is not a scalar:
+Operator intent is not evidence state.  Its durable vector is:
 \begin{center}
-\code{installed, configured, enabled, runtime\_effective}.
+\code{installed, configured, enabled}.
 \end{center}
 Installed is distribution evidence; configured is validated saved input;
-enabled is durable operator intent; runtime-effective is launch-scoped evidence
-that the selected implementation ran.  Reachability, health, degradation, and
+enabled is durable operator intent.  The separate evidence predicates are
+declared, planned, invoked, effective, and exposed.  In particular,
+runtime-effective means that every required plan obligation is complete, not
+merely that an implementation ran.  Reachability, health, degradation, and
 compatibility are orthogonal projections.  Thus an external outage does not
 erase intent, and saved intent does not certify a running process.
 
-\subsection{Process-Owned Runtime Evidence}
-Each activation plan emits obligations keyed by launch identity, process role,
-plugin/component digest, host/runtime version, and capability.  A worker (or an
-observer in its authority domain) records load and invocation events.  The
-aggregator verifies identity, freshness, expected process membership, and the
-declared completion predicate.  Parent-process import is insufficient for a
-worker-side hook.  Evidence is compact lifecycle telemetry, not prompt content.
+\subsection{Authority- and Host-Owned Runtime Evidence}
+Each activation plan emits obligations keyed by launch identity, authority,
+process role or resource, plugin/component digest, host/runtime version, and
+capability.  A worker (or an observer in its authority domain) records load and
+invocation events; provider and external obligations name their own completion
+sources.  The aggregator verifies identity, freshness, authority, expected
+membership, and every declared completion predicate.  Parent-process import is
+insufficient for a worker-side hook, and invocation alone is insufficient for a
+declared resource or provider effect.  Evidence is compact lifecycle telemetry,
+not prompt content.
 
 In the running example, the static probe rejects the wrong namespace before
 launch.  If static discovery succeeds but one worker never invokes the hook,
@@ -274,9 +372,13 @@ runtime-effective.  This same distinction covers inert imports and mixed
 worker versions without special-case status strings.
 
 \subsection{Fail-Closed Activation and Deterministic Rollback}
-Planning is side-effect free.  Activation proceeds through prepare, launch,
-observe, and commit.  Missing required services, contradictory capabilities,
-or incomplete evidence stop before commit.  The manager stores the canonical
+Planning is side-effect free.  Activation proceeds through prepare, validate,
+activate, observe, expose, and commit; shutdown and rollback are explicit
+terminal or compensating paths.  Exposure is distinct from activation: a
+candidate may run behind a closed gate while obligations accumulate, but it
+cannot receive external traffic until the gate accepts its complete identity
+and evidence set.  Missing required services, contradictory capabilities, or
+incomplete evidence stop before exposure.  The manager stores the canonical
 predecessor plan, rendered inputs, version identities, and authority owners.
 Rollback re-renders that predecessor and requires its own evidence gate.
 External-service lifecycle remains operator-owned; rollback can restore client
@@ -489,12 +591,12 @@ result.}
 \toprule
 Claim area & Current evidence & Status \\
 \midrule
-Static contracts & 66 CPU tests on main & observed \\
+Static planning & 31 labeled cases: 21 admit, 10 reject & modeled \\
+Source binding & 15 repositories and 41 Git objects & observed \\
 Namespace safety & installed entry: expected 1; changed lookup: 0 & negative \\
-Conflict P/R & preregistered labeled matrix & \tbd{} \\
-False-effective & process failure matrix & \tbd{} \\
-Rollback & upgrade/rollback injection & \tbd{} \\
-Overhead & matched three-arm experiment & \tbd{} \\
+Formal-real & 0 complete, 30 planned; registry empty & planned \\
+Rollback & reference faults only; real injection pending & planned \\
+Overhead & matched three-arm experiment & planned \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -511,19 +613,26 @@ same protocol.  Real plugin receipts and an authority-owned traffic adapter are
 still required by the planned evaluation.
 
 \subsection{Preliminary Evidence and Missing Results}
-On repository main, 66 CPU tests pass.  On commit
+At the incident's pre-fix baseline, 66 CPU tests pass.  On commit
 \code{3201e133}, those tests also pass despite the namespace change.  A clean
 installed-package probe then observes one Mooncake entry point in the documented
 group, zero in the changed group, and zero discovered bundles.  This is a real
 counterexample to ``unit tests plus installation imply activation,'' and it has
 been retained as the M0 negative fixture rather than merged.
 
-All quantitative claims beyond this counterexample are planned.  Table and
-figure generators must refuse to replace missing values with zero.  The final
-paper will include per-cell confidence intervals and raw failure counts.  Until
-H1--H4 are measured, the strongest defensible claim is that the architecture
-makes evidence obligations explicit and catches a class of namespace errors
-that the previous unit suite missed.
+The source-bound modeled L2 corpus additionally contains 31 frozen composition
+cases over 11 registered extensions.  The compiler matches all 21 admits and
+10 rejects, including reject classes, after independent oracle review.  Exact
+repository commits, root trees, and 41 cited Git objects across 15 repositories
+bind the corpus to inspected source.  These numbers measure conformance to the
+modeled taxonomy, not real conflict prevalence or runtime effectiveness.
+
+All runtime and performance quantities remain planned.  Table and figure
+generators must refuse to replace missing values with zero.  The final paper
+will include per-cell confidence intervals and raw failure counts.  Until
+H1--H4 are measured, the strongest defensible runtime claim is that the
+architecture makes evidence obligations explicit and the harness fails closed;
+it does not establish production effectiveness.
 
 \section{Related Work}
 \textbf{Inference and module plugins.}  vLLM's Plugin System loads registered
