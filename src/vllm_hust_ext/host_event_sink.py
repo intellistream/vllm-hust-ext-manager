@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ JOURNAL_ENV = "ECPA_HOST_EVENT_DIR"
 FSYNC_ENV = "ECPA_HOST_EVENT_FSYNC"
 DEVICE_ENV = "ECPA_HOST_EVENT_DEVICE"
 INODE_ENV = "ECPA_HOST_EVENT_INODE"
+RENAME_NOREPLACE = 1
 
 
 class HostEventSinkError(RuntimeError):
@@ -30,6 +32,48 @@ class JournalEvent:
     line_number: int
     raw: bytes
     event: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class QuarantinedJournal:
+    """One atomically withheld journal with its exact retained bytes."""
+
+    journal: str
+    raw: bytes
+    device: int
+    inode: int
+
+
+def _rename_noreplace(
+    source_directory: int,
+    source: str,
+    destination_directory: int,
+    destination: str,
+) -> None:
+    """Use Linux renameat2 so a raced destination can never be overwritten."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise OSError("renameat2 is unavailable") from exc
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        source_directory,
+        os.fsencode(source),
+        destination_directory,
+        os.fsencode(destination),
+        RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination)
 
 
 def canonical_event(event: dict[str, Any]) -> bytes:
@@ -258,3 +302,211 @@ def read_events(
     finally:
         os.close(directory)
     return tuple(records)
+
+
+def quarantine_journal(
+    root: Path,
+    quarantine_root: Path,
+    journal: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    expected_quarantine_identity: tuple[int, int],
+    max_bytes: int,
+    expected_journal: QuarantinedJournal | None = None,
+) -> QuarantinedJournal:
+    """Atomically move one exact journal into a same-filesystem quarantine."""
+    if (
+        Path(journal).name != journal
+        or not journal.endswith(".jsonl")
+        or isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes <= 0
+    ):
+        raise HostEventSinkError("journal quarantine request is invalid")
+    source_path, source_directory = _open_journal_root(root, expected_root_identity)
+    try:
+        quarantine_path, quarantine_directory = _open_journal_root(
+            quarantine_root, expected_quarantine_identity
+        )
+    except BaseException:
+        os.close(source_directory)
+        raise
+    moved = False
+    try:
+        source_metadata = os.fstat(source_directory)
+        quarantine_metadata = os.fstat(quarantine_directory)
+        if source_path == quarantine_path:
+            raise HostEventSinkError("journal quarantine must use another directory")
+        if source_metadata.st_dev != quarantine_metadata.st_dev:
+            raise HostEventSinkError("journal quarantine must share a filesystem")
+        try:
+            os.stat(journal, dir_fd=quarantine_directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise HostEventSinkError(
+                "cannot inspect journal quarantine target"
+            ) from exc
+        else:
+            raise HostEventSinkError("journal quarantine target already exists")
+
+        try:
+            descriptor = os.open(
+                journal,
+                os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_RDONLY,
+                dir_fd=source_directory,
+            )
+        except OSError as exc:
+            raise HostEventSinkError("cannot open journal for quarantine") from exc
+        try:
+            file_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(file_metadata.st_mode)
+                or file_metadata.st_uid != os.geteuid()
+            ):
+                raise HostEventSinkError(
+                    "journal quarantine source is not an owned regular file"
+                )
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                raw = stream.read(max_bytes + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(raw) > max_bytes:
+            raise HostEventSinkError("journal quarantine source exceeds the limit")
+        if raw and not raw.endswith(b"\n"):
+            raise HostEventSinkError("journal quarantine source is partial")
+        if expected_journal is not None and (
+            expected_journal.journal != journal
+            or expected_journal.raw != raw
+            or expected_journal.device != file_metadata.st_dev
+            or expected_journal.inode != file_metadata.st_ino
+        ):
+            raise HostEventSinkError(
+                "journal quarantine source differs from the expected receipt"
+            )
+        try:
+            current = os.stat(journal, dir_fd=source_directory, follow_symlinks=False)
+        except OSError as exc:
+            raise HostEventSinkError("journal quarantine source disappeared") from exc
+        if (current.st_dev, current.st_ino) != (
+            file_metadata.st_dev,
+            file_metadata.st_ino,
+        ) or current.st_size != file_metadata.st_size:
+            raise HostEventSinkError("journal quarantine source identity changed")
+
+        try:
+            _rename_noreplace(
+                source_directory,
+                journal,
+                quarantine_directory,
+                journal,
+            )
+            moved = True
+            os.fsync(source_directory)
+            os.fsync(quarantine_directory)
+            destination = os.stat(
+                journal, dir_fd=quarantine_directory, follow_symlinks=False
+            )
+            if (destination.st_dev, destination.st_ino) != (
+                file_metadata.st_dev,
+                file_metadata.st_ino,
+            ):
+                raise HostEventSinkError("quarantined journal identity changed")
+            try:
+                descriptor = os.open(
+                    journal,
+                    os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_RDONLY,
+                    dir_fd=quarantine_directory,
+                )
+            except OSError as exc:
+                raise HostEventSinkError("cannot open quarantined journal") from exc
+            try:
+                retained_metadata = os.fstat(descriptor)
+                if (retained_metadata.st_dev, retained_metadata.st_ino) != (
+                    file_metadata.st_dev,
+                    file_metadata.st_ino,
+                ):
+                    raise HostEventSinkError(
+                        "quarantined journal changed before validation"
+                    )
+                with os.fdopen(descriptor, "rb") as stream:
+                    descriptor = -1
+                    retained = stream.read(max_bytes + 1)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            if retained != raw:
+                raise HostEventSinkError("quarantined journal bytes changed")
+            try:
+                os.stat(journal, dir_fd=source_directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise HostEventSinkError("quarantined journal remains visible")
+        except OSError as exc:
+            raise HostEventSinkError("cannot atomically quarantine journal") from exc
+        return QuarantinedJournal(
+            journal=journal,
+            raw=raw,
+            device=file_metadata.st_dev,
+            inode=file_metadata.st_ino,
+        )
+    except BaseException as original:
+        if moved:
+            try:
+                os.stat(journal, dir_fd=source_directory, follow_symlinks=False)
+            except FileNotFoundError:
+                try:
+                    _rename_noreplace(
+                        quarantine_directory,
+                        journal,
+                        source_directory,
+                        journal,
+                    )
+                    os.fsync(source_directory)
+                    os.fsync(quarantine_directory)
+                except OSError as rollback_error:
+                    raise HostEventSinkError(
+                        "journal quarantine failed and rollback failed"
+                    ) from rollback_error
+            except OSError as rollback_error:
+                raise HostEventSinkError(
+                    "journal quarantine failed and rollback target is unsafe"
+                ) from rollback_error
+            else:
+                raise HostEventSinkError(
+                    "journal quarantine failed and rollback target exists"
+                ) from original
+        raise
+    finally:
+        os.close(source_directory)
+        os.close(quarantine_directory)
+
+
+def restore_quarantined_journal(
+    root: Path,
+    quarantine_root: Path,
+    quarantined: QuarantinedJournal,
+    *,
+    expected_root_identity: tuple[int, int],
+    expected_quarantine_identity: tuple[int, int],
+    max_bytes: int,
+) -> None:
+    """Restore an exact quarantined journal without overwriting new evidence."""
+    restored = quarantine_journal(
+        quarantine_root,
+        root,
+        quarantined.journal,
+        expected_root_identity=expected_quarantine_identity,
+        expected_quarantine_identity=expected_root_identity,
+        max_bytes=max_bytes,
+        expected_journal=quarantined,
+    )
+    if (
+        restored.raw != quarantined.raw
+        or restored.device != quarantined.device
+        or restored.inode != quarantined.inode
+    ):
+        raise HostEventSinkError("restored journal differs from quarantine receipt")

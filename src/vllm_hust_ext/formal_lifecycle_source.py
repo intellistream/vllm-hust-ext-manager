@@ -22,16 +22,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .ecpa_model import canonical_bytes
-from .host_event_sink import HostEventSinkError, read_events
+from .host_event_sink import (
+    HostEventSinkError,
+    quarantine_journal,
+    read_events,
+    restore_quarantined_journal,
+)
 
 FACT_SCHEMA = "ecpa-formal-lifecycle-fact/v1"
 REQUEST_SCHEMA = "ecpa-lifecycle-fact-request/v1"
 MAX_HTTP_BYTES = 128 * 1024
 MAX_JOURNAL_BYTES = 512 * 1024
+MAX_DESCRIPTOR_BYTES = 64 * 1024
 SOURCE_KINDS = {
     "service-ready": "readiness-probe",
     "workload-complete": "workload-driver",
@@ -52,11 +59,20 @@ REQUEST_FIELDS = {
     "scenario",
     "sut_pid",
     "sut_process_identity",
+    "required_processes",
 }
 
 
 class LifecycleSourceError(ValueError):
     """A source cannot independently establish its assigned fact."""
+
+
+@dataclass(frozen=True)
+class PreparedFact:
+    """A fact value whose state-changing action runs only after runner commit."""
+
+    value: bool | str
+    commit: Callable[[], None]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -114,6 +130,35 @@ def _read_request(stream: Any) -> dict[str, Any]:
         or any(not isinstance(value, str) or not value for value in identity["argv"])
     ):
         raise LifecycleSourceError("lifecycle request process identity is invalid")
+    required = request.get("required_processes")
+    if (
+        not isinstance(required, list)
+        or not required
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"host", "role", "ordinal", "process_epoch"}
+            or not isinstance(item.get("host"), str)
+            or not item["host"]
+            or item["host"].strip() != item["host"]
+            or not isinstance(item.get("role"), str)
+            or not item["role"]
+            or item["role"].strip() != item["role"]
+            or any(
+                isinstance(item.get(field), bool)
+                or not isinstance(item.get(field), int)
+                or item[field] < 0
+                for field in ("ordinal", "process_epoch")
+            )
+            for item in required
+        )
+    ):
+        raise LifecycleSourceError("lifecycle request target snapshot is invalid")
+    target_keys = [
+        (item["host"], item["role"], item["ordinal"], item["process_epoch"])
+        for item in required
+    ]
+    if len(target_keys) != len(set(target_keys)):
+        raise LifecycleSourceError("lifecycle request target snapshot has duplicates")
     return request
 
 
@@ -232,6 +277,27 @@ def _canonical_request_file(path: str, expected_digest: str) -> bytes:
     return raw
 
 
+def _canonical_descriptor_file(
+    path: str, expected_digest: str
+) -> tuple[bytes, dict[str, Any]]:
+    with Path(path).open("rb") as stream:
+        raw = stream.read(MAX_DESCRIPTOR_BYTES + 1)
+    if len(raw) > MAX_DESCRIPTOR_BYTES:
+        raise LifecycleSourceError("fault descriptor exceeds the evidence limit")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise LifecycleSourceError("fault descriptor JSON is invalid") from exc
+    if not isinstance(value, dict) or raw != canonical_bytes(value) + b"\n":
+        raise LifecycleSourceError("fault descriptor must be canonical JSON")
+    actual_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if expected_digest != actual_digest:
+        raise LifecycleSourceError(
+            "fault descriptor differs from its registered digest"
+        )
+    return raw, value
+
+
 def _workload(args: argparse.Namespace, request: dict[str, Any]) -> bool:
     if request["fact"] != "workload-complete":
         raise LifecycleSourceError("workload source received another phase")
@@ -263,6 +329,265 @@ def _workload(args: argparse.Namespace, request: dict[str, Any]) -> bool:
         response_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
     )
     return True
+
+
+def _partial_coverage_fault(
+    args: argparse.Namespace, request: dict[str, Any]
+) -> PreparedFact:
+    if request["fact"] != "fault-injected":
+        raise LifecycleSourceError("partial-coverage source received another phase")
+    if request["scenario"] != "partial-worker-coverage":
+        raise LifecycleSourceError(
+            "partial-coverage source refuses another frozen scenario"
+        )
+    descriptor_raw, descriptor = _canonical_descriptor_file(
+        args.descriptor, args.descriptor_sha256
+    )
+    target = descriptor.get("target") if isinstance(descriptor, dict) else None
+    entry_point = (
+        descriptor.get("entry_point") if isinstance(descriptor, dict) else None
+    )
+    if (
+        set(descriptor)
+        != {
+            "schema",
+            "scenario",
+            "target",
+            "entry_point",
+        }
+        or descriptor.get("schema") != "ecpa-evidence-quarantine-fault/v1"
+        or descriptor.get("scenario") != request["scenario"]
+        or not isinstance(target, dict)
+        or set(target) != {"host", "role", "ordinal", "process_epoch"}
+        or target.get("role") != "worker"
+        or not isinstance(target.get("host"), str)
+        or not target["host"]
+        or target["host"].strip() != target["host"]
+        or any(
+            isinstance(target.get(field), bool)
+            or not isinstance(target.get(field), int)
+            or target[field] < 0
+            for field in ("ordinal", "process_epoch")
+        )
+        or not isinstance(entry_point, dict)
+        or set(entry_point) != {"group", "name", "value"}
+        or any(
+            not isinstance(entry_point.get(field), str)
+            or not entry_point[field]
+            or entry_point[field].strip() != entry_point[field]
+            for field in ("group", "name", "value")
+        )
+    ):
+        raise LifecycleSourceError("fault descriptor is not bound or canonical")
+
+    required = {
+        (item["host"], item["role"], item["ordinal"], item["process_epoch"])
+        for item in request["required_processes"]
+    }
+    target_key = tuple(
+        target[field] for field in ("host", "role", "ordinal", "process_epoch")
+    )
+    target_slot = tuple(target[field] for field in ("host", "role", "ordinal"))
+    worker_slots = {
+        (host, role, ordinal)
+        for host, role, ordinal, _epoch in required
+        if role == "worker"
+    }
+    if target_key not in required or len(worker_slots) < 2:
+        raise LifecycleSourceError(
+            "partial-coverage target and peer must belong to the frozen snapshot"
+        )
+
+    root = Path(args.event_dir)
+    source_identity = (args.device, args.inode)
+    records = read_events(
+        root,
+        source_identity,
+        max_total_bytes=MAX_JOURNAL_BYTES,
+    )
+
+    def is_effect(item: Any) -> bool:
+        event = item.event
+        return (
+            event["plan_id"] == request["plan_id"]
+            and event["launch_id"] == request["launch_id"]
+            and event["binding_status"] == "bound"
+            and event["event"] == "invoked"
+            and event["observation_kind"] == "loader_lifecycle"
+            and event["controller_instance_id"] is None
+            and event["process"].get("assignment_source") == "host"
+            and event["entry_point"] == entry_point
+        )
+
+    effects = [item for item in records if is_effect(item)]
+    target_effects = [
+        item
+        for item in effects
+        if all(item.event["process"].get(field) == target[field] for field in target)
+    ]
+    target_journals = {item.journal for item in target_effects}
+    peer_slots = sorted(
+        {
+            (
+                item.event["process"]["host"],
+                item.event["process"]["role"],
+                item.event["process"]["ordinal"],
+                item.event["process"]["process_epoch"],
+            )
+            for item in effects
+            if (
+                item.event["process"]["host"],
+                item.event["process"]["role"],
+                item.event["process"]["ordinal"],
+                item.event["process"]["process_epoch"],
+            )
+            in required
+            and (
+                item.event["process"]["host"],
+                item.event["process"]["role"],
+                item.event["process"]["ordinal"],
+            )
+            != target_slot
+        }
+    )
+    if len(target_journals) != 1 or not target_effects:
+        raise LifecycleSourceError(
+            "fault target does not have one exact bound worker journal"
+        )
+    if not peer_slots:
+        raise LifecycleSourceError(
+            "partial-coverage fault requires another observed worker"
+        )
+    journal = next(iter(target_journals))
+    journal_records = [item for item in records if item.journal == journal]
+    if not journal_records or any(
+        item.event["plan_id"] != request["plan_id"]
+        or item.event["launch_id"] != request["launch_id"]
+        or any(item.event["process"].get(field) != target[field] for field in target)
+        for item in journal_records
+    ):
+        raise LifecycleSourceError(
+            "fault target journal contains another launch or process"
+        )
+    target_journal_raw = b"".join(item.raw + b"\n" for item in journal_records)
+    peer_records = [
+        item
+        for item in effects
+        if (
+            item.event["process"]["host"],
+            item.event["process"]["role"],
+            item.event["process"]["ordinal"],
+            item.event["process"]["process_epoch"],
+        )
+        in set(peer_slots)
+    ]
+    quarantine_identity = (args.quarantine_device, args.quarantine_inode)
+
+    def commit_fault() -> None:
+        quarantined = quarantine_journal(
+            root,
+            Path(args.quarantine_dir),
+            journal,
+            expected_root_identity=source_identity,
+            expected_quarantine_identity=quarantine_identity,
+            max_bytes=MAX_JOURNAL_BYTES,
+        )
+        try:
+            if quarantined.raw != target_journal_raw:
+                raise LifecycleSourceError("fault target journal changed after prepare")
+            remaining = read_events(
+                root,
+                source_identity,
+                max_total_bytes=MAX_JOURNAL_BYTES,
+            )
+            if any(
+                is_effect(item)
+                and all(
+                    item.event["process"].get(field) == target[field]
+                    for field in target
+                )
+                for item in remaining
+            ):
+                raise LifecycleSourceError(
+                    "fault target evidence reappeared after quarantine"
+                )
+            remaining_peer_slots = {
+                (
+                    item.event["process"]["host"],
+                    item.event["process"]["role"],
+                    item.event["process"]["ordinal"],
+                    item.event["process"]["process_epoch"],
+                )
+                for item in remaining
+                if is_effect(item) and item.event["process"]["role"] == "worker"
+            }
+            if not set(peer_slots).issubset(remaining_peer_slots):
+                raise LifecycleSourceError("fault changed non-target worker evidence")
+            _audit(
+                "partial-worker-evidence-quarantine",
+                scenario=request["scenario"],
+                plan_id=request["plan_id"],
+                launch_id=request["launch_id"],
+                controller_instance=request["controller_instance"],
+                lifecycle_invocation_id=request["invocation_id"],
+                descriptor_base64=base64.b64encode(descriptor_raw).decode(),
+                descriptor_sha256="sha256:"
+                + hashlib.sha256(descriptor_raw).hexdigest(),
+                target=target,
+                entry_point=entry_point,
+                peer_slots=[
+                    {
+                        "host": host,
+                        "role": role,
+                        "ordinal": ordinal,
+                        "process_epoch": epoch,
+                    }
+                    for host, role, ordinal, epoch in peer_slots
+                ],
+                target_records=[
+                    {
+                        "journal": item.journal,
+                        "line_number": item.line_number,
+                        "event_id": item.event.get("event_id"),
+                        "process": item.event["process"],
+                    }
+                    for item in target_effects
+                ],
+                peer_records=[
+                    {
+                        "journal": item.journal,
+                        "line_number": item.line_number,
+                        "event_id": item.event.get("event_id"),
+                        "process": item.event["process"],
+                        "raw_base64": base64.b64encode(item.raw).decode(),
+                        "raw_sha256": "sha256:" + hashlib.sha256(item.raw).hexdigest(),
+                    }
+                    for item in peer_records
+                ],
+                quarantined_journal=quarantined.journal,
+                quarantined_device=quarantined.device,
+                quarantined_inode=quarantined.inode,
+                quarantined_base64=base64.b64encode(quarantined.raw).decode(),
+                quarantined_sha256="sha256:"
+                + hashlib.sha256(quarantined.raw).hexdigest(),
+            )
+        except BaseException as exc:
+            try:
+                restore_quarantined_journal(
+                    root,
+                    Path(args.quarantine_dir),
+                    quarantined,
+                    expected_root_identity=source_identity,
+                    expected_quarantine_identity=quarantine_identity,
+                    max_bytes=MAX_JOURNAL_BYTES,
+                )
+            except BaseException as rollback_exc:
+                raise LifecycleSourceError(
+                    "partial-coverage fault failed and rollback failed"
+                ) from rollback_exc
+            raise exc
+
+    return PreparedFact(request["scenario"], commit_fault)
 
 
 def _journal(args: argparse.Namespace, request: dict[str, Any]) -> bool:
@@ -438,6 +763,15 @@ def build_parser() -> argparse.ArgumentParser:
     workload.add_argument("--request", required=True)
     workload.add_argument("--request-sha256", required=True)
     workload.add_argument("--timeout", type=float, default=60.0)
+    fault = commands.add_parser("partial-coverage-quarantine")
+    fault.add_argument("--event-dir", required=True)
+    fault.add_argument("--device", required=True, type=int)
+    fault.add_argument("--inode", required=True, type=int)
+    fault.add_argument("--quarantine-dir", required=True)
+    fault.add_argument("--quarantine-device", required=True, type=int)
+    fault.add_argument("--quarantine-inode", required=True, type=int)
+    fault.add_argument("--descriptor", required=True)
+    fault.add_argument("--descriptor-sha256", required=True)
     journal = commands.add_parser("journal-capture")
     journal.add_argument("--event-dir", required=True)
     journal.add_argument("--device", required=True, type=int)
@@ -449,16 +783,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handlers: dict[str, Callable[[argparse.Namespace, dict[str, Any]], bool | str]] = {
+    handlers: dict[
+        str,
+        Callable[[argparse.Namespace, dict[str, Any]], bool | str | PreparedFact],
+    ] = {
         "readiness-http": _readiness,
         "workload-http": _workload,
+        "partial-coverage-quarantine": _partial_coverage_fault,
         "journal-capture": _journal,
         "shutdown-process": _shutdown,
     }
     try:
         request = _read_request(sys.stdin)
-        value = handlers[args.source](args, request)
+        result = handlers[args.source](args, request)
+        value = result.value if isinstance(result, PreparedFact) else result
         _send_fact(request, value, stream=sys.stdin)
+        if isinstance(result, PreparedFact):
+            result.commit()
     except (HostEventSinkError, LifecycleSourceError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
