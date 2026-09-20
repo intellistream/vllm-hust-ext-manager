@@ -9,7 +9,7 @@
     "event": {"enum": ["discovered", "resolved", "invoked", "failed", "skipped"]},
     "observation_kind": {"enum": ["loader_lifecycle", "scheduler_resolution", "scheduler_dispatch"]},
     "entry_point": {"type": "object", "required": ["group", "name", "value"], "properties": {"group": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "value": {"type": "string", "minLength": 1}}, "additionalProperties": false},
-    "process": {"type": "object", "required": ["host", "role", "ordinal", "pid", "start_identity", "process_epoch"], "properties": {"host": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}, "ordinal": {"type": "integer", "minimum": 0}, "pid": {"type": "integer", "minimum": 0}, "start_identity": {"type": "string", "pattern": "^pid:[0-9]+:start_ticks:[0-9]+$"}, "process_epoch": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+    "process": {"type": "object", "required": ["host", "role", "ordinal", "pid", "start_identity", "process_epoch"], "properties": {"host": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}, "ordinal": {"type": "integer", "minimum": 0}, "pid": {"type": "integer", "minimum": 0}, "start_identity": {"type": "string", "pattern": "^pid:[0-9]+:start_ticks:[0-9]+$"}, "process_epoch": {"type": "integer", "minimum": 0}, "assignment_source": {"enum": ["host", "environment"]}}, "additionalProperties": false},
     "observed_at_ns": {"type": "integer", "minimum": 0},
     "delivery_attempt": {"type": "integer", "minimum": 1},
     "plan_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},

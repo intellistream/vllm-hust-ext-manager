@@ -106,13 +106,17 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
     process = value["process"]
     if not isinstance(entry, dict) or set(entry) != {"group", "name", "value"}:
         _invalid("entry_point fields do not match schema")
-    if not isinstance(process, dict) or set(process) != {
+    legacy_process_fields = {
         "host",
         "role",
         "ordinal",
         "pid",
         "start_identity",
         "process_epoch",
+    }
+    if not isinstance(process, dict) or set(process) not in {
+        frozenset(legacy_process_fields),
+        frozenset({*legacy_process_fields, "assignment_source"}),
     }:
         _invalid("process fields do not match schema")
     strings = [value["event_id"], value["identity_status"]]
@@ -120,6 +124,12 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
     strings += [process[name] for name in ("host", "role", "start_identity")]
     if any(not isinstance(item, str) or not item for item in strings):
         _invalid("required host event strings must be non-empty")
+    assignment_source = process.get("assignment_source")
+    if assignment_source is not None and assignment_source not in {
+        "host",
+        "environment",
+    }:
+        _invalid("assignment_source must be host or environment")
     for item in (
         process["ordinal"],
         process["pid"],
@@ -220,29 +230,29 @@ def parse_host_event(raw: bytes) -> dict[str, Any]:
         ).encode()
         if dispatch_id != hashlib.sha256(material).hexdigest():
             _invalid("scheduler dispatch identity digest is inconsistent")
-    event_material = json.dumps(
-        [
-            process["host"],
-            process["pid"],
-            process["start_identity"],
-            process["process_epoch"],
-            process["role"],
-            process["ordinal"],
-            entry["group"],
-            entry["name"],
-            entry["value"],
-            value["event"],
-            value["detail"],
-            occurrence_id,
-            value["plan_id"],
-            value["launch_id"],
-            observation_kind,
-            controller_instance_id,
-            value["delivery_attempt"],
-            value["observed_at_ns"],
-        ],
-        separators=(",", ":"),
-    ).encode()
+    event_material_items = [
+        process["host"],
+        process["pid"],
+        process["start_identity"],
+        process["process_epoch"],
+        process["role"],
+        process["ordinal"],
+        entry["group"],
+        entry["name"],
+        entry["value"],
+        value["event"],
+        value["detail"],
+        occurrence_id,
+        value["plan_id"],
+        value["launch_id"],
+        observation_kind,
+        controller_instance_id,
+        value["delivery_attempt"],
+        value["observed_at_ns"],
+    ]
+    if assignment_source is not None:
+        event_material_items.append(assignment_source)
+    event_material = json.dumps(event_material_items, separators=(",", ":")).encode()
     if value["event_id"] != hashlib.sha256(event_material).hexdigest():
         _invalid("event_id does not match host event material")
     if value["plugin_id"] is not None or value["artifact_digest"] is not None:
@@ -270,6 +280,11 @@ def translate_invocation(
         raise AttestationError(
             AttestationErrorCode.BINDING_MISMATCH,
             "unbound host events cannot satisfy invocation evidence",
+        )
+    if event["process"].get("assignment_source") != "host":
+        raise AttestationError(
+            AttestationErrorCode.BINDING_MISMATCH,
+            "formal invocation evidence requires host-assigned process identity",
         )
     if event["plan_id"] != plan.plan_id or event["launch_id"] != launch_id:
         raise AttestationError(

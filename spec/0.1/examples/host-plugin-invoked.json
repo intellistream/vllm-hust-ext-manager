@@ -1,6 +1,6 @@
 {
   "schema": "vllm-hust-plugin-evidence/0.1",
-  "event_id": "ca6ac437514343a010bfc8c2160635ed514d51dbe983c7cdf204967a6f56605f",
+  "event_id": "fc7385238ebd42475e3d8303ad373c0ae27f235536e9c59935edbbe27c0ed97f",
   "event": "invoked",
   "observation_kind": "loader_lifecycle",
   "entry_point": {
@@ -14,7 +14,8 @@
     "ordinal": 0,
     "pid": 4242,
     "start_identity": "pid:4242:start_ticks:9001",
-    "process_epoch": 7
+    "process_epoch": 7,
+    "assignment_source": "host"
   },
   "observed_at_ns": 1800000000000000000,
   "delivery_attempt": 1,

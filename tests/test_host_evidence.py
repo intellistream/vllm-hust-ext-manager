@@ -68,27 +68,30 @@ BINDING = EntryPointBinding(
 def computed_event_id(value):
     process = value["process"]
     entry = value["entry_point"]
+    material_items = [
+        process["host"],
+        process["pid"],
+        process["start_identity"],
+        process["process_epoch"],
+        process["role"],
+        process["ordinal"],
+        entry["group"],
+        entry["name"],
+        entry["value"],
+        value["event"],
+        value["detail"],
+        value["occurrence_id"],
+        value["plan_id"],
+        value["launch_id"],
+        value["observation_kind"],
+        value["controller_instance_id"],
+        value["delivery_attempt"],
+        value["observed_at_ns"],
+    ]
+    if "assignment_source" in process:
+        material_items.append(process["assignment_source"])
     material = json.dumps(
-        [
-            process["host"],
-            process["pid"],
-            process["start_identity"],
-            process["process_epoch"],
-            process["role"],
-            process["ordinal"],
-            entry["group"],
-            entry["name"],
-            entry["value"],
-            value["event"],
-            value["detail"],
-            value["occurrence_id"],
-            value["plan_id"],
-            value["launch_id"],
-            value["observation_kind"],
-            value["controller_instance_id"],
-            value["delivery_attempt"],
-            value["observed_at_ns"],
-        ],
+        material_items,
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(material).hexdigest()
@@ -112,6 +115,7 @@ def raw_event(**changes):
             "pid": 4242,
             "start_identity": "pid:4242:start_ticks:9001",
             "process_epoch": 7,
+            "assignment_source": "host",
         },
         "observed_at_ns": 1_800_000_000_000_000_000,
         "delivery_attempt": 1,
@@ -195,6 +199,40 @@ def test_exact_raw_bytes_are_preserved_and_bound_to_plan():
     )
 
 
+@pytest.mark.parametrize("assignment_source", [None, "environment"])
+def test_non_host_assigned_identity_is_auditable_but_not_formal(assignment_source):
+    value = json.loads(raw_event())
+    if assignment_source is None:
+        value["process"].pop("assignment_source")
+    else:
+        value["process"]["assignment_source"] = assignment_source
+    value["event_id"] = computed_event_id(value)
+    raw = json.dumps(value, separators=(",", ":")).encode()
+    parsed_source = parse_host_event(raw)["process"].get("assignment_source")
+    assert parsed_source == assignment_source
+    with pytest.raises(AttestationError, match="host-assigned") as caught:
+        translate(raw)
+    assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
+
+
+def test_assignment_source_is_schema_checked_and_bound_into_event_id():
+    value = json.loads(raw_event())
+    value["process"]["assignment_source"] = "plugin-self-report"
+    schema = json.loads(
+        open("spec/0.1/host-plugin-evidence.schema.json").read()  # noqa: SIM115
+    )
+    assert list(Draft7Validator(schema).iter_errors(value))
+    with pytest.raises(AttestationError, match="assignment_source"):
+        parse_host_event(json.dumps(value, separators=(",", ":")).encode())
+
+    value = json.loads(raw_event())
+    original_event_id = value["event_id"]
+    value["process"]["assignment_source"] = "environment"
+    assert value["event_id"] == original_event_id
+    with pytest.raises(AttestationError, match="event_id"):
+        parse_host_event(json.dumps(value, separators=(",", ":")).encode())
+
+
 def test_current_vllm_scheduler_dispatch_is_causally_validated():
     raw = scheduler_event()
     event = parse_host_event(raw)
@@ -252,6 +290,7 @@ def test_unbound_event_cannot_translate_to_invocation_evidence():
                 "pid": 4242,
                 "start_identity": "pid:4242:start_ticks:9001",
                 "process_epoch": 8,
+                "assignment_source": "host",
             }
         ),
     ],
