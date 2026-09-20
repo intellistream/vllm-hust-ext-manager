@@ -187,14 +187,24 @@ def append_event(event: dict[str, Any]) -> None:
 
 
 def read_events(
-    root: Path, expected_identity: tuple[int, int] | None = None
+    root: Path,
+    expected_identity: tuple[int, int] | None = None,
+    *,
+    max_total_bytes: int | None = None,
 ) -> tuple[JournalEvent, ...]:
     """Read complete regular journals without following file symlinks."""
+    if max_total_bytes is not None and (
+        isinstance(max_total_bytes, bool)
+        or not isinstance(max_total_bytes, int)
+        or max_total_bytes <= 0
+    ):
+        raise HostEventSinkError("host event read limit must be a positive integer")
     if expected_identity is None and os.getenv(JOURNAL_ENV) == str(root):
         expected_identity = _expected_directory_identity()
     _root, directory = _open_journal_root(root, expected_identity)
     records: list[JournalEvent] = []
     event_ids: set[str] = set()
+    total_bytes = 0
     try:
         for name in sorted(os.listdir(directory)):
             if not name.endswith(".jsonl"):
@@ -218,7 +228,16 @@ def read_events(
                     )
                 with os.fdopen(descriptor, "rb") as stream:
                     descriptor = -1
-                    journal_bytes = stream.read()
+                    if max_total_bytes is None:
+                        journal_bytes = stream.read()
+                    else:
+                        remaining = max_total_bytes - total_bytes
+                        journal_bytes = stream.read(remaining + 1)
+                        if len(journal_bytes) > remaining:
+                            raise HostEventSinkError(
+                                "host event journals exceed the read limit"
+                            )
+                        total_bytes += len(journal_bytes)
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)

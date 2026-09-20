@@ -583,6 +583,17 @@ def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
         process.wait(timeout=2)
 
 
+def test_popen_pinned_rejects_mutated_argument_file(tmp_path):
+    argument = tmp_path / "request.json"
+    argument.write_text('{"model":"before"}\n')
+    argv = [sys.executable, str(argument.resolve())]
+    fingerprint = command_fingerprint(argv[0], argv[1:])
+    argument.write_text('{"model":"after"}\n')
+
+    with pytest.raises(ValueError, match="argument file differs"):
+        runner_module.popen_pinned(argv, fingerprint)
+
+
 def test_post_identity_pipe_failure_reaps_both_processes_and_pipes(
     tmp_path, monkeypatch
 ):

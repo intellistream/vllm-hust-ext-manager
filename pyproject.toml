@@ -22,6 +22,7 @@ test = ["jsonschema>=4.0", "pytest>=8.0", "ruff>=0.12"]
 
 [project.scripts]
 vllm-hust-ext = "vllm_hust_ext.cli:main"
+ecpa-formal-source = "vllm_hust_ext.formal_lifecycle_source:main"
 
 [project.urls]
 Repository = "https://github.com/vLLM-HUST/extension-manager"
