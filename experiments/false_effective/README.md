@@ -79,7 +79,14 @@ deployment-registration gate, is specified in
 `formal-real` is fail closed behind the canonical `verified-adapters.json`
 registry. A registered entry pins the resolved executable, every file-backed
 argv component, observer command, arm contract, and a `vllm-hust-host`-owned
-event channel. The registry is intentionally empty until a real vLLM-HUST
+event channel. It also enumerates supported scenarios: the first
+`partial-worker-coverage` binding pins the actuator subcommand by strictly
+parsing the production actuator's complete option grammar, canonical fault descriptor digest, and exact plugin entry
+point. Runtime and offline validators
+reopen that descriptor, and formal aggregation requires the same derived
+scenario/descriptor/entry-point/actuator comparison identity across all three
+arms. The registry is
+intentionally empty until a real vLLM-HUST
 adapter and host observer are reviewed. The runner gives no SUT-authored
 telemetry path to the observer. Effectiveness, invocation, activation path, and
 coverage must be emitted by the registry-pinned observer after reading

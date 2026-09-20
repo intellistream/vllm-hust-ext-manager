@@ -93,12 +93,20 @@ raw target and peer prerequisite records, rather than only source-generated
 slot summaries.
 
 For the ECPA arm, runner startup separately verifies that the frozen process
-snapshot is covered by the immutable execution Plan. The descriptor's entry
-point is registry-pinned but is not yet mechanically derived from a Plan
-obligation, because vanilla and manual arms have no ECPA Plan artifact.
-Independent registration review must bind that entry point to each arm's real
-activation contract; automating that cross-arm binding remains part of the
-registration gate.
+snapshot is covered by the immutable execution Plan. Every reviewed adapter
+entry now declares a scenario-scoped binding containing the exact fault-source
+subcommand, descriptor digest, and plugin entry point. The validator derives the
+subcommand position by strictly parsing the production actuator's complete
+option grammar rather than trusting a registry-declared index. Admission reopens the
+canonical descriptor and rejects an unsupported scenario, a different entry
+point, a different descriptor digest, or a different actuator subcommand.
+Offline validation repeats that check, and a complete three-arm cell is rejected
+unless vanilla, manual, and ECPA records carry the same runner-derived
+comparison binding over the scenario, descriptor digest, entry point, and
+actuator semantics. The entry point is not inferred from an ECPA Plan
+obligation because vanilla and manual arms have no such Plan; it is an explicit,
+reviewed comparison contract whose concrete deployment value must still be
+verified before registration.
 
 This is an evidence-delivery fault: it does not kill the worker, mutate the
 Plan, or claim that the plugin ceased executing. The formal oracle may use it

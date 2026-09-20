@@ -68,6 +68,16 @@ FORMAL_LIFECYCLE_FACT_SOURCES = {
     "observer-captured": "host-observer",
     "service-shutdown": "process-monitor",
 }
+PARTIAL_COVERAGE_ACTUATOR_OPTIONS = {
+    "--event-dir",
+    "--device",
+    "--inode",
+    "--quarantine-dir",
+    "--quarantine-device",
+    "--quarantine-inode",
+    "--descriptor",
+    "--descriptor-sha256",
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -82,6 +92,76 @@ def digest_bytes(value: bytes) -> str:
 
 def digest_file(path: Path) -> str:
     return digest_bytes(path.read_bytes())
+
+
+def validate_scenario_binding_contract(
+    binding: Any, scenario: str, fault_arguments: Any
+) -> dict[str, Any]:
+    """Validate registry data against the actuator's fixed command-tail grammar."""
+    if not isinstance(binding, dict) or set(binding) != {
+        "descriptor_sha256",
+        "entry_point",
+        "fault_source_subcommand",
+    }:
+        raise ValueError("trusted registry does not bind the formal scenario")
+    entry_point = binding.get("entry_point")
+    descriptor_digest = binding.get("descriptor_sha256")
+    subcommand = binding.get("fault_source_subcommand")
+    if not isinstance(fault_arguments, list):
+        raise ValueError(
+            "trusted registry scenario subcommand or entry point is invalid"
+        )
+    option_positions = [
+        index
+        for index, value in enumerate(fault_arguments)
+        if isinstance(value, str) and value.startswith("--")
+    ]
+    first_option = option_positions[0] if option_positions else -1
+    option_tail = fault_arguments[first_option:] if first_option > 0 else []
+    option_pairs = (
+        list(zip(option_tail[::2], option_tail[1::2], strict=True))
+        if len(option_tail) % 2 == 0
+        else []
+    )
+    options = {name: value for name, value in option_pairs}
+    if (
+        not isinstance(scenario, str)
+        or not scenario
+        or not isinstance(entry_point, dict)
+        or set(entry_point) != {"group", "name", "value"}
+        or any(
+            not isinstance(entry_point.get(field), str)
+            or not entry_point[field]
+            or entry_point[field].strip() != entry_point[field]
+            for field in ("group", "name", "value")
+        )
+        or not isinstance(descriptor_digest, str)
+        or not descriptor_digest.startswith("sha256:")
+        or subcommand != "partial-coverage-quarantine"
+        or first_option < 1
+        or fault_arguments[first_option - 1] != subcommand
+        or len(option_pairs) != len(PARTIAL_COVERAGE_ACTUATOR_OPTIONS)
+        or {name for name, _ in option_pairs} != PARTIAL_COVERAGE_ACTUATOR_OPTIONS
+        or any(
+            not isinstance(value, str) or not value or value.startswith("--")
+            for _, value in option_pairs
+        )
+        or options.get("--descriptor-sha256") != descriptor_digest
+    ):
+        raise ValueError(
+            "trusted registry scenario subcommand or entry point is invalid"
+        )
+    comparison_material = {
+        "scenario": scenario,
+        "descriptor_sha256": descriptor_digest,
+        "entry_point": entry_point,
+        "fault_source_subcommand": subcommand,
+    }
+    return {
+        **binding,
+        "comparison_binding_id": digest_bytes(canonical(comparison_material)),
+        "scenario": scenario,
+    }
 
 
 def safe_path(root: Path, relative: str) -> Path:
@@ -131,12 +211,34 @@ def validate_formal_adapter_verification(
         )
     ):
         raise ValueError("trusted registry entry does not satisfy the formal contract")
+    scenario = record.get("scenario")
+    bindings = entry.get("scenario_bindings")
+    registered_binding = (
+        bindings.get(scenario)
+        if isinstance(bindings, dict) and isinstance(scenario, str)
+        else None
+    )
+    verification_fact_commands = verification.get("lifecycle_fact_commands")
+    verification_fault = (
+        verification_fact_commands.get("fault-injected")
+        if isinstance(verification_fact_commands, dict)
+        else None
+    )
+    fault_arguments = (
+        verification_fault.get("arguments")
+        if isinstance(verification_fault, dict)
+        else None
+    )
+    expected_scenario_binding = validate_scenario_binding_contract(
+        registered_binding, scenario, fault_arguments
+    )
     expected = {
         "registry_schema": registry["schema"],
         "verification_id": entry["id"],
         "registry_digest": digest_bytes(registry_bytes),
         "observer_command": verification.get("observer_command"),
         "lifecycle_fact_commands": verification.get("lifecycle_fact_commands"),
+        "scenario_binding": expected_scenario_binding,
         "activation_probe": verification.get("activation_probe"),
         "evidence_owner": entry.get("evidence_owner"),
         "evidence_channel": entry.get("evidence_channel"),
@@ -229,6 +331,55 @@ def validate_formal_adapter_verification(
         or set(registered_fact_digests) != set(FORMAL_LIFECYCLE_FACT_SOURCES)
     ):
         raise ValueError("formal lifecycle fact command metadata is incomplete")
+    fault_arguments = fact_commands["fault-injected"].get("arguments")
+    if not isinstance(fault_arguments, list):
+        raise ValueError("formal fault source arguments are missing")
+    descriptor_positions = [
+        index for index, value in enumerate(fault_arguments) if value == "--descriptor"
+    ]
+    digest_positions = [
+        index
+        for index, value in enumerate(fault_arguments)
+        if value == "--descriptor-sha256"
+    ]
+    if (
+        len(descriptor_positions) != 1
+        or descriptor_positions[0] + 1 >= len(fault_arguments)
+        or len(digest_positions) != 1
+        or digest_positions[0] + 1 >= len(fault_arguments)
+    ):
+        raise ValueError("formal fault source does not bind one descriptor")
+    descriptor_path = Path(fault_arguments[descriptor_positions[0] + 1])
+    descriptor_raw = descriptor_path.read_bytes()
+    try:
+        descriptor = json.loads(descriptor_raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("formal fault descriptor JSON is invalid") from exc
+    target = descriptor.get("target") if isinstance(descriptor, dict) else None
+    if (
+        not isinstance(descriptor, dict)
+        or descriptor_raw != canonical(descriptor) + b"\n"
+        or set(descriptor) != {"schema", "scenario", "target", "entry_point"}
+        or descriptor.get("schema") != "ecpa-evidence-quarantine-fault/v1"
+        or descriptor.get("scenario") != scenario
+        or descriptor.get("entry_point") != registered_binding.get("entry_point")
+        or not isinstance(target, dict)
+        or set(target) != {"host", "role", "ordinal", "process_epoch"}
+        or target.get("role") != "worker"
+        or not isinstance(target.get("host"), str)
+        or not target["host"]
+        or target["host"].strip() != target["host"]
+        or any(
+            isinstance(target.get(field), bool)
+            or not isinstance(target.get(field), int)
+            or target[field] < 0
+            for field in ("ordinal", "process_epoch")
+        )
+        or digest_bytes(descriptor_raw) != registered_binding.get("descriptor_sha256")
+        or fault_arguments[digest_positions[0] + 1]
+        != registered_binding.get("descriptor_sha256")
+    ):
+        raise ValueError("formal fault descriptor differs from scenario binding")
     fingerprints.extend(
         (
             f"lifecycle fact source {phase}",
@@ -1309,6 +1460,25 @@ def validate_record(
             raise ValueError("failed execution relabelled complete")
 
 
+def validate_cross_arm_scenario_binding(cell: str, rows: list[dict[str, Any]]) -> None:
+    """Require all formal arms to compare the same scenario and plugin identity."""
+    bindings = [
+        row.get("identity", {})
+        .get("adapter_verification", {})
+        .get("scenario_binding", {})
+        for row in rows
+    ]
+    comparison_ids = {binding.get("comparison_binding_id") for binding in bindings}
+    descriptor_digests = {binding.get("descriptor_sha256") for binding in bindings}
+    if (
+        None in comparison_ids
+        or len(comparison_ids) != 1
+        or None in descriptor_digests
+        or len(descriptor_digests) != 1
+    ):
+        raise ValueError(f"cell {cell} arms do not share one scenario entry point")
+
+
 def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -> None:
     here = Path(__file__).resolve().parent
     scenario_map = {
@@ -1378,6 +1548,7 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
                 raise ValueError(f"cell {cell} lacks 3 starts x 3 arms")
             if any(sum(row["arm"] == arm for row in rows) < 3 for arm in ARMS):
                 raise ValueError(f"cell {cell} has fewer than 3 starts per arm")
+            validate_cross_arm_scenario_binding(cell, rows)
             for arm in ARMS:
                 plan_ids = {
                     row["command"]["execution_identity"]["plan_id"]
