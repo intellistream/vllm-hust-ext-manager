@@ -214,7 +214,8 @@ def _readiness(args: argparse.Namespace, request: dict[str, Any]) -> bool:
 
 
 def _canonical_request_file(path: str, expected_digest: str) -> bytes:
-    raw = Path(path).read_bytes()
+    with Path(path).open("rb") as stream:
+        raw = stream.read(MAX_HTTP_BYTES + 1)
     if len(raw) > MAX_HTTP_BYTES:
         raise LifecycleSourceError("workload request exceeds the evidence limit")
     try:
@@ -268,7 +269,11 @@ def _journal(args: argparse.Namespace, request: dict[str, Any]) -> bool:
     if request["fact"] != "observer-captured":
         raise LifecycleSourceError("journal source received another phase")
     root = Path(args.event_dir)
-    records = read_events(root, (args.device, args.inode))
+    records = read_events(
+        root,
+        (args.device, args.inode),
+        max_total_bytes=MAX_JOURNAL_BYTES,
+    )
     selected = [
         item
         for item in records
@@ -285,9 +290,6 @@ def _journal(args: argparse.Namespace, request: dict[str, Any]) -> bool:
             "host journal has no bound scheduler dispatch for this Plan, "
             "launch, and controller"
         )
-    total_bytes = sum(len(item.raw) for item in records)
-    if total_bytes > MAX_JOURNAL_BYTES:
-        raise LifecycleSourceError("host journal exceeds the evidence limit")
     _audit(
         "host-journal-capture",
         plan_id=request["plan_id"],

@@ -220,7 +220,7 @@ def test_journal_capture_requires_bound_dispatch_for_controller(monkeypatch, tmp
     monkeypatch.setattr(
         source,
         "read_events",
-        lambda root, identity: [
+        lambda root, identity, **kwargs: [
             SimpleNamespace(
                 event=event,
                 raw=b"event",
@@ -265,6 +265,24 @@ def test_journal_capture_requires_bound_dispatch_for_controller(monkeypatch, tmp
     ):
         source._journal(
             SimpleNamespace(event_dir=str(tmp_path), device=1, inode=2),
+            request_for("observer-captured"),
+        )
+
+
+def test_journal_capture_bounds_bytes_before_parsing(tmp_path):
+    tmp_path.chmod(0o700)
+    oversized = tmp_path / "oversized.jsonl"
+    with oversized.open("wb") as stream:
+        stream.write(b"x" * (source.MAX_JOURNAL_BYTES + 1))
+    metadata = tmp_path.stat()
+
+    with pytest.raises(source.HostEventSinkError, match="exceed the read limit"):
+        source._journal(
+            SimpleNamespace(
+                event_dir=str(tmp_path.resolve()),
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+            ),
             request_for("observer-captured"),
         )
 
