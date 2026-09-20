@@ -19,8 +19,8 @@ The [L2 contract-planner corpus](../../experiments/contract_planner/README.md)
 maps these 11 registered entries to minimal modeled contract abstractions and
 freezes a canonical resource/alias taxonomy. Its separately stored labels are
 independently reviewed oracle judgments bound to the cases, taxonomy, and
-source-corpus digests; they are not compiler outputs or precision/recall
-results. The five adaptation candidates remain
+source-corpus and source-snapshot digests; they are not compiler outputs or
+precision/recall results. The five adaptation candidates remain
 excluded rather than being assigned fabricated manifests.
 
 Corpus paths were verified against shallow read-only clones on 2026-09-17.

@@ -115,7 +115,7 @@ def test_evaluator_rejects_oracle_with_unbound_input(tmp_path: Path) -> None:
 
 def test_evaluator_rejects_unbound_source_snapshot(tmp_path: Path) -> None:
     snapshots = _load(DEFAULT_SOURCE_SNAPSHOTS)
-    snapshots["sources"][0]["commit"] = "0" * 40
+    snapshots["sources"][0]["commit_sha"] = "0" * 40
     tampered = tmp_path / "source-snapshots.json"
     tampered.write_text(json.dumps(snapshots))
 
