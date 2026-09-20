@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import json
 import os
 import platform
 import secrets
 import select
+import signal
 import stat
 import subprocess
 import sys
@@ -31,6 +34,7 @@ from harness import (
 
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
+FORMAL_ACTIVATION_PROBE_OPTION = "--ecpa-formal-activation-probe"
 FORMAL_HOST_OBSERVABLES = {
     "service-ready",
     "workload-complete",
@@ -142,6 +146,127 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
     return {**fingerprint, "digest": digest_bytes(canonical(fingerprint))}
 
 
+def run_bounded_command(
+    argv: list[str], timeout_s: int, output_limit: int
+) -> tuple[int, bytes, bytes]:
+    """Capture a child incrementally and terminate before output exceeds the limit."""
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    if process.stdout is None or process.stderr is None:
+        raise RuntimeError("bounded command pipes were not created")
+    buffers = {process.stdout: bytearray(), process.stderr: bytearray()}
+    active = set(buffers)
+    for stream in active:
+        os.set_blocking(stream.fileno(), False)
+    deadline = time.monotonic() + timeout_s
+    try:
+        while active:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout_s)
+            readable, _, _ = select.select(list(active), [], [], remaining)
+            if not readable:
+                raise subprocess.TimeoutExpired(argv, timeout_s)
+            for stream in readable:
+                try:
+                    captured = sum(len(value) for value in buffers.values())
+                    chunk = os.read(
+                        stream.fileno(), min(65536, output_limit - captured + 1)
+                    )
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    stream.close()
+                    active.remove(stream)
+                    continue
+                buffers[stream].extend(chunk)
+                if captured + len(chunk) > output_limit:
+                    raise ValueError(
+                        "activation probe output exceeds the evidence limit"
+                    )
+        returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return (
+            returncode,
+            bytes(buffers[process.stdout]),
+            bytes(buffers[process.stderr]),
+        )
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        if process.poll() is None:
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def run_activation_probe(
+    entry: dict[str, Any],
+    adapter: FormalArmAdapter,
+    executable: str,
+    arguments: list[str],
+) -> dict[str, Any]:
+    """Prove the registered executable exposes the adapter's launch options."""
+    probe = entry.get("activation_probe")
+    if not isinstance(probe, dict):
+        raise ValueError("verified adapter is missing an activation probe")
+    required = probe.get("required_options")
+    timeout_s = probe.get("timeout_s")
+    if (
+        not isinstance(required, list)
+        or not all(isinstance(value, str) for value in required)
+        or sorted(required) != sorted(adapter.activation_arguments)
+        or not isinstance(timeout_s, int)
+        or isinstance(timeout_s, bool)
+        or not 1 <= timeout_s <= 30
+    ):
+        raise ValueError("verified adapter activation probe is invalid")
+    probe_arguments = [
+        *arguments,
+        *adapter.activation_arguments,
+        FORMAL_ACTIVATION_PROBE_OPTION,
+    ]
+    if command_references_fixture([executable, *probe_arguments]):
+        raise ValueError("fixture-referencing activation probe is forbidden")
+    fingerprint = command_fingerprint(executable, probe_arguments)
+    if fingerprint["digest"] != probe.get("command_digest"):
+        raise ValueError("activation probe command differs from the registry")
+    try:
+        returncode, stdout, stderr = run_bounded_command(
+            [executable, *probe_arguments], timeout_s, 1024 * 1024
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("activation probe did not complete") from exc
+    output = stdout + stderr
+    try:
+        receipt = json.loads(stdout)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("activation probe did not emit a JSON receipt") from exc
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": sorted(required),
+    }
+    if (
+        returncode != 0
+        or receipt != expected_receipt
+        or stdout != canonical(expected_receipt) + b"\n"
+    ):
+        raise ValueError("executable does not expose the registered activation options")
+    return {
+        "command": fingerprint,
+        "required_options": sorted(required),
+        "exit_code": returncode,
+        "output_sha256": digest_bytes(output),
+        "stdout_base64": base64.b64encode(stdout).decode(),
+        "stderr_base64": base64.b64encode(stderr).decode(),
+        "receipt": receipt,
+    }
+
+
 def verified_adapter_contract(
     verification_id: str | None,
     adapter: FormalArmAdapter,
@@ -187,12 +312,14 @@ def verified_adapter_contract(
         raise ValueError("SUT command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
         raise ValueError("observer command differs from the verified adapter artifact")
+    activation_probe = run_activation_probe(entry, adapter, executable, arguments)
     return {
         "registry_schema": registry.get("schema"),
         "verification_id": verification_id,
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": sut,
         "observer_command": observer,
+        "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
         "host_event_schema": entry["host_event_schema"],

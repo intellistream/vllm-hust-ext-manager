@@ -1,9 +1,11 @@
+import base64
 import copy
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -47,6 +49,20 @@ def scenarios():
 
 def planned():
     return planned_records(scenarios())
+
+
+def activation_probe(adapter, arguments):
+    probe_arguments = [
+        *arguments,
+        *adapter.activation_arguments,
+        "--ecpa-formal-activation-probe",
+    ]
+    fingerprint = command_fingerprint(sys.executable, probe_arguments)
+    return {
+        "required_options": list(adapter.activation_arguments),
+        "timeout_s": 2,
+        "command_digest": fingerprint["digest"],
+    }
 
 
 def test_formal_planned_aggregate_has_zero_cells_and_null_metrics(tmp_path):
@@ -489,7 +505,22 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
 ):
     sut = tmp_path / "sut.py"
     observer = tmp_path / "observer.py"
-    sut.write_text("print('sut')\n")
+    sut_source = """import argparse
+import json
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
+args = parser.parse_args()
+if args.ecpa_formal_activation_probe:
+    receipt = {
+        'schema': 'ecpa-activation-probe/v1',
+        'activation_contract': 'manager-controlled-activation',
+        'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+    }
+    print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
+"""
+    sut.write_text(sut_source)
     observer.write_text("print('observer')\n")
     adapter = ECPAAdapter()
     sut_fingerprint = command_fingerprint(
@@ -509,6 +540,7 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter, [str(sut)]),
             }
         ],
     }
@@ -524,6 +556,108 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
         [str(observer)],
     )
     assert verified["sut_command"] == sut_fingerprint
+    rejected_sources = [
+        "print('--enable-ecpa-manager --disable-entrypoints')\n",
+        """import argparse
+import json
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
+parser.parse_args()
+receipt = {
+    'schema': 'ecpa-activation-probe/v1',
+    'activation_contract': 'manager-controlled-activation',
+    'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+}
+print(json.dumps(receipt, indent=2))
+""",
+        """import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager-evil', action='store_true')
+parser.add_argument('--disable-entrypoints-other', action='store_true')
+parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
+parser.parse_args()
+""",
+        """import sys
+sys.stdout.write('{\"accepted_options\":[\"--disable-entry')
+sys.stderr.write('points\",\"--enable-ecpa-manager\"]}')
+""",
+        "import sys; sys.stdout.buffer.write(b'x' * (1024 * 1024 + 1))\n",
+    ]
+    for rejected_source in rejected_sources:
+        sut.write_text(rejected_source)
+        broken_probe = copy.deepcopy(registry)
+        broken_sut = command_fingerprint(
+            sys.executable, [str(sut), *adapter.activation_arguments]
+        )
+        broken_arguments = [
+            str(sut),
+            *adapter.activation_arguments,
+            "--ecpa-formal-activation-probe",
+        ]
+        broken_probe["adapters"][0]["sut_command_digest"] = broken_sut["digest"]
+        broken_probe["adapters"][0]["activation_probe"]["command_digest"] = (
+            command_fingerprint(sys.executable, broken_arguments)["digest"]
+        )
+        registry_path.write_bytes(canonical(broken_probe) + b"\n")
+        with pytest.raises(
+            ValueError, match="JSON receipt|does not expose|output exceeds"
+        ):
+            runner_module.verified_adapter_contract(
+                "test-host-v1",
+                adapter,
+                sys.executable,
+                [str(sut)],
+                sys.executable,
+                [str(observer)],
+            )
+    descendant_pid_file = tmp_path / "probe-descendant.pid"
+    sut.write_text(
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)'])\n"
+        f"Path({str(descendant_pid_file)!r}).write_text(str(child.pid))\n"
+    )
+    descendant_probe = copy.deepcopy(registry)
+    descendant_sut = command_fingerprint(
+        sys.executable, [str(sut), *adapter.activation_arguments]
+    )
+    descendant_arguments = [
+        str(sut),
+        *adapter.activation_arguments,
+        "--ecpa-formal-activation-probe",
+    ]
+    descendant_probe["adapters"][0]["sut_command_digest"] = descendant_sut["digest"]
+    descendant_probe["adapters"][0]["activation_probe"]["command_digest"] = (
+        command_fingerprint(sys.executable, descendant_arguments)["digest"]
+    )
+    registry_path.write_bytes(canonical(descendant_probe) + b"\n")
+    with pytest.raises(ValueError, match="did not complete"):
+        runner_module.verified_adapter_contract(
+            "test-host-v1",
+            adapter,
+            sys.executable,
+            [str(sut)],
+            sys.executable,
+            [str(observer)],
+        )
+    descendant_pid = int(descendant_pid_file.read_text())
+    descendant_stat = Path(f"/proc/{descendant_pid}/stat")
+    for _ in range(200):
+        try:
+            stat_text = descendant_stat.read_text()
+        except FileNotFoundError:
+            break
+        state = stat_text.rsplit(")", 1)[1].split()[0]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"activation probe descendant {descendant_pid} survived cleanup")
+    sut.write_text(sut_source)
+    registry_path.write_bytes(canonical(registry) + b"\n")
     observer.write_text("print('changed')\n")
     with pytest.raises(ValueError, match="observer command"):
         runner_module.verified_adapter_contract(
@@ -553,7 +687,21 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
 ):
     sut = tmp_path / "sut.py"
     observer = tmp_path / "observer.py"
-    sut.write_text("print('sut')\n")
+    sut.write_text("""import argparse
+import json
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
+args = parser.parse_args()
+if args.ecpa_formal_activation_probe:
+    receipt = {
+        'schema': 'ecpa-activation-probe/v1',
+        'activation_contract': 'manager-controlled-activation',
+        'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+    }
+    print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
+""")
     observer.write_text("print('observer')\n")
     adapter = ECPAAdapter()
     sut_arguments = [str(sut), *adapter.activation_arguments]
@@ -573,6 +721,7 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter, [str(sut)]),
             }
         ],
     }
@@ -602,6 +751,18 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
     tampered = copy.deepcopy(record)
     tampered["identity"]["adapter_verification"]["registry_digest"] = "sha256:fake"
     with pytest.raises(ValueError, match="metadata differs"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["activation_probe"][
+        "stdout_base64"
+    ] = "not-base64!"
+    with pytest.raises(ValueError, match="probe bytes are invalid"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["activation_probe"][
+        "stdout_base64"
+    ] = base64.b64encode(b"forged --enable-ecpa-manager").decode()
+    with pytest.raises(ValueError, match="metadata differs|does not satisfy"):
         harness_module.validate_formal_adapter_verification(tampered, command)
     changed_command = copy.deepcopy(command)
     changed_command["sut_process"]["argv"][-1] = "--different"
@@ -674,6 +835,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter, ["-c", sut_source]),
             }
         ],
     }

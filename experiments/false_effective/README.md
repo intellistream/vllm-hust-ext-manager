@@ -77,6 +77,17 @@ checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown
 events are mandatory; startup is launch-to-ready.
 
+Admission also executes a registry-pinned, bounded activation probe before the
+service starts. The runner constructs the probe from the exact registered SUT
+executable and base argv, appends the actual arm activation options and a fixed
+`--ecpa-formal-activation-probe`, then fingerprints that complete command. The
+target parser must accept that complete argv and emit the exact canonical JSON
+receipt naming its activation contract and accepted options. Its bounded raw
+stdout/stderr are sealed so offline validation can recompute the output digest
+and receipt. This is parser-admission evidence, not runtime-effect truth; help
+text, a substring match, a separate self-reporting helper, or a caller assertion
+cannot substitute for it.
+
 `write_formal_manifest` writes each canonical JSONL/index pair into a new
 generation directory, then atomically swaps one canonical current pointer.
 The reader opens every pointer, generation, JSONL, and record path component

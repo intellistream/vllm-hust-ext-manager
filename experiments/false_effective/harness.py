@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -116,6 +117,7 @@ def validate_formal_adapter_verification(
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": verification.get("sut_command"),
         "observer_command": verification.get("observer_command"),
+        "activation_probe": verification.get("activation_probe"),
         "evidence_owner": entry.get("evidence_owner"),
         "evidence_channel": entry.get("evidence_channel"),
         "host_event_schema": entry.get("host_event_schema"),
@@ -123,6 +125,46 @@ def validate_formal_adapter_verification(
     }
     if verification != expected:
         raise ValueError("formal adapter metadata differs from the trusted registry")
+
+    activation_probe = verification.get("activation_probe")
+    registered_probe = entry.get("activation_probe")
+    if not isinstance(activation_probe, dict) or not isinstance(registered_probe, dict):
+        raise ValueError("formal activation probe metadata is missing")
+    expected_options = {
+        "vanilla-vllm-entry-points": [
+            "--disable-ecpa-manager",
+            "--enable-entrypoints",
+        ],
+        "manual-integration": ["--disable-ecpa-manager", "--manual-hooks"],
+        "ecpa": ["--disable-entrypoints", "--enable-ecpa-manager"],
+    }[record["arm"]]
+    try:
+        probe_stdout = base64.b64decode(
+            activation_probe.get("stdout_base64", ""), validate=True
+        )
+        probe_stderr = base64.b64decode(
+            activation_probe.get("stderr_base64", ""), validate=True
+        )
+    except (ValueError, TypeError) as exc:
+        raise ValueError("formal activation probe bytes are invalid") from exc
+    probe_output = probe_stdout + probe_stderr
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": expected_contract,
+        "accepted_options": sorted(expected_options),
+    }
+    if (
+        activation_probe.get("exit_code") != 0
+        or activation_probe.get("required_options") != sorted(expected_options)
+        or activation_probe.get("command", {}).get("digest")
+        != registered_probe.get("command_digest")
+        or not isinstance(activation_probe.get("output_sha256"), str)
+        or activation_probe.get("output_sha256") != digest_bytes(probe_output)
+        or len(probe_output) > 1024 * 1024
+        or activation_probe.get("receipt") != expected_receipt
+        or probe_stdout != canonical(expected_receipt) + b"\n"
+    ):
+        raise ValueError("formal activation probe does not satisfy the registry")
 
     fixture_root = (Path(__file__).parents[2] / "tests" / "fixtures").resolve()
     fixture_files = [path for path in fixture_root.rglob("*") if path.is_file()]
@@ -134,6 +176,11 @@ def validate_formal_adapter_verification(
             "observer",
             verification["observer_command"],
             entry.get("observer_command_digest"),
+        ),
+        (
+            "activation probe",
+            activation_probe["command"],
+            registered_probe.get("command_digest"),
         ),
     ):
         if not isinstance(fingerprint, dict):
@@ -187,6 +234,14 @@ def validate_formal_adapter_verification(
 
     sut_fingerprint = verification["sut_command"]
     observer_fingerprint = verification["observer_command"]
+    probe_fingerprint = activation_probe["command"]
+    if probe_fingerprint.get("executable") != sut_fingerprint.get(
+        "executable"
+    ) or probe_fingerprint.get("arguments") != [
+        *sut_fingerprint.get("arguments", []),
+        "--ecpa-formal-activation-probe",
+    ]:
+        raise ValueError("activation probe does not exercise the registered SUT argv")
     sut_argv = command.get("sut_process", {}).get("argv", [])
     observer_argv = command.get("observer_process", {}).get("argv", [])
     if (
