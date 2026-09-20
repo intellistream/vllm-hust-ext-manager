@@ -49,6 +49,22 @@ def planned():
     return planned_records(scenarios())
 
 
+def activation_probe(adapter):
+    receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": sorted(adapter.activation_arguments),
+    }
+    arguments = ["-c", f"import json; print(json.dumps({receipt!r}))"]
+    fingerprint = command_fingerprint(sys.executable, arguments)
+    return {
+        "arguments": arguments,
+        "required_options": list(adapter.activation_arguments),
+        "timeout_s": 2,
+        "command_digest": fingerprint["digest"],
+    }
+
+
 def test_formal_planned_aggregate_has_zero_cells_and_null_metrics(tmp_path):
     result = aggregate(planned(), tmp_path, formal=True)
     assert result["completed_cells"] == 0
@@ -509,6 +525,7 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter),
             }
         ],
     }
@@ -524,6 +541,31 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
         [str(observer)],
     )
     assert verified["sut_command"] == sut_fingerprint
+    broken_probe = copy.deepcopy(registry)
+    broken_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": [],
+    }
+    broken_arguments = [
+        "-c",
+        f"import json; print(json.dumps({broken_receipt!r}))",
+    ]
+    broken_probe["adapters"][0]["activation_probe"]["arguments"] = broken_arguments
+    broken_probe["adapters"][0]["activation_probe"]["command_digest"] = (
+        command_fingerprint(sys.executable, broken_arguments)["digest"]
+    )
+    registry_path.write_bytes(canonical(broken_probe) + b"\n")
+    with pytest.raises(ValueError, match="does not expose"):
+        runner_module.verified_adapter_contract(
+            "test-host-v1",
+            adapter,
+            sys.executable,
+            [str(sut)],
+            sys.executable,
+            [str(observer)],
+        )
+    registry_path.write_bytes(canonical(registry) + b"\n")
     observer.write_text("print('changed')\n")
     with pytest.raises(ValueError, match="observer command"):
         runner_module.verified_adapter_contract(
@@ -573,6 +615,7 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter),
             }
         ],
     }
@@ -674,6 +717,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": activation_probe(adapter),
             }
         ],
     }

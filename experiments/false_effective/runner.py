@@ -142,6 +142,61 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
     return {**fingerprint, "digest": digest_bytes(canonical(fingerprint))}
 
 
+def run_activation_probe(
+    entry: dict[str, Any], adapter: FormalArmAdapter, executable: str
+) -> dict[str, Any]:
+    """Prove the registered executable exposes the adapter's launch options."""
+    probe = entry.get("activation_probe")
+    if not isinstance(probe, dict):
+        raise ValueError("verified adapter is missing an activation probe")
+    arguments = probe.get("arguments")
+    required = probe.get("required_options")
+    timeout_s = probe.get("timeout_s")
+    if (
+        not isinstance(arguments, list)
+        or not all(isinstance(value, str) for value in arguments)
+        or not isinstance(required, list)
+        or not all(isinstance(value, str) for value in required)
+        or sorted(required) != sorted(adapter.activation_arguments)
+        or not isinstance(timeout_s, int)
+        or isinstance(timeout_s, bool)
+        or not 1 <= timeout_s <= 30
+    ):
+        raise ValueError("verified adapter activation probe is invalid")
+    if command_references_fixture([executable, *arguments]):
+        raise ValueError("fixture-referencing activation probe is forbidden")
+    fingerprint = command_fingerprint(executable, arguments)
+    if fingerprint["digest"] != probe.get("command_digest"):
+        raise ValueError("activation probe command differs from the registry")
+    try:
+        completed = subprocess.run(
+            [executable, *arguments],
+            capture_output=True,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("activation probe did not complete") from exc
+    output = completed.stdout + completed.stderr
+    try:
+        receipt = json.loads(completed.stdout)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("activation probe did not emit a JSON receipt") from exc
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": sorted(required),
+    }
+    if completed.returncode != 0 or receipt != expected_receipt:
+        raise ValueError("executable does not expose the registered activation options")
+    return {
+        "command": fingerprint,
+        "required_options": sorted(required),
+        "exit_code": completed.returncode,
+        "output_sha256": digest_bytes(output),
+        "receipt": receipt,
+    }
+
+
 def verified_adapter_contract(
     verification_id: str | None,
     adapter: FormalArmAdapter,
@@ -187,12 +242,14 @@ def verified_adapter_contract(
         raise ValueError("SUT command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
         raise ValueError("observer command differs from the verified adapter artifact")
+    activation_probe = run_activation_probe(entry, adapter, executable)
     return {
         "registry_schema": registry.get("schema"),
         "verification_id": verification_id,
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": sut,
         "observer_command": observer,
+        "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
         "host_event_schema": entry["host_event_schema"],

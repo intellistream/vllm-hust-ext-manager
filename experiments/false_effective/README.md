@@ -77,6 +77,15 @@ checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown
 events are mandatory; startup is launch-to-ready.
 
+Admission also executes a registry-pinned, bounded activation probe before the
+service starts. The probe executable and file-backed arguments are fingerprinted,
+must exit successfully, and must emit an exact JSON receipt naming the arm's
+activation contract and every accepted activation option. A reviewed real-host
+probe must obtain that receipt from the target parser; it is admission evidence,
+not runtime-effect truth. A command digest or caller assertion cannot substitute
+for this runtime check. This prevents fixture-only flags from being registered
+against a real executable that silently rejects or ignores them.
+
 `write_formal_manifest` writes each canonical JSONL/index pair into a new
 generation directory, then atomically swaps one canonical current pointer.
 The reader opens every pointer, generation, JSONL, and record path component

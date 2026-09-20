@@ -116,6 +116,7 @@ def validate_formal_adapter_verification(
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": verification.get("sut_command"),
         "observer_command": verification.get("observer_command"),
+        "activation_probe": verification.get("activation_probe"),
         "evidence_owner": entry.get("evidence_owner"),
         "evidence_channel": entry.get("evidence_channel"),
         "host_event_schema": entry.get("host_event_schema"),
@@ -123,6 +124,33 @@ def validate_formal_adapter_verification(
     }
     if verification != expected:
         raise ValueError("formal adapter metadata differs from the trusted registry")
+
+    activation_probe = verification.get("activation_probe")
+    registered_probe = entry.get("activation_probe")
+    expected_options = {
+        "vanilla-vllm-entry-points": [
+            "--disable-ecpa-manager",
+            "--enable-entrypoints",
+        ],
+        "manual-integration": ["--disable-ecpa-manager", "--manual-hooks"],
+        "ecpa": ["--disable-entrypoints", "--enable-ecpa-manager"],
+    }[record["arm"]]
+    if (
+        not isinstance(activation_probe, dict)
+        or not isinstance(registered_probe, dict)
+        or activation_probe.get("exit_code") != 0
+        or activation_probe.get("required_options") != sorted(expected_options)
+        or activation_probe.get("command", {}).get("digest")
+        != registered_probe.get("command_digest")
+        or not isinstance(activation_probe.get("output_sha256"), str)
+        or activation_probe.get("receipt")
+        != {
+            "schema": "ecpa-activation-probe/v1",
+            "activation_contract": expected_contract,
+            "accepted_options": sorted(expected_options),
+        }
+    ):
+        raise ValueError("formal activation probe does not satisfy the registry")
 
     fixture_root = (Path(__file__).parents[2] / "tests" / "fixtures").resolve()
     fixture_files = [path for path in fixture_root.rglob("*") if path.is_file()]
@@ -134,6 +162,11 @@ def validate_formal_adapter_verification(
             "observer",
             verification["observer_command"],
             entry.get("observer_command_digest"),
+        ),
+        (
+            "activation probe",
+            activation_probe["command"],
+            registered_probe.get("command_digest"),
         ),
     ):
         if not isinstance(fingerprint, dict):
