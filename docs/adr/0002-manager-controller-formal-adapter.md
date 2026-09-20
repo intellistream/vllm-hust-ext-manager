@@ -38,17 +38,35 @@ on the directory descriptor, compare the frozen identity, and use that same
 descriptor for journal I/O. A permissions drift or path replacement therefore
 fails before evidence is appended or consumed.
 
+The false-effective runner now has a fail-closed managed-launch constructor for
+this exact entry point. It reads and recomputes the canonical Plan artifact,
+copies those validated bytes into a runner-created private read-only snapshot,
+rejects caller-supplied host-owned identity variables or injectable manager
+prefix arguments, and constructs
+`formal-run --plan ... --launch-id ... --controller-instance ...
+--host-event-dir ... -- <target>` without the fixture-only
+`--enable-ecpa-manager`/`--disable-entrypoints` flags. A dry-run regression test
+executes the real manager CLI and verifies the resulting Plan and target
+binding.
+
+The snapshot is an accidental-mutation and validation-to-use safeguard within
+a trusted same-UID runner boundary, not a security boundary against a malicious
+launcher with the same operating-system identity. It is published only after a
+canonical re-read by atomically renaming a `.partial` generation. Formal truth
+must still be reconciled against the Plan ID in manager/host-owned evidence.
+
 Its activation probe does not launch the target. The command is not yet in the
 verified adapter registry and therefore cannot produce a formal-real result.
 
 ## Remaining gate
 
-The formal runner must bind the controller to the same Plan artifact, pass its
-fresh launch identity before process creation, and independently associate
-host-assigned EngineCore/worker identities with that launch. A causal phase
-controller and real workload/fault driver must be added without treating its
-ACKs as effect evidence. Registration is forbidden until vLLM-HUST PR #27 is
-human-reviewed and merged and the first real cell is independently reproduced.
+The runner still must make this constructor the only ECPA formal-real launch
+path, bind registry verification to both manager and target fingerprints, and
+independently associate host-assigned EngineCore/worker identities with the
+same launch. A causal phase controller and real workload/fault driver must be
+added without treating its ACKs as effect evidence. Registration is forbidden
+until vLLM-HUST PR #27 is human-reviewed and merged and the first real cell is
+independently reproduced.
 
 BidKV remains an unchanged case-study candidate; this decision neither changes
 its algorithm nor adds a second inference engine.

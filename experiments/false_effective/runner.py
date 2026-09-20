@@ -34,6 +34,14 @@ from harness import (
     validate_required_process_snapshot,
 )
 
+from vllm_hust_ext.manager_controller import (
+    ACTIVATION_CONTRACT as MANAGED_ACTIVATION_CONTRACT,
+)
+from vllm_hust_ext.manager_controller import (
+    CONTROLLED_ENVIRONMENT,
+)
+from vllm_hust_ext.plan_artifact import read_plan_artifact
+
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
 FORMAL_ACTIVATION_PROBE_OPTION = "--ecpa-formal-activation-probe"
@@ -361,13 +369,198 @@ class ManualIntegrationAdapter(FormalArmAdapter):
         )
 
 
+def _freeze_plan_snapshot(event_root: Path, artifact: Any) -> tuple[Path, Any]:
+    """Atomically publish validated Plan bytes inside the private run directory."""
+    event_metadata = event_root.stat()
+    if (
+        event_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(event_metadata.st_mode) & 0o022
+    ):
+        raise ValueError("host event directory must be private and owned")
+    token = secrets.token_hex(16)
+    partial_name = f".ecpa-plan-partial-{token}"
+    snapshot_name = f".ecpa-plan-{token}"
+    event_fd = -1
+    snapshot_fd = -1
+    plan_fd = -1
+    created = False
+    published = False
+    try:
+        event_fd = os.open(
+            event_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        opened_event_metadata = os.fstat(event_fd)
+        if (
+            (opened_event_metadata.st_dev, opened_event_metadata.st_ino)
+            != (event_metadata.st_dev, event_metadata.st_ino)
+            or opened_event_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_event_metadata.st_mode) & 0o022
+        ):
+            raise ValueError("host event directory changed while opening")
+        os.mkdir(partial_name, mode=0o700, dir_fd=event_fd)
+        created = True
+        snapshot_fd = os.open(
+            partial_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=event_fd,
+        )
+        plan_fd = os.open(
+            "plan.json",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o400,
+            dir_fd=snapshot_fd,
+        )
+        remaining = memoryview(artifact.raw)
+        while remaining:
+            written = os.write(plan_fd, remaining)
+            if written <= 0:
+                raise OSError("execution-plan snapshot write made no progress")
+            remaining = remaining[written:]
+        os.fsync(plan_fd)
+        os.close(plan_fd)
+        plan_fd = -1
+        os.fsync(snapshot_fd)
+        partial_path = event_root / partial_name / "plan.json"
+        frozen_artifact = read_plan_artifact(partial_path)
+        if (
+            frozen_artifact.raw != artifact.raw
+            or frozen_artifact.plan_id != artifact.plan_id
+        ):
+            raise ValueError("execution-plan snapshot differs from validated input")
+        os.fchmod(snapshot_fd, 0o500)
+        os.fsync(snapshot_fd)
+        os.rename(
+            partial_name,
+            snapshot_name,
+            src_dir_fd=event_fd,
+            dst_dir_fd=event_fd,
+        )
+        published = True
+        os.fsync(event_fd)
+        plan = event_root / snapshot_name / "plan.json"
+        published_artifact = read_plan_artifact(plan)
+        if (
+            published_artifact.raw != artifact.raw
+            or published_artifact.plan_id != artifact.plan_id
+        ):
+            raise ValueError("published execution-plan snapshot differs")
+        return plan, published_artifact
+    except BaseException:
+        if plan_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(plan_fd)
+            plan_fd = -1
+        if snapshot_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.fchmod(snapshot_fd, 0o700)
+            with contextlib.suppress(OSError):
+                os.unlink("plan.json", dir_fd=snapshot_fd)
+        if event_fd >= 0 and created:
+            cleanup_name = snapshot_name if published else partial_name
+            with contextlib.suppress(OSError):
+                os.rmdir(cleanup_name, dir_fd=event_fd)
+        raise
+    finally:
+        if plan_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(plan_fd)
+        if snapshot_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(snapshot_fd)
+        if event_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(event_fd)
+
+
 class ECPAAdapter(FormalArmAdapter):
     def __init__(self):
         super().__init__(
             "ecpa",
-            "manager-controlled-activation",
+            MANAGED_ACTIVATION_CONTRACT,
             ("--enable-ecpa-manager", "--disable-entrypoints"),
         )
+
+    def managed_launch(
+        self,
+        *,
+        manager_executable: str,
+        plan_path: str | Path,
+        launch_id: str,
+        controller_instance: str,
+        host_event_dir: str | Path,
+        target_argv: list[str],
+        env: dict[str, str],
+        dry_run: bool = False,
+    ) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+        """Build the real manager-owned formal-run path without spoofable flags."""
+        if not isinstance(manager_executable, str) or not manager_executable:
+            raise ValueError("managed ECPA launch requires a manager executable")
+        if not target_argv or any(
+            not isinstance(item, str) or not item for item in target_argv
+        ):
+            raise ValueError("managed ECPA launch requires a non-empty target argv")
+        conflicts = CONTROLLED_ENVIRONMENT.intersection(env)
+        if conflicts:
+            raise ValueError(
+                "runner environment conflicts with manager-owned values: "
+                + ", ".join(sorted(conflicts))
+            )
+        artifact = read_plan_artifact(plan_path)
+        if (
+            artifact.plan.host.runtime != "vllm-hust"
+            or artifact.plan.host.provider != "vllm"
+        ):
+            raise ValueError("managed ECPA launch requires a vLLM-HUST plan")
+        for value, prefix, name in (
+            (launch_id, "launch:", "launch id"),
+            (controller_instance, "controller:", "controller instance"),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value.startswith(prefix)
+                or value == prefix
+                or value.strip() != value
+                or any(character.isspace() for character in value)
+            ):
+                raise ValueError(f"{name} is not canonical")
+        event_root = Path(host_event_dir)
+        if (
+            not event_root.is_absolute()
+            or event_root.is_symlink()
+            or not event_root.is_dir()
+            or event_root.resolve(strict=True) != event_root
+        ):
+            raise ValueError("host event directory is not canonical")
+        frozen_path, frozen_artifact = _freeze_plan_snapshot(event_root, artifact)
+        plan = str(frozen_path)
+        argv = [
+            manager_executable,
+            "formal-run",
+            "--plan",
+            plan,
+            "--launch-id",
+            launch_id,
+            "--controller-instance",
+            controller_instance,
+            "--host-event-dir",
+            str(event_root),
+        ]
+        if dry_run:
+            argv.append("--dry-run")
+        argv.extend(("--", *target_argv))
+        launched = dict(env)
+        launched["ECPA_EVALUATION_ARM"] = self.arm
+        binding = {
+            "activation_contract": self.activation_contract,
+            "controller_instance": controller_instance,
+            "host_event_dir": str(event_root),
+            "launch_id": launch_id,
+            "plan_id": artifact.plan_id,
+            "plan_path": plan,
+            "target_argv": list(target_argv),
+        }
+        return argv, launched, binding
 
 
 def _git_measurement() -> tuple[str, bool]:

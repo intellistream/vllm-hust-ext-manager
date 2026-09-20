@@ -6,10 +6,20 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from jsonschema import Draft7Validator
+
+from vllm_hust_ext.ecpa_model import (
+    EvidenceObligation,
+    HostCompatibility,
+    Plan,
+    PluginIdentity,
+    PredecessorSnapshot,
+)
+from vllm_hust_ext.plan_artifact import plan_artifact_bytes
 
 ROOT = Path("experiments/false_effective").resolve()
 sys.path.insert(0, str(ROOT))
@@ -456,6 +466,194 @@ def test_arm_launch_contracts_are_distinct_and_auditable():
     assert {env["ECPA_EVALUATION_ARM"] for _, env in launches} == {
         adapter.arm for adapter in adapters
     }
+
+
+def _write_formal_execution_plan(tmp_path: Path) -> Path:
+    plan = Plan(
+        (PluginIdentity("org.vllm-hust", "formal", "0.1.0", "a" * 64),),
+        HostCompatibility("vllm-hust", "0.11.0", "vllm", "1"),
+        (),
+        (EvidenceObligation("worker-load", "worker", "resolved", (0,)),),
+        PredecessorSnapshot(0, None, {}),
+        True,
+    )
+    path = (tmp_path / "plan.json").resolve()
+    path.write_bytes(plan_artifact_bytes(plan))
+    path.chmod(0o600)
+    return path
+
+
+def test_ecpa_managed_launch_uses_real_formal_run_and_manager_owned_identity(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    adapter = ECPAAdapter()
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
+    argv, env, binding = adapter.managed_launch(
+        manager_executable=manager,
+        plan_path=plan_path,
+        launch_id="launch:test",
+        controller_instance="controller:test",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", "raise SystemExit(99)"],
+        env=dict(os.environ),
+        dry_run=True,
+    )
+
+    assert "--enable-ecpa-manager" not in argv
+    assert "--disable-entrypoints" not in argv
+    assert argv[-3:] == [sys.executable, "-c", "raise SystemExit(99)"]
+    assert not runner_module.CONTROLLED_ENVIRONMENT.intersection(env)
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    receipt = json.loads(completed.stdout)
+    assert receipt["schema"] == "ecpa-managed-launch/v1"
+    assert receipt["command"] == binding["target_argv"]
+    assert receipt["plan_id"] == binding["plan_id"]
+    assert receipt["controller_instance"] == "controller:test"
+
+
+def test_ecpa_managed_launch_rejects_runner_owned_host_identity(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    with pytest.raises(ValueError, match="manager-owned"):
+        ECPAAdapter().managed_launch(
+            manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+            plan_path=plan_path,
+            launch_id="launch:test",
+            controller_instance="controller:test",
+            host_event_dir=event_dir,
+            target_argv=[sys.executable, "-c", "pass"],
+            env={"VLLM_ECPA_PLAN_ID": "forged"},
+        )
+
+
+def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    target = (
+        "import json,os; print(json.dumps({k:os.environ[k] for k in "
+        "['VLLM_ECPA_PLAN_ID','VLLM_ECPA_LAUNCH_ID',"
+        "'VLLM_ECPA_EVIDENCE_STRICT','ECPA_CONTROLLER_INSTANCE',"
+        "'ECPA_ACTIVATION_CONTRACT']},sort_keys=True))"
+    )
+    argv, env, binding = ECPAAdapter().managed_launch(
+        manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+        plan_path=plan_path,
+        launch_id="launch:real-path-test",
+        controller_instance="controller:real-path-test",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", target],
+        env=dict(os.environ),
+    )
+
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    received = json.loads(completed.stdout)
+    assert received == {
+        "ECPA_ACTIVATION_CONTRACT": "manager-controlled-activation",
+        "ECPA_CONTROLLER_INSTANCE": "controller:real-path-test",
+        "VLLM_ECPA_EVIDENCE_STRICT": "1",
+        "VLLM_ECPA_LAUNCH_ID": "launch:real-path-test",
+        "VLLM_ECPA_PLAN_ID": binding["plan_id"],
+    }
+
+
+def test_ecpa_managed_launch_snapshots_plan_before_original_is_replaced(tmp_path):
+    original = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    argv, env, binding = ECPAAdapter().managed_launch(
+        manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+        plan_path=original,
+        launch_id="launch:snapshot-test",
+        controller_instance="controller:snapshot-test",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", "raise SystemExit(99)"],
+        env=dict(os.environ),
+        dry_run=True,
+    )
+    replacement = replace(
+        Plan(
+            (PluginIdentity("org.vllm-hust", "formal", "0.1.0", "a" * 64),),
+            HostCompatibility("vllm-hust", "0.11.0", "vllm", "1"),
+            (),
+            (EvidenceObligation("worker-load", "worker", "resolved", (0,)),),
+            PredecessorSnapshot(0, None, {}),
+            True,
+        ),
+        plugins=(PluginIdentity("org.vllm-hust", "replacement", "0.1.0", "b" * 64),),
+    )
+    original.write_bytes(plan_artifact_bytes(replacement))
+    original.chmod(0o600)
+
+    snapshot = Path(binding["plan_path"])
+    assert snapshot != original
+    assert snapshot.read_bytes() != original.read_bytes()
+    assert snapshot.stat().st_mode & 0o777 == 0o400
+    assert snapshot.parent.stat().st_mode & 0o777 == 0o500
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    receipt = json.loads(completed.stdout)
+    assert receipt["plan_id"] == binding["plan_id"]
+    assert receipt["plan_id"] != replacement.plan_id
+
+
+def test_ecpa_managed_launch_has_no_injectable_manager_argument_prefix():
+    assert "manager_arguments" not in ECPAAdapter.managed_launch.__annotations__
+
+
+def test_ecpa_managed_launch_closes_event_fd_when_fstat_fails(tmp_path, monkeypatch):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    real_fstat = os.fstat
+
+    def reject_directory(descriptor):
+        metadata = real_fstat(descriptor)
+        if runner_module.stat.S_ISDIR(metadata.st_mode):
+            raise OSError("injected event fstat failure")
+        return metadata
+
+    before = len(list(Path("/proc/self/fd").iterdir()))
+    monkeypatch.setattr(runner_module.os, "fstat", reject_directory)
+    with pytest.raises(OSError, match="injected event fstat failure"):
+        ECPAAdapter().managed_launch(
+            manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+            plan_path=plan_path,
+            launch_id="launch:fstat-failure",
+            controller_instance="controller:fstat-failure",
+            host_event_dir=event_dir,
+            target_argv=[sys.executable, "-c", "pass"],
+            env=dict(os.environ),
+        )
+    assert len(list(Path("/proc/self/fd").iterdir())) == before
+
+
+def test_ecpa_managed_launch_cleans_partial_snapshot_on_publish_failure(
+    tmp_path, monkeypatch
+):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+
+    def reject_fchmod(*args, **kwargs):
+        raise OSError("injected snapshot chmod failure")
+
+    monkeypatch.setattr(runner_module.os, "fchmod", reject_fchmod)
+    with pytest.raises(OSError, match="injected snapshot chmod failure"):
+        ECPAAdapter().managed_launch(
+            manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+            plan_path=plan_path,
+            launch_id="launch:chmod-failure",
+            controller_instance="controller:chmod-failure",
+            host_event_dir=event_dir,
+            target_argv=[sys.executable, "-c", "pass"],
+            env=dict(os.environ),
+        )
+    assert list(event_dir.iterdir()) == []
 
 
 def _minimal_formal_identity() -> dict:
