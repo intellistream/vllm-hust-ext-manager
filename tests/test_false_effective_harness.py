@@ -491,28 +491,28 @@ def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
         process.wait(timeout=2)
 
 
-def test_observer_identity_failure_reaps_both_processes_and_pipes(
+def test_post_identity_pipe_failure_reaps_both_processes_and_pipes(
     tmp_path, monkeypatch
 ):
     original_wait = runner_module.wait_for_linux_process_identity
     processes = []
 
-    def reject_observer(process, expected_argv, timeout_s, expected_executable=None):
+    def stop_observer(process, expected_argv, timeout_s, expected_executable=None):
         processes.append(process)
+        identity = original_wait(process, expected_argv, timeout_s, expected_executable)
         if len(processes) == 2:
-            raise RuntimeError("injected observer identity failure")
-        return original_wait(process, expected_argv, timeout_s, expected_executable)
+            process.terminate()
+            process.wait(timeout=2)
+        return identity
 
-    monkeypatch.setattr(
-        runner_module, "wait_for_linux_process_identity", reject_observer
-    )
+    monkeypatch.setattr(runner_module, "wait_for_linux_process_identity", stop_observer)
     sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
     observer = str(Path("tests/fixtures/formal_observer_service.py").resolve())
     env = dict(os.environ)
     env["ECPA_EVALUATION_ARM"] = "ecpa"
     env["ECPA_ACTIVATION_CONTRACT"] = "manager-controlled-activation"
     before = len(list(Path("/proc/self/fd").iterdir()))
-    with pytest.raises(RuntimeError, match="observer identity failure"):
+    with pytest.raises(BrokenPipeError):
         runner_module._run_start(
             tmp_path,
             scenarios()[0],

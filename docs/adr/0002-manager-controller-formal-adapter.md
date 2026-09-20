@@ -88,6 +88,12 @@ activation probe, even if the link is later restored. This is a provenance
 fail-closed check, not a sandbox against code that already runs with the
 experiment user's privileges.
 
+The manager runs the target in its own process group and converts manager
+termination into bounded group termination followed by forced cleanup when
+needed. The runner likewise keeps a start-scoped registry of every child and
+pipe descriptor, so exceptions after identity validation still reap both
+processes and close all descriptors before the start fails.
+
 ## Remaining gate
 
 The remaining gate is to independently associate host-assigned

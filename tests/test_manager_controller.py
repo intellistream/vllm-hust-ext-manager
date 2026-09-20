@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -292,17 +294,16 @@ def test_invalid_plan_fails_before_target_launch(tmp_path, monkeypatch) -> None:
         )
 
 
-def test_managed_launch_uses_validated_target_and_environment(
-    tmp_path, monkeypatch
-) -> None:
+def test_managed_launch_uses_validated_target_and_environment(tmp_path) -> None:
     path = write_plan(tmp_path)
     journal = (tmp_path / "events").resolve()
     journal.mkdir(mode=0o700)
-    calls = []
-    monkeypatch.setattr(
-        controller.subprocess,
-        "call",
-        lambda command, **kwargs: calls.append((command, kwargs)) or 17,
+    result_path = tmp_path / "target-result.json"
+    target = (
+        "import json,os,pathlib; "
+        f"pathlib.Path({str(result_path)!r}).write_text("
+        "json.dumps({'plan':os.environ['VLLM_ECPA_PLAN_ID']})); "
+        "raise SystemExit(17)"
     )
 
     result = launch_managed(
@@ -310,15 +311,13 @@ def test_managed_launch_uses_validated_target_and_environment(
         launch_id="launch:one",
         controller_instance="controller:one",
         host_event_dir=journal,
-        command=[sys.executable, "-c", "pass"],
+        command=[sys.executable, "-c", target],
         **executable_fingerprint(sys.executable),
         base_environment={"PATH": "/bin"},
     )
 
     assert result == 17
-    assert calls[0][0] == [sys.executable, "-c", "pass"]
-    assert calls[0][1]["env"]["VLLM_ECPA_PLAN_ID"] == plan().plan_id
-    assert calls[0][1]["executable"].startswith("/proc/self/fd/")
+    assert json.loads(result_path.read_text()) == {"plan": plan().plan_id}
 
 
 def test_formal_run_probe_is_canonical_and_does_not_require_launch_inputs(
@@ -327,6 +326,63 @@ def test_formal_run_probe_is_canonical_and_does_not_require_launch_inputs(
     assert main(["formal-run", "--ecpa-formal-activation-probe"]) == 0
 
     assert capsys.readouterr().out.encode() == activation_probe_receipt()
+
+
+def test_manager_termination_reaps_signal_ignoring_target(tmp_path) -> None:
+    path = write_plan(tmp_path)
+    journal = (tmp_path / "events").resolve()
+    journal.mkdir(mode=0o700)
+    pid_path = tmp_path / "target.pid"
+    target = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    fingerprint = executable_fingerprint(sys.executable)
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
+    process = subprocess.Popen(
+        [
+            manager,
+            "formal-run",
+            "--plan",
+            str(path),
+            "--launch-id",
+            "launch:termination",
+            "--controller-instance",
+            "controller:termination",
+            "--host-event-dir",
+            str(journal),
+            "--target-executable-device",
+            str(fingerprint["target_executable_device"]),
+            "--target-executable-inode",
+            str(fingerprint["target_executable_inode"]),
+            "--target-executable-sha256",
+            str(fingerprint["target_executable_sha256"]),
+            "--",
+            sys.executable,
+            "-c",
+            target,
+        ]
+    )
+    try:
+        for _ in range(200):
+            if pid_path.is_file():
+                break
+            if process.poll() is not None:
+                pytest.fail(f"manager exited early with {process.returncode}")
+            time.sleep(0.01)
+        else:
+            pytest.fail("target did not start")
+        target_pid = int(pid_path.read_text())
+        process.terminate()
+        assert process.wait(timeout=4) == 128 + 15
+        with pytest.raises(ProcessLookupError):
+            os.kill(target_pid, 0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def test_formal_run_dry_run_keeps_manager_options_before_target(

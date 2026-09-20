@@ -877,7 +877,37 @@ def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
         return [], f"observer result unavailable or invalid: {type(exc).__name__}"
 
 
-def _run_start(
+def _terminate_process(child: subprocess.Popen[Any] | None) -> None:
+    if child is None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        child.terminate()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        child.wait(timeout=1)
+    if child.poll() is None:
+        child.kill()
+        child.wait()
+    for stream in (child.stdin, child.stdout, child.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+def _run_start(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run one start while guaranteeing child and descriptor cleanup."""
+    resources: dict[str, Any] = {"children": [], "fds": set()}
+    try:
+        return _run_start_impl(*args, _resources=resources, **kwargs)
+    finally:
+        for descriptor in tuple(resources["fds"]):
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        for child in reversed(resources["children"]):
+            with contextlib.suppress(Exception):
+                _terminate_process(child)
+
+
+def _run_start_impl(
     root: Path,
     scenario: dict[str, Any],
     arm: str,
@@ -897,6 +927,7 @@ def _run_start(
     managed_binding: dict[str, Any] | None = None,
     sut_executable_fingerprint: dict[str, Any] | None = None,
     observer_executable_fingerprint: dict[str, Any] | None = None,
+    _resources: dict[str, Any],
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
@@ -908,20 +939,6 @@ def _run_start(
     else:
         if execution_identity is None:
             raise ValueError("observed execution requires plan and launch identity")
-
-        def terminate_child(child: subprocess.Popen[Any] | None) -> None:
-            if child is None:
-                return
-            with contextlib.suppress(ProcessLookupError):
-                child.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                child.wait(timeout=1)
-            if child.poll() is None:
-                child.kill()
-                child.wait()
-            for stream in (child.stdin, child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
 
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = __import__("harness").sanitized_env(env)
@@ -945,18 +962,20 @@ def _run_start(
             text=True,
             close_fds=True,
         )
+        _resources["children"].append(sut)
         try:
             sut_identity = wait_for_linux_process_identity(
                 sut, argv, timeout_s, sut_executable_fingerprint
             )
         except BaseException:
-            terminate_child(sut)
+            _terminate_process(sut)
             raise
         sut_executable_identity = {
             "device": sut_identity.pop("executable_device"),
             "inode": sut_identity.pop("executable_inode"),
         }
         read_fd, write_fd = os.pipe()
+        _resources["fds"].update((read_fd, write_fd))
         observer_env = dict(env)
         observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
         observer_env["ECPA_EXPECTED_ARM"] = arm
@@ -987,6 +1006,7 @@ def _run_start(
                 close_fds=True,
                 pass_fds=(write_fd,),
             )
+            _resources["children"].append(observer)
             observer_identity = wait_for_linux_process_identity(
                 observer,
                 observer_argv,
@@ -998,13 +1018,14 @@ def _run_start(
                 with contextlib.suppress(OSError):
                     os.close(descriptor)
             for child in (observer, sut):
-                terminate_child(child)
+                _terminate_process(child)
             raise
         observer_executable_identity = {
             "device": observer_identity.pop("executable_device"),
             "inode": observer_identity.pop("executable_inode"),
         }
         os.close(write_fd)
+        _resources["fds"].discard(write_fd)
         phase_bounds: dict[str, list[int]] = {}
         phase_invocations: list[dict[str, Any]] = []
         sut_lines: list[str] = []
@@ -1128,6 +1149,7 @@ def _run_start(
         while chunk := os.read(read_fd, 65536):
             result_bytes += chunk
         os.close(read_fd)
+        _resources["fds"].discard(read_fd)
         (run_dir / "observer-pipe.bin").write_bytes(result_bytes)
         result_path.write_bytes(result_bytes or canonical({"events": []}))
         pipe_digest = digest_bytes(result_bytes)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
 from pathlib import Path
@@ -27,6 +29,24 @@ CONTROLLED_ENVIRONMENT = {
     "ECPA_CONTROLLER_INSTANCE",
     "ECPA_ACTIVATION_CONTRACT",
 }
+
+
+class _ManagedTermination(Exception):
+    def __init__(self, signum: int):
+        self.signum = signum
+
+
+def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 
 def activation_probe_receipt() -> bytes:
@@ -191,11 +211,33 @@ def launch_managed(
                 )
             )
             return 0
-        return subprocess.call(
+        process = subprocess.Popen(
             command,
             executable=f"/proc/self/fd/{executable_fd}",
             pass_fds=(executable_fd,),
             env=environment,
+            start_new_session=True,
         )
+        previous_handlers = {
+            signum: signal.getsignal(signum)
+            for signum in (signal.SIGINT, signal.SIGTERM)
+        }
+
+        def forward(signum: int, _frame: Any) -> None:
+            raise _ManagedTermination(signum)
+
+        for signum in previous_handlers:
+            signal.signal(signum, forward)
+        try:
+            return process.wait()
+        except _ManagedTermination as termination:
+            _terminate_process_group(process)
+            return 128 + termination.signum
+        except BaseException:
+            _terminate_process_group(process)
+            raise
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
     finally:
         os.close(executable_fd)
