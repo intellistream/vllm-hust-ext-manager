@@ -1,7 +1,9 @@
 # ECPA architecture
 
-ECPA is a plugin management system centered on an evidence-carrying
-interoperability contract. Extension Manager is the reference implementation.
+ECPA is an inference-system extension contract and transactional runtime.
+Extension Manager is the reference implementation; discovery and plugin
+management are inputs to the system, not its research contribution by
+themselves.
 
 ## Authority graph
 
@@ -25,8 +27,17 @@ interoperability contract. Extension Manager is the reference implementation.
 5. One external-service lease/fallback contract.
 6. Fault injection for crash, replay, split brain, partial launch, and rollback.
 
-The executable model in `src/vllm_hust_ext/ecpa_model.py` is pure and performs
-no external side effects. Production integration is intentionally deferred.
+The executable lifecycle model in `src/vllm_hust_ext/ecpa_model.py` and the
+static compiler in `src/vllm_hust_ext/contract_compiler.py` are pure and
+perform no external side effects. The compiler resolves normalized public
+PEP 440 capability requirements to exactly one provider, derives a
+deterministic dependency order, rejects cycles, binds each process obligation
+to an exact role/event/capability-direction/capability authority grant, the
+selected provider for a required capability, and an explicit quorum, and
+builds a resource ownership graph from semantic resource names rather than
+package names. A mediated resource is admissible only when the named mediator
+is a selected contract that claims that same resource. Production integration
+remains separately gated.
 
 For the current vLLM-HUST-scoped study, research completion additionally
 requires a formal model, cross-plugin/provider validation within vLLM-HUST, an

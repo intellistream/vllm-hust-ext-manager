@@ -1,8 +1,8 @@
 {
   "schema": "ecpa-manifest/0.1-draft", "id": "ExamplePolicy", "version": "0.1.0",
   "host": {"runtime": "vllm", "version": "unknown"},
-  "capabilities": {"provides": [], "requires": []}, "resources": [],
-  "process_obligations": [{"role": "scheduler", "event": "invoked", "completion": "all"}],
+  "capabilities": {"provides": [{"name": "org.vllm-hust.invalid-example", "version": "1"}], "requires": []}, "resources": [],
+  "process_obligations": [{"role": "scheduler", "event": "invoked", "completion": "all", "authority": "runtime", "capability_direction": "provides", "capability": "org.vllm-hust.invalid-example"}],
   "rollback": {"manager_owned": [], "external_operator_owned": []},
-  "authority": {"provider": [], "runtime": [], "external": []}
+  "authority": {"provider": [], "runtime": [{"role": "scheduler", "event": "invoked", "capability_direction": "provides", "capability": "org.vllm-hust.invalid-example"}], "external": []}
 }
