@@ -1,4 +1,9 @@
+import hashlib
 import json
+import os
+import subprocess
+import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -57,6 +62,16 @@ def plan() -> Plan:
         PredecessorSnapshot(4, "plan:sha256:" + "b" * 64, {"route": "old"}),
         True,
     )
+
+
+def executable_fingerprint(path: str) -> dict[str, object]:
+    metadata = os.stat(path)
+    return {
+        "target_executable_device": metadata.st_dev,
+        "target_executable_inode": metadata.st_ino,
+        "target_executable_sha256": "sha256:"
+        + hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+    }
 
 
 def write_plan(tmp_path, value: Plan | None = None):
@@ -246,7 +261,8 @@ def test_manager_rejects_public_event_directory_and_wrong_host_plan(tmp_path) ->
             launch_id="launch:one",
             controller_instance="controller:one",
             host_event_dir=journal,
-            command=["true"],
+            command=["/bin/true"],
+            **executable_fingerprint("/bin/true"),
             base_environment={},
         )
 
@@ -271,21 +287,23 @@ def test_invalid_plan_fails_before_target_launch(tmp_path, monkeypatch) -> None:
             controller_instance="controller:one",
             host_event_dir=journal,
             command=["vllm", "serve", "model"],
+            target_executable_device=1,
+            target_executable_inode=1,
+            target_executable_sha256="sha256:" + "0" * 64,
             base_environment={},
         )
 
 
-def test_managed_launch_uses_validated_target_and_environment(
-    tmp_path, monkeypatch
-) -> None:
+def test_managed_launch_uses_validated_target_and_environment(tmp_path) -> None:
     path = write_plan(tmp_path)
     journal = (tmp_path / "events").resolve()
     journal.mkdir(mode=0o700)
-    calls = []
-    monkeypatch.setattr(
-        controller.subprocess,
-        "call",
-        lambda command, *, env: calls.append((command, env)) or 17,
+    result_path = tmp_path / "target-result.json"
+    target = (
+        "import json,os,pathlib; "
+        f"pathlib.Path({str(result_path)!r}).write_text("
+        "json.dumps({'plan':os.environ['VLLM_ECPA_PLAN_ID']})); "
+        "raise SystemExit(17)"
     )
 
     result = launch_managed(
@@ -293,13 +311,13 @@ def test_managed_launch_uses_validated_target_and_environment(
         launch_id="launch:one",
         controller_instance="controller:one",
         host_event_dir=journal,
-        command=["vllm", "serve", "model"],
+        command=[sys.executable, "-c", target],
+        **executable_fingerprint(sys.executable),
         base_environment={"PATH": "/bin"},
     )
 
     assert result == 17
-    assert calls[0][0] == ["vllm", "serve", "model"]
-    assert calls[0][1]["VLLM_ECPA_PLAN_ID"] == plan().plan_id
+    assert json.loads(result_path.read_text()) == {"plan": plan().plan_id}
 
 
 def test_formal_run_probe_is_canonical_and_does_not_require_launch_inputs(
@@ -308,6 +326,63 @@ def test_formal_run_probe_is_canonical_and_does_not_require_launch_inputs(
     assert main(["formal-run", "--ecpa-formal-activation-probe"]) == 0
 
     assert capsys.readouterr().out.encode() == activation_probe_receipt()
+
+
+def test_manager_termination_reaps_signal_ignoring_target(tmp_path) -> None:
+    path = write_plan(tmp_path)
+    journal = (tmp_path / "events").resolve()
+    journal.mkdir(mode=0o700)
+    pid_path = tmp_path / "target.pid"
+    target = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    fingerprint = executable_fingerprint(sys.executable)
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
+    process = subprocess.Popen(
+        [
+            manager,
+            "formal-run",
+            "--plan",
+            str(path),
+            "--launch-id",
+            "launch:termination",
+            "--controller-instance",
+            "controller:termination",
+            "--host-event-dir",
+            str(journal),
+            "--target-executable-device",
+            str(fingerprint["target_executable_device"]),
+            "--target-executable-inode",
+            str(fingerprint["target_executable_inode"]),
+            "--target-executable-sha256",
+            str(fingerprint["target_executable_sha256"]),
+            "--",
+            sys.executable,
+            "-c",
+            target,
+        ]
+    )
+    try:
+        for _ in range(200):
+            if pid_path.is_file():
+                break
+            if process.poll() is not None:
+                pytest.fail(f"manager exited early with {process.returncode}")
+            time.sleep(0.01)
+        else:
+            pytest.fail("target did not start")
+        target_pid = int(pid_path.read_text())
+        process.terminate()
+        assert process.wait(timeout=4) == 128 + 15
+        with pytest.raises(ProcessLookupError):
+            os.kill(target_pid, 0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def test_formal_run_dry_run_keeps_manager_options_before_target(
@@ -329,11 +404,17 @@ def test_formal_run_dry_run_keeps_manager_options_before_target(
                 "controller:one",
                 "--host-event-dir",
                 str(journal),
+                "--target-executable-device",
+                str(os.stat(sys.executable).st_dev),
+                "--target-executable-inode",
+                str(os.stat(sys.executable).st_ino),
+                "--target-executable-sha256",
+                executable_fingerprint(sys.executable)["target_executable_sha256"],
                 "--dry-run",
                 "--",
-                "vllm",
-                "serve",
-                "model",
+                sys.executable,
+                "-c",
+                "pass",
                 "--tensor-parallel-size",
                 "2",
             ]
@@ -345,9 +426,9 @@ def test_formal_run_dry_run_keeps_manager_options_before_target(
     assert receipt["schema"] == "ecpa-managed-launch/v1"
     assert receipt["plan_id"] == plan().plan_id
     assert receipt["command"] == [
-        "vllm",
-        "serve",
-        "model",
+        sys.executable,
+        "-c",
+        "pass",
         "--tensor-parallel-size",
         "2",
     ]

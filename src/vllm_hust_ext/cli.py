@@ -359,6 +359,9 @@ def _formal_run_command(args: argparse.Namespace) -> int:
             ("--launch-id", args.launch_id),
             ("--controller-instance", args.controller_instance),
             ("--host-event-dir", args.host_event_dir),
+            ("--target-executable-device", args.target_executable_device),
+            ("--target-executable-inode", args.target_executable_inode),
+            ("--target-executable-sha256", args.target_executable_sha256),
         )
         if value is None
     ]
@@ -373,6 +376,9 @@ def _formal_run_command(args: argparse.Namespace) -> int:
         controller_instance=args.controller_instance,
         host_event_dir=args.host_event_dir,
         command=command,
+        target_executable_device=args.target_executable_device,
+        target_executable_inode=args.target_executable_inode,
+        target_executable_sha256=args.target_executable_sha256,
         dry_run=args.dry_run,
     )
 
@@ -509,6 +515,9 @@ def build_parser() -> argparse.ArgumentParser:
     formal_run.add_argument("--launch-id")
     formal_run.add_argument("--controller-instance")
     formal_run.add_argument("--host-event-dir")
+    formal_run.add_argument("--target-executable-device", type=int)
+    formal_run.add_argument("--target-executable-inode", type=int)
+    formal_run.add_argument("--target-executable-sha256")
     formal_run.add_argument("--dry-run", action="store_true")
     formal_run.add_argument("--ecpa-formal-activation-probe", action="store_true")
     formal_run.add_argument("command", nargs=argparse.REMAINDER)

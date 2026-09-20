@@ -53,20 +53,54 @@ The snapshot is an accidental-mutation and validation-to-use safeguard within
 a trusted same-UID runner boundary, not a security boundary against a malicious
 launcher with the same operating-system identity. It is published only after a
 canonical re-read by atomically renaming a `.partial` generation. Formal truth
-must still be reconciled against the Plan ID in manager/host-owned evidence.
+is reconciled against the Plan ID in manager/host-owned evidence. The runner
+also seals the snapshot digest in the command binding, and offline validation
+re-reads the Plan artifact, recomputes its Plan ID and digest, and binds both to
+the executed launch/controller identities.
 
-Its activation probe does not launch the target. The command is not yet in the
-verified adapter registry and therefore cannot produce a formal-real result.
+Its activation probe exercises the real manager `formal-run` parser without
+launching the target. ECPA formal-real admission independently fingerprints the
+manager, target, and observer; the executed argv must match the manager-owned
+launch envelope and the separately pinned target argv. The generic adapter
+verifier rejects ECPA, so there is no fallback path based on appending synthetic
+activation flags to the target. The registry remains empty, so this mechanism
+cannot yet produce a formal-real result.
+
+For Python console entry points, the runner derives and pins the direct
+interpreter-plus-script argv that Linux exposes instead of assuming the wrapper
+path remains `argv[0]`. Existing file-backed relative target and observer
+arguments are made absolute during fingerprinting, and those normalized argv
+values are the ones actually launched. The runner-to-manager environment omits
+the target-only activation contract by design; offline validation instead binds
+that contract through the manager-owned launch record and rejects a caller that
+tries to preseed it.
+
+Executable fingerprints seal the resolved device, inode, and digest. The runner
+opens and verifies the manager and observer images before `exec`, then executes
+the inherited descriptor through `/proc/self/fd` while retaining the reviewed
+`argv[0]`. It also passes the target fingerprint to the manager; the manager
+opens and verifies the target itself and uses the same descriptor-exec pattern.
+The runner additionally reads the actual manager/observer image through
+`/proc/<pid>/exe`, stores that identity separately from PID/start-ticks/argv,
+and rechecks it offline. Retargeting an executable symlink after registry
+verification therefore cannot substitute the manager, target, observer, or
+activation probe, even if the link is later restored. This is a provenance
+fail-closed check, not a sandbox against code that already runs with the
+experiment user's privileges.
+
+The manager runs the target in its own process group and converts manager
+termination into bounded group termination followed by forced cleanup when
+needed. The runner likewise keeps a start-scoped registry of every child and
+pipe descriptor, so exceptions after identity validation still reap both
+processes and close all descriptors before the start fails.
 
 ## Remaining gate
 
-The runner still must make this constructor the only ECPA formal-real launch
-path, bind registry verification to both manager and target fingerprints, and
-independently associate host-assigned EngineCore/worker identities with the
-same launch. A causal phase controller and real workload/fault driver must be
-added without treating its ACKs as effect evidence. Registration is forbidden
-until vLLM-HUST PR #27 is human-reviewed and merged and the first real cell is
-independently reproduced.
+The remaining gate is to independently associate host-assigned
+EngineCore/worker identities with this same Plan/launch/controller tuple under
+a real workload and fault driver, without treating controller ACKs as effect
+evidence. Registration is forbidden until vLLM-HUST PR #27 is human-reviewed
+and merged and the first real cell is independently reproduced.
 
 BidKV remains an unchanged case-study candidate; this decision neither changes
 its algorithm nor adds a second inference engine.

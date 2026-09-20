@@ -10,6 +10,7 @@ import os
 import platform
 import secrets
 import select
+import shlex
 import signal
 import stat
 import subprocess
@@ -45,6 +46,16 @@ from vllm_hust_ext.plan_artifact import read_plan_artifact
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
 FORMAL_ACTIVATION_PROBE_OPTION = "--ecpa-formal-activation-probe"
+ECPA_FORMAL_ACTIVATION_OPTIONS = (
+    "--controller-instance",
+    "--host-event-dir",
+    "--launch-id",
+    "--plan",
+    "--target-executable-device",
+    "--target-executable-inode",
+    "--target-executable-sha256",
+    "formal-run",
+)
 FORMAL_HOST_OBSERVABLES = {
     "service-ready",
     "workload-complete",
@@ -56,6 +67,7 @@ FORMAL_HOST_OBSERVABLES = {
     "plugin-invoked",
     "coverage",
 }
+CHILD_TERMINATION_GRACE_S = 2.0
 
 
 def command_references_fixture(values: list[str]) -> bool:
@@ -107,11 +119,22 @@ def linux_process_identity(pid: int) -> dict[str, Any]:
     argv = [
         part.decode(errors="surrogateescape") for part in argv_raw.split(b"\0") if part
     ]
-    return {"pid": pid, "start_ticks": start_ticks, "argv": argv}
+    executable = Path(f"/proc/{pid}/exe")
+    executable_metadata = executable.stat()
+    return {
+        "pid": pid,
+        "start_ticks": start_ticks,
+        "argv": argv,
+        "executable_device": executable_metadata.st_dev,
+        "executable_inode": executable_metadata.st_ino,
+    }
 
 
 def wait_for_linux_process_identity(
-    process: subprocess.Popen[Any], expected_argv: list[str], timeout_s: float
+    process: subprocess.Popen[Any],
+    expected_argv: list[str],
+    timeout_s: float,
+    expected_executable: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wait until exec has installed the exact argv before recording identity."""
     deadline = time.monotonic() + timeout_s
@@ -124,6 +147,15 @@ def wait_for_linux_process_identity(
         except (FileNotFoundError, ProcessLookupError, RuntimeError):
             last_identity = None
         if last_identity is not None and last_identity["argv"] == expected_argv:
+            if expected_executable is not None and (
+                last_identity["executable_device"]
+                != expected_executable.get("executable_device")
+                or last_identity["executable_inode"]
+                != expected_executable.get("executable_inode")
+            ):
+                raise RuntimeError(
+                    "process executable differs from the registered fingerprint"
+                )
             return last_identity
         time.sleep(0.001)
     observed = last_identity["argv"] if last_identity is not None else None
@@ -135,12 +167,16 @@ def wait_for_linux_process_identity(
 
 def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]:
     """Bind the launched executable and every file-backed argv component."""
-    executable_path = Path(executable).resolve(strict=True)
+    executable_path = Path(executable).absolute()
+    executable_resolved = executable_path.resolve(strict=True)
+    executable_metadata = executable_resolved.stat()
     argument_files = []
+    normalized_arguments = []
     for index, value in enumerate(arguments):
         candidate = Path(value)
         if candidate.is_file():
             resolved = candidate.resolve(strict=True)
+            value = str(resolved)
             argument_files.append(
                 {
                     "index": index,
@@ -148,21 +184,57 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
                     "sha256": digest_file(resolved),
                 }
             )
+        normalized_arguments.append(value)
     fingerprint = {
         "executable": str(executable_path),
-        "executable_sha256": digest_file(executable_path),
-        "arguments": arguments,
+        "executable_resolved": str(executable_resolved),
+        "executable_device": executable_metadata.st_dev,
+        "executable_inode": executable_metadata.st_ino,
+        "executable_sha256": digest_file(executable_resolved),
+        "arguments": normalized_arguments,
         "argument_files": argument_files,
     }
     return {**fingerprint, "digest": digest_bytes(canonical(fingerprint))}
 
 
+def executable_launch_prefix(executable: str) -> list[str]:
+    """Return the stable argv that Linux exposes for a binary or direct shebang."""
+    path = Path(executable).absolute()
+    path.resolve(strict=True)
+    with path.open("rb") as stream:
+        first_line = stream.readline(4096)
+    if not first_line.startswith(b"#!"):
+        return [str(path)]
+    try:
+        shebang = shlex.split(first_line[2:].decode().strip())
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("manager executable has an invalid shebang") from exc
+    if not shebang or Path(shebang[0]).name == "env":
+        raise ValueError("manager executable requires a direct interpreter shebang")
+    interpreter_path = Path(shebang[0]).absolute()
+    interpreter_path.resolve(strict=True)
+    interpreter = str(interpreter_path)
+    return [interpreter, *shebang[1:], str(path)]
+
+
+def command_fingerprint_for_launch(
+    executable: str, arguments: list[str]
+) -> dict[str, Any]:
+    """Fingerprint the actual exec image and argv for binaries or scripts."""
+    prefix = executable_launch_prefix(executable)
+    return command_fingerprint(prefix[0], [*prefix[1:], *arguments])
+
+
 def run_bounded_command(
-    argv: list[str], timeout_s: int, output_limit: int
+    argv: list[str],
+    timeout_s: int,
+    output_limit: int,
+    executable_fingerprint: dict[str, Any] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Capture a child incrementally and terminate before output exceeds the limit."""
-    process = subprocess.Popen(
+    process = popen_pinned(
         argv,
+        executable_fingerprint,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -214,6 +286,35 @@ def run_bounded_command(
         process.stderr.close()
 
 
+def popen_pinned(
+    argv: list[str],
+    executable_fingerprint: dict[str, Any] | None,
+    **kwargs: Any,
+) -> subprocess.Popen[Any]:
+    """Open, verify, and exec the exact executable inode behind argv[0]."""
+    if executable_fingerprint is None:
+        return subprocess.Popen(argv, **kwargs)
+    executable_fd = os.open(argv[0], os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(executable_fd)
+        if (
+            metadata.st_dev != executable_fingerprint.get("executable_device")
+            or metadata.st_ino != executable_fingerprint.get("executable_inode")
+            or digest_file(Path(f"/proc/self/fd/{executable_fd}"))
+            != executable_fingerprint.get("executable_sha256")
+        ):
+            raise ValueError("executable differs from its registered fingerprint")
+        inherited = tuple(kwargs.pop("pass_fds", ()))
+        return subprocess.Popen(
+            argv,
+            executable=f"/proc/self/fd/{executable_fd}",
+            pass_fds=(*inherited, executable_fd),
+            **kwargs,
+        )
+    finally:
+        os.close(executable_fd)
+
+
 def run_activation_probe(
     entry: dict[str, Any],
     adapter: FormalArmAdapter,
@@ -242,7 +343,7 @@ def run_activation_probe(
     ]
     if command_references_fixture([executable, *probe_arguments]):
         raise ValueError("fixture-referencing activation probe is forbidden")
-    fingerprint = command_fingerprint(executable, probe_arguments)
+    fingerprint = command_fingerprint_for_launch(executable, probe_arguments)
     if fingerprint["digest"] != probe.get("command_digest"):
         raise ValueError("activation probe command differs from the registry")
     try:
@@ -278,6 +379,71 @@ def run_activation_probe(
     }
 
 
+def run_ecpa_activation_probe(
+    entry: dict[str, Any], adapter: ECPAAdapter, manager_executable: str
+) -> dict[str, Any]:
+    """Probe the real manager subcommand without launching the target."""
+    probe = entry.get("activation_probe")
+    if not isinstance(probe, dict):
+        raise ValueError("verified adapter is missing an activation probe")
+    required = probe.get("required_options")
+    timeout_s = probe.get("timeout_s")
+    if (
+        required != sorted(ECPA_FORMAL_ACTIVATION_OPTIONS)
+        or not isinstance(timeout_s, int)
+        or isinstance(timeout_s, bool)
+        or not 1 <= timeout_s <= 30
+    ):
+        raise ValueError("verified ECPA activation probe is invalid")
+    manager_prefix = executable_launch_prefix(manager_executable)
+    probe_arguments = [
+        *manager_prefix[1:],
+        "formal-run",
+        FORMAL_ACTIVATION_PROBE_OPTION,
+    ]
+    if command_references_fixture([manager_prefix[0], *probe_arguments]):
+        raise ValueError("fixture-referencing activation probe is forbidden")
+    fingerprint = command_fingerprint(manager_prefix[0], probe_arguments)
+    if fingerprint["digest"] != probe.get("command_digest"):
+        raise ValueError("manager activation probe differs from the registry")
+    try:
+        returncode, stdout, stderr = run_bounded_command(
+            [fingerprint["executable"], *fingerprint["arguments"]],
+            timeout_s,
+            1024 * 1024,
+            fingerprint,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("manager activation probe did not complete") from exc
+    output = stdout + stderr
+    try:
+        receipt = json.loads(stdout)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(
+            "manager activation probe did not emit a JSON receipt"
+        ) from exc
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": sorted(ECPA_FORMAL_ACTIVATION_OPTIONS),
+    }
+    if (
+        returncode != 0
+        or receipt != expected_receipt
+        or stdout != canonical(expected_receipt) + b"\n"
+    ):
+        raise ValueError("manager does not expose the registered formal-run contract")
+    return {
+        "command": fingerprint,
+        "required_options": sorted(ECPA_FORMAL_ACTIVATION_OPTIONS),
+        "exit_code": returncode,
+        "output_sha256": digest_bytes(output),
+        "stdout_base64": base64.b64encode(stdout).decode(),
+        "stderr_base64": base64.b64encode(stderr).decode(),
+        "receipt": receipt,
+    }
+
+
 def verified_adapter_contract(
     verification_id: str | None,
     adapter: FormalArmAdapter,
@@ -287,6 +453,8 @@ def verified_adapter_contract(
     observer_arguments: list[str],
 ) -> dict[str, Any]:
     """Resolve a code-reviewed adapter entry; caller assertions are not authority."""
+    if isinstance(adapter, ECPAAdapter):
+        raise ValueError("ECPA formal-real requires managed adapter verification")
     if not verification_id:
         raise ValueError("real formal execution requires a registry verification id")
     registry_bytes = VERIFIED_ADAPTER_REGISTRY.read_bytes()
@@ -317,8 +485,10 @@ def verified_adapter_contract(
     launch_paths = [executable, observer_executable, *arguments, *observer_arguments]
     if command_references_fixture(launch_paths):
         raise ValueError("fixture-referencing command is forbidden for formal-real")
-    sut = command_fingerprint(executable, [*arguments, *adapter.activation_arguments])
-    observer = command_fingerprint(observer_executable, observer_arguments)
+    sut = command_fingerprint_for_launch(
+        executable, [*arguments, *adapter.activation_arguments]
+    )
+    observer = command_fingerprint_for_launch(observer_executable, observer_arguments)
     if sut["digest"] != entry.get("sut_command_digest"):
         raise ValueError("SUT command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
@@ -329,6 +499,78 @@ def verified_adapter_contract(
         "verification_id": verification_id,
         "registry_digest": digest_bytes(registry_bytes),
         "sut_command": sut,
+        "observer_command": observer,
+        "activation_probe": activation_probe,
+        "evidence_owner": entry["evidence_owner"],
+        "evidence_channel": entry["evidence_channel"],
+        "host_event_schema": entry["host_event_schema"],
+        "required_observables": sorted(entry["required_observables"]),
+    }
+
+
+def verified_ecpa_adapter_contract(
+    verification_id: str | None,
+    adapter: ECPAAdapter,
+    manager_executable: str,
+    target_executable: str,
+    target_arguments: list[str],
+    observer_executable: str,
+    observer_arguments: list[str],
+) -> dict[str, Any]:
+    """Pin manager, target, and observer independently for managed ECPA."""
+    if not verification_id:
+        raise ValueError("real formal execution requires a registry verification id")
+    registry_bytes = VERIFIED_ADAPTER_REGISTRY.read_bytes()
+    registry = json.loads(registry_bytes)
+    if (
+        registry_bytes != canonical(registry) + b"\n"
+        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+    ):
+        raise ValueError("verified adapter registry must be canonical")
+    rows = registry.get("adapters", [])
+    entries = {entry["id"]: entry for entry in rows}
+    if len(entries) != len(rows):
+        raise ValueError("verified adapter registry contains duplicate ids")
+    entry = entries.get(verification_id)
+    if entry is None:
+        raise ValueError("adapter verification id is not in the trusted registry")
+    if (
+        entry.get("arm") != adapter.arm
+        or entry.get("activation_contract") != adapter.activation_contract
+        or entry.get("evidence_owner") != "vllm-hust-host"
+        or entry.get("evidence_channel") != "host-owned-event-stream"
+        or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or not FORMAL_HOST_OBSERVABLES.issubset(
+            set(entry.get("required_observables", []))
+        )
+    ):
+        raise ValueError("verified ECPA adapter does not match the requested arm")
+    launch_paths = [
+        manager_executable,
+        target_executable,
+        observer_executable,
+        *target_arguments,
+        *observer_arguments,
+    ]
+    if command_references_fixture(launch_paths):
+        raise ValueError("fixture-referencing command is forbidden for formal-real")
+    manager_prefix = executable_launch_prefix(manager_executable)
+    manager = command_fingerprint(manager_prefix[0], manager_prefix[1:])
+    target = command_fingerprint_for_launch(target_executable, target_arguments)
+    observer = command_fingerprint_for_launch(observer_executable, observer_arguments)
+    if manager["digest"] != entry.get("manager_command_digest"):
+        raise ValueError("manager command differs from the verified adapter artifact")
+    if target["digest"] != entry.get("target_command_digest"):
+        raise ValueError("target command differs from the verified adapter artifact")
+    if observer["digest"] != entry.get("observer_command_digest"):
+        raise ValueError("observer command differs from the verified adapter artifact")
+    activation_probe = run_ecpa_activation_probe(entry, adapter, manager_executable)
+    return {
+        "registry_schema": registry.get("schema"),
+        "verification_id": verification_id,
+        "registry_digest": digest_bytes(registry_bytes),
+        "manager_command": manager,
+        "target_command": target,
         "observer_command": observer,
         "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
@@ -506,6 +748,10 @@ class ECPAAdapter(FormalArmAdapter):
                 "runner environment conflicts with manager-owned values: "
                 + ", ".join(sorted(conflicts))
             )
+        manager_prefix = executable_launch_prefix(manager_executable)
+        manager_command = command_fingerprint(manager_prefix[0], manager_prefix[1:])
+        target_command = command_fingerprint(target_argv[0], target_argv[1:])
+        target_argv = [target_command["executable"], *target_command["arguments"]]
         artifact = read_plan_artifact(plan_path)
         if (
             artifact.plan.host.runtime != "vllm-hust"
@@ -535,7 +781,8 @@ class ECPAAdapter(FormalArmAdapter):
         frozen_path, frozen_artifact = _freeze_plan_snapshot(event_root, artifact)
         plan = str(frozen_path)
         argv = [
-            manager_executable,
+            manager_command["executable"],
+            *manager_command["arguments"],
             "formal-run",
             "--plan",
             plan,
@@ -545,6 +792,12 @@ class ECPAAdapter(FormalArmAdapter):
             controller_instance,
             "--host-event-dir",
             str(event_root),
+            "--target-executable-device",
+            str(target_command["executable_device"]),
+            "--target-executable-inode",
+            str(target_command["executable_inode"]),
+            "--target-executable-sha256",
+            target_command["executable_sha256"],
         ]
         if dry_run:
             argv.append("--dry-run")
@@ -558,7 +811,13 @@ class ECPAAdapter(FormalArmAdapter):
             "launch_id": launch_id,
             "plan_id": artifact.plan_id,
             "plan_path": plan,
+            "plan_sha256": digest_bytes(frozen_artifact.raw),
             "target_argv": list(target_argv),
+            "target_executable": {
+                "device": target_command["executable_device"],
+                "inode": target_command["executable_inode"],
+                "sha256": target_command["executable_sha256"],
+            },
         }
         return argv, launched, binding
 
@@ -586,7 +845,12 @@ def _git_measurement() -> tuple[str, bool]:
         return "unavailable", True
 
 
-def measured_identity(declared: dict[str, Any], arm: str, env: dict[str, str]):
+def measured_identity(
+    declared: dict[str, Any],
+    arm: str,
+    env: dict[str, str],
+    activation_contract: str | None = None,
+):
     commit, dirty = _git_measurement()
     return dict(declared) | {
         "arm": arm,
@@ -599,7 +863,8 @@ def measured_identity(declared: dict[str, Any], arm: str, env: dict[str, str]):
             name: env.get(name, "<unset>") for name in SEMANTIC_ENV
         },
         "evaluation_arm": env.get("ECPA_EVALUATION_ARM", arm),
-        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT", "reference-only"),
+        "activation_contract": activation_contract
+        or env.get("ECPA_ACTIVATION_CONTRACT", "reference-only"),
     }
 
 
@@ -613,7 +878,37 @@ def _read_events(path: Path) -> tuple[list[dict[str, Any]], str | None]:
         return [], f"observer result unavailable or invalid: {type(exc).__name__}"
 
 
-def _run_start(
+def _terminate_process(child: subprocess.Popen[Any] | None) -> None:
+    if child is None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        child.terminate()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        child.wait(timeout=CHILD_TERMINATION_GRACE_S)
+    if child.poll() is None:
+        child.kill()
+        child.wait()
+    for stream in (child.stdin, child.stdout, child.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+def _run_start(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run one start while guaranteeing child and descriptor cleanup."""
+    resources: dict[str, Any] = {"children": [], "fds": set()}
+    try:
+        return _run_start_impl(*args, _resources=resources, **kwargs)
+    finally:
+        for descriptor in tuple(resources["fds"]):
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        for child in reversed(resources["children"]):
+            with contextlib.suppress(Exception):
+                _terminate_process(child)
+
+
+def _run_start_impl(
     root: Path,
     scenario: dict[str, Any],
     arm: str,
@@ -629,6 +924,11 @@ def _run_start(
     observations_from_stdout: bool,
     observer_argv: list[str] | None = None,
     execution_identity: dict[str, str] | None = None,
+    activation_contract: str | None = None,
+    managed_binding: dict[str, Any] | None = None,
+    sut_executable_fingerprint: dict[str, Any] | None = None,
+    observer_executable_fingerprint: dict[str, Any] | None = None,
+    _resources: dict[str, Any],
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
@@ -640,6 +940,7 @@ def _run_start(
     else:
         if execution_identity is None:
             raise ValueError("observed execution requires plan and launch identity")
+
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = __import__("harness").sanitized_env(env)
         (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
@@ -651,8 +952,9 @@ def _run_start(
             and key != "ECPA_FROZEN_SCENARIO"
         }
         sut_start = time.monotonic_ns()
-        sut = subprocess.Popen(
+        sut = popen_pinned(
             argv,
+            sut_executable_fingerprint,
             cwd=run_dir,
             env=sut_env,
             stdin=subprocess.PIPE,
@@ -661,12 +963,26 @@ def _run_start(
             text=True,
             close_fds=True,
         )
-        sut_identity = wait_for_linux_process_identity(sut, argv, timeout_s)
+        _resources["children"].append(sut)
+        try:
+            sut_identity = wait_for_linux_process_identity(
+                sut, argv, timeout_s, sut_executable_fingerprint
+            )
+        except BaseException:
+            _terminate_process(sut)
+            raise
+        sut_executable_identity = {
+            "device": sut_identity.pop("executable_device"),
+            "inode": sut_identity.pop("executable_inode"),
+        }
         read_fd, write_fd = os.pipe()
+        _resources["fds"].update((read_fd, write_fd))
         observer_env = dict(env)
         observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
         observer_env["ECPA_EXPECTED_ARM"] = arm
-        observer_env["ECPA_EXPECTED_CONTRACT"] = env["ECPA_ACTIVATION_CONTRACT"]
+        observer_env["ECPA_EXPECTED_CONTRACT"] = (
+            activation_contract or env["ECPA_ACTIVATION_CONTRACT"]
+        )
         observer_env["ECPA_SUT_PID"] = str(sut.pid)
         observer_env["ECPA_PLAN_ID"] = execution_identity["plan_id"]
         observer_env["ECPA_LAUNCH_ID"] = execution_identity["launch_id"]
@@ -677,21 +993,40 @@ def _run_start(
             "host-observer" if evidence_class == "formal-real" else "interface-observer"
         )
         observer_start = time.monotonic_ns()
-        observer = subprocess.Popen(
-            observer_argv,
-            cwd=run_dir,
-            env=observer_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            close_fds=True,
-            pass_fds=(write_fd,),
-        )
-        observer_identity = wait_for_linux_process_identity(
-            observer, observer_argv, timeout_s
-        )
+        observer = None
+        try:
+            observer = popen_pinned(
+                observer_argv,
+                observer_executable_fingerprint,
+                cwd=run_dir,
+                env=observer_env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                close_fds=True,
+                pass_fds=(write_fd,),
+            )
+            _resources["children"].append(observer)
+            observer_identity = wait_for_linux_process_identity(
+                observer,
+                observer_argv,
+                timeout_s,
+                observer_executable_fingerprint,
+            )
+        except BaseException:
+            for descriptor in (read_fd, write_fd):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            for child in (observer, sut):
+                _terminate_process(child)
+            raise
+        observer_executable_identity = {
+            "device": observer_identity.pop("executable_device"),
+            "inode": observer_identity.pop("executable_inode"),
+        }
         os.close(write_fd)
+        _resources["fds"].discard(write_fd)
         phase_bounds: dict[str, list[int]] = {}
         phase_invocations: list[dict[str, Any]] = []
         sut_lines: list[str] = []
@@ -815,6 +1150,7 @@ def _run_start(
         while chunk := os.read(read_fd, 65536):
             result_bytes += chunk
         os.close(read_fd)
+        _resources["fds"].discard(read_fd)
         (run_dir / "observer-pipe.bin").write_bytes(result_bytes)
         result_path.write_bytes(result_bytes or canonical({"events": []}))
         pipe_digest = digest_bytes(result_bytes)
@@ -844,6 +1180,7 @@ def _run_start(
                 "pid": sut.pid,
                 "start_identity": f"pid:{sut.pid}@ticks:{sut_identity['start_ticks']}",
                 "linux_identity": sut_identity,
+                "executable_identity": sut_executable_identity,
             },
             "observer_process": {
                 "argv": observer_identity["argv"],
@@ -855,10 +1192,12 @@ def _run_start(
                 "monotonic_start_ns": observer_start,
                 "monotonic_end_ns": observer_end,
                 "linux_identity": observer_identity,
+                "executable_identity": observer_executable_identity,
             },
             "phase_bounds": phase_bounds,
             "phase_invocations": phase_invocations,
             "execution_identity": execution_identity,
+            "managed_binding": managed_binding,
             "observer_pipe_sha256": pipe_digest,
         }
         (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
@@ -905,7 +1244,8 @@ def _run_start(
         "repetition": repetition,
         "arm_order": arm_order,
         "identity": identity,
-        "activation_contract": env.get("ECPA_ACTIVATION_CONTRACT"),
+        "activation_contract": activation_contract
+        or env.get("ECPA_ACTIVATION_CONTRACT"),
         "semantic_environment": {
             name: env.get(name, "<unset>") for name in SEMANTIC_ENV
         },
@@ -1069,6 +1409,24 @@ def run_reference_start(
     )
 
 
+def validate_managed_plan_coverage(
+    plan_path: str | Path, frozen_targets: tuple[tuple[str, str, int, int], ...]
+) -> None:
+    """Fail closed for the first single-host formal-real topology."""
+    artifact = read_plan_artifact(plan_path)
+    hosts = {host for host, _, _, _ in frozen_targets}
+    if len(hosts) != 1:
+        raise ValueError("managed ECPA formal-real currently requires one host")
+    declared = {(role, ordinal) for _, role, ordinal, _ in frozen_targets}
+    obligated = {
+        (obligation.role, ordinal)
+        for obligation in artifact.plan.obligations
+        for ordinal in obligation.required_ordinals
+    }
+    if declared != obligated:
+        raise ValueError("execution Plan obligations differ from target snapshot")
+
+
 def run_formal_start(
     root: Path,
     scenario: dict[str, Any],
@@ -1085,10 +1443,14 @@ def run_formal_start(
     timeout_s: float,
     fixture_mode: bool = False,
     adapter_verification_id: str | None = None,
+    manager_executable: str | None = None,
+    execution_plan_path: str | Path | None = None,
+    host_event_dir: str | Path | None = None,
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
     identity = copy.deepcopy(identity)
+    observer_launch_argv = [observer_executable, *observer_arguments]
     required = {
         "model",
         "dataset",
@@ -1116,6 +1478,19 @@ def run_formal_start(
         verification = None
         evidence_class = "interface-fixture"
         measurement_source = "controlled-interface-observer"
+        argv, env = adapter.launch(executable, arguments, dict(os.environ))
+        plan_material = {
+            "protocol_digest": digest_bytes(canonical(protocol)),
+            "scenario_digest": digest_bytes(canonical(scenario)),
+            "arm": adapter.arm,
+            "activation_contract": adapter.activation_contract,
+            "declared_identity": identity | {"adapter_verification": verification},
+        }
+        execution_identity = {
+            "plan_id": digest_bytes(canonical(plan_material)),
+            "launch_id": "launch:" + secrets.token_hex(16),
+            "controller_instance": "controller:" + secrets.token_hex(16),
+        }
     else:
         frozen_targets = validate_required_process_snapshot(
             identity.get("required_processes")
@@ -1129,30 +1504,81 @@ def run_formal_start(
             }
             for host, role, ordinal, process_epoch in frozen_targets
         ]
-        verification = verified_adapter_contract(
-            adapter_verification_id,
-            adapter,
-            executable,
-            arguments,
-            observer_executable,
-            observer_arguments,
-        )
+        if isinstance(adapter, ECPAAdapter):
+            if not adapter_verification_id:
+                raise ValueError(
+                    "real formal execution requires a registry verification id"
+                )
+            if manager_executable is None:
+                raise ValueError("managed ECPA formal-real requires a manager")
+            if execution_plan_path is None:
+                raise ValueError("managed ECPA formal-real requires an execution Plan")
+            if host_event_dir is None:
+                raise ValueError(
+                    "managed ECPA formal-real requires a host event directory"
+                )
+            validate_managed_plan_coverage(execution_plan_path, frozen_targets)
+            launch_id = "launch:" + secrets.token_hex(16)
+            controller_instance = "controller:" + secrets.token_hex(16)
+            verification = verified_ecpa_adapter_contract(
+                adapter_verification_id,
+                adapter,
+                manager_executable,
+                executable,
+                arguments,
+                observer_executable,
+                observer_arguments,
+            )
+            argv, env, binding = adapter.managed_launch(
+                manager_executable=manager_executable,
+                plan_path=execution_plan_path,
+                launch_id=launch_id,
+                controller_instance=controller_instance,
+                host_event_dir=host_event_dir,
+                target_argv=[
+                    verification["target_command"]["executable"],
+                    *verification["target_command"]["arguments"],
+                ],
+                env=dict(os.environ),
+            )
+            execution_identity = {
+                "plan_id": binding["plan_id"],
+                "launch_id": binding["launch_id"],
+                "controller_instance": binding["controller_instance"],
+            }
+        else:
+            verification = verified_adapter_contract(
+                adapter_verification_id,
+                adapter,
+                executable,
+                arguments,
+                observer_executable,
+                observer_arguments,
+            )
+            _, env = adapter.launch(executable, arguments, dict(os.environ))
+            argv = [
+                verification["sut_command"]["executable"],
+                *verification["sut_command"]["arguments"],
+            ]
+            plan_material = {
+                "protocol_digest": digest_bytes(canonical(protocol)),
+                "scenario_digest": digest_bytes(canonical(scenario)),
+                "arm": adapter.arm,
+                "activation_contract": adapter.activation_contract,
+                "declared_identity": identity | {"adapter_verification": verification},
+            }
+            execution_identity = {
+                "plan_id": digest_bytes(canonical(plan_material)),
+                "launch_id": "launch:" + secrets.token_hex(16),
+                "controller_instance": "controller:" + secrets.token_hex(16),
+            }
         evidence_class = "formal-real"
         measurement_source = "registry-pinned-host-evidence-observer"
+        observer_launch_argv = [
+            verification["observer_command"]["executable"],
+            *verification["observer_command"]["arguments"],
+        ]
     identity["adapter_verification"] = verification
-    argv, env = adapter.launch(executable, arguments, dict(os.environ))
-    plan_material = {
-        "protocol_digest": digest_bytes(canonical(protocol)),
-        "scenario_digest": digest_bytes(canonical(scenario)),
-        "arm": adapter.arm,
-        "activation_contract": adapter.activation_contract,
-        "declared_identity": identity,
-    }
-    execution_identity = {
-        "plan_id": digest_bytes(canonical(plan_material)),
-        "launch_id": "launch:" + secrets.token_hex(16),
-        "controller_instance": "controller:" + secrets.token_hex(16),
-    }
     return _run_start(
         root,
         scenario,
@@ -1164,10 +1590,24 @@ def run_formal_start(
         timeout_s=timeout_s,
         evidence_class=evidence_class,
         measurement_source=measurement_source,
-        identity=measured_identity(identity, adapter.arm, env),
+        identity=measured_identity(
+            identity, adapter.arm, env, adapter.activation_contract
+        ),
         observations_from_stdout=False,
-        observer_argv=[observer_executable, *observer_arguments],
+        observer_argv=observer_launch_argv,
         execution_identity=execution_identity,
+        activation_contract=adapter.activation_contract,
+        managed_binding=(
+            binding if not fixture_mode and isinstance(adapter, ECPAAdapter) else None
+        ),
+        sut_executable_fingerprint=(
+            verification.get("manager_command") or verification.get("sut_command")
+            if verification is not None
+            else None
+        ),
+        observer_executable_fingerprint=(
+            verification.get("observer_command") if verification is not None else None
+        ),
     )
 
 

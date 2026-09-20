@@ -19,7 +19,7 @@ from vllm_hust_ext.ecpa_model import (
     PluginIdentity,
     PredecessorSnapshot,
 )
-from vllm_hust_ext.plan_artifact import plan_artifact_bytes
+from vllm_hust_ext.plan_artifact import plan_artifact_bytes, read_plan_artifact
 
 ROOT = Path("experiments/false_effective").resolve()
 sys.path.insert(0, str(ROOT))
@@ -49,6 +49,7 @@ from runner import (  # noqa: E402
     planned_records,
     run_formal_start,
     run_reference_start,
+    wait_for_linux_process_identity,
     write_formal_manifest,
 )
 
@@ -468,6 +469,85 @@ def test_arm_launch_contracts_are_distinct_and_auditable():
     }
 
 
+def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
+    executable = tmp_path / "tool"
+    executable.symlink_to(Path(sys.executable).absolute())
+    fingerprint = command_fingerprint(str(executable), [])
+    executable.unlink()
+    executable.symlink_to("/bin/sleep")
+    with pytest.raises(ValueError, match="registered fingerprint"):
+        runner_module.popen_pinned([str(executable), "5"], fingerprint)
+    process = subprocess.Popen([str(executable), "5"])
+    try:
+        with pytest.raises(RuntimeError, match="executable differs"):
+            wait_for_linux_process_identity(
+                process,
+                [str(executable), "5"],
+                2,
+                fingerprint,
+            )
+    finally:
+        process.terminate()
+        process.wait(timeout=2)
+
+
+def test_post_identity_pipe_failure_reaps_both_processes_and_pipes(
+    tmp_path, monkeypatch
+):
+    original_wait = runner_module.wait_for_linux_process_identity
+    processes = []
+
+    def stop_observer(process, expected_argv, timeout_s, expected_executable=None):
+        processes.append(process)
+        identity = original_wait(process, expected_argv, timeout_s, expected_executable)
+        if len(processes) == 2:
+            process.terminate()
+            process.wait(timeout=2)
+        return identity
+
+    monkeypatch.setattr(runner_module, "wait_for_linux_process_identity", stop_observer)
+    sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
+    observer = str(Path("tests/fixtures/formal_observer_service.py").resolve())
+    env = dict(os.environ)
+    env["ECPA_EVALUATION_ARM"] = "ecpa"
+    env["ECPA_ACTIVATION_CONTRACT"] = "manager-controlled-activation"
+    before = len(list(Path("/proc/self/fd").iterdir()))
+    with pytest.raises(BrokenPipeError):
+        runner_module._run_start(
+            tmp_path,
+            scenarios()[0],
+            "ecpa",
+            1,
+            3,
+            argv=[sys.executable, sut],
+            env=env,
+            timeout_s=2,
+            evidence_class="interface-fixture",
+            measurement_source="cleanup-regression",
+            identity=runner_module.measured_identity(
+                _minimal_formal_identity(),
+                "ecpa",
+                env,
+                "manager-controlled-activation",
+            ),
+            observations_from_stdout=False,
+            observer_argv=[sys.executable, observer],
+            execution_identity={
+                "plan_id": "plan:cleanup",
+                "launch_id": "launch:cleanup",
+                "controller_instance": "controller:cleanup",
+            },
+            activation_contract="manager-controlled-activation",
+            sut_executable_fingerprint=command_fingerprint(sys.executable, [sut]),
+            observer_executable_fingerprint=command_fingerprint(
+                sys.executable, [observer]
+            ),
+        )
+    assert len(processes) == 2
+    assert all(process.poll() is not None for process in processes)
+    assert len(list(Path("/proc/self/fd").iterdir())) == before
+
+
 def _write_formal_execution_plan(tmp_path: Path) -> Path:
     plan = Plan(
         (PluginIdentity("org.vllm-hust", "formal", "0.1.0", "a" * 64),),
@@ -502,7 +582,11 @@ def test_ecpa_managed_launch_uses_real_formal_run_and_manager_owned_identity(tmp
 
     assert "--enable-ecpa-manager" not in argv
     assert "--disable-entrypoints" not in argv
-    assert argv[-3:] == [sys.executable, "-c", "raise SystemExit(99)"]
+    assert argv[-3:] == [
+        str(Path(sys.executable).absolute()),
+        "-c",
+        "raise SystemExit(99)",
+    ]
     assert not runner_module.CONTROLLED_ENVIRONMENT.intersection(env)
     completed = subprocess.run(argv, env=env, text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
@@ -548,7 +632,6 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
         target_argv=[sys.executable, "-c", target],
         env=dict(os.environ),
     )
-
     completed = subprocess.run(argv, env=env, text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
     received = json.loads(completed.stdout)
@@ -559,6 +642,71 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
         "VLLM_ECPA_LAUNCH_ID": "launch:real-path-test",
         "VLLM_ECPA_PLAN_ID": binding["plan_id"],
     }
+
+
+def test_ecpa_manager_rejects_target_symlink_retarget(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    target = tmp_path / "target"
+    target.symlink_to(Path(sys.executable).absolute())
+    argv, env, _ = ECPAAdapter().managed_launch(
+        manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+        plan_path=plan_path,
+        launch_id="launch:target-retarget",
+        controller_instance="controller:target-retarget",
+        host_event_dir=event_dir,
+        target_argv=[str(target), "-c", "print('GOOD')"],
+        env=dict(os.environ),
+    )
+    target.unlink()
+    target.symlink_to("/bin/echo")
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode != 0
+    assert "target executable differs from its fingerprint" in completed.stderr
+    assert "GOOD" not in completed.stdout
+
+
+def test_runner_allows_manager_to_reap_signal_ignoring_target(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    target_pid_path = tmp_path / "target.pid"
+    target = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(target_pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
+    argv, env, _ = ECPAAdapter().managed_launch(
+        manager_executable=manager,
+        plan_path=plan_path,
+        launch_id="launch:combined-cleanup",
+        controller_instance="controller:combined-cleanup",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", target],
+        env=dict(os.environ),
+    )
+    manager_prefix = runner_module.executable_launch_prefix(manager)
+    fingerprint = command_fingerprint(manager_prefix[0], manager_prefix[1:])
+    process = runner_module.popen_pinned(argv, fingerprint, env=env)
+    try:
+        for _ in range(200):
+            if target_pid_path.is_file():
+                break
+            if process.poll() is not None:
+                pytest.fail(f"manager exited early with {process.returncode}")
+            time.sleep(0.01)
+        else:
+            pytest.fail("target did not start")
+        target_pid = int(target_pid_path.read_text())
+        runner_module._terminate_process(process)
+        assert process.returncode == 128 + 15
+        with pytest.raises(ProcessLookupError):
+            os.kill(target_pid, 0)
+    finally:
+        runner_module._terminate_process(process)
 
 
 def test_ecpa_managed_launch_snapshots_plan_before_original_is_replaced(tmp_path):
@@ -828,7 +976,14 @@ def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
     adapter = ECPAAdapter()
     caller_identity = _minimal_formal_identity()
     declared_before_probe = copy.deepcopy(caller_identity)
-    verification = {"verification_id": "reviewed"}
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext").absolute())
+    manager_prefix = runner_module.executable_launch_prefix(manager)
+    verification = {
+        "verification_id": "reviewed",
+        "manager_command": command_fingerprint(manager_prefix[0], manager_prefix[1:]),
+        "target_command": command_fingerprint(sys.executable, ["unused"]),
+        "observer_command": command_fingerprint(sys.executable, ["unused-observer"]),
+    }
 
     def mutate_caller_during_probe(*args, **kwargs):
         caller_identity["required_processes"].append(
@@ -843,9 +998,12 @@ def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
         return verification
 
     monkeypatch.setattr(
-        runner_module, "verified_adapter_contract", mutate_caller_during_probe
+        runner_module, "verified_ecpa_adapter_contract", mutate_caller_during_probe
     )
     monkeypatch.setattr(runner_module, "_run_start", lambda *args, **kwargs: kwargs)
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
     captured = run_formal_start(
         tmp_path,
         scenario,
@@ -860,6 +1018,9 @@ def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
         identity=caller_identity,
         timeout_s=1,
         adapter_verification_id="reviewed",
+        manager_executable=manager,
+        execution_plan_path=plan_path,
+        host_event_dir=event_dir,
     )
 
     assert len(caller_identity["required_processes"]) == 2
@@ -868,20 +1029,19 @@ def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
         == declared_before_probe["required_processes"]
     )
     assert captured["identity"]["software"] == declared_before_probe["software"]
-    frozen_declared = declared_before_probe | {
-        "fixture_only": False,
-        "adapter_verification": verification,
-    }
-    expected_plan = {
-        "protocol_digest": harness_module.digest_bytes(canonical(protocol)),
-        "scenario_digest": harness_module.digest_bytes(canonical(scenario)),
-        "arm": adapter.arm,
-        "activation_contract": adapter.activation_contract,
-        "declared_identity": frozen_declared,
-    }
-    assert captured["execution_identity"]["plan_id"] == harness_module.digest_bytes(
-        canonical(expected_plan)
+    assert (
+        captured["execution_identity"]["plan_id"]
+        == read_plan_artifact(plan_path).plan_id
     )
+    assert (
+        captured["managed_binding"]["plan_id"]
+        == captured["execution_identity"]["plan_id"]
+    )
+    assert captured["argv"][:3] == [
+        str(Path(sys.executable).absolute()),
+        manager,
+        "formal-run",
+    ]
 
 
 def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
@@ -892,21 +1052,21 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
     sut_source = """import argparse
 import json
 parser = argparse.ArgumentParser()
-parser.add_argument('--enable-ecpa-manager', action='store_true')
-parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--disable-ecpa-manager', action='store_true')
+parser.add_argument('--manual-hooks', action='store_true')
 parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
 args = parser.parse_args()
 if args.ecpa_formal_activation_probe:
     receipt = {
         'schema': 'ecpa-activation-probe/v1',
-        'activation_contract': 'manager-controlled-activation',
-        'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+        'activation_contract': 'explicit-manual-hooks',
+        'accepted_options': ['--disable-ecpa-manager', '--manual-hooks'],
     }
     print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
 """
     sut.write_text(sut_source)
     observer.write_text("print('observer')\n")
-    adapter = ECPAAdapter()
+    adapter = ManualIntegrationAdapter()
     sut_fingerprint = command_fingerprint(
         sys.executable, [str(sut), *adapter.activation_arguments]
     )
@@ -941,31 +1101,31 @@ if args.ecpa_formal_activation_probe:
     )
     assert verified["sut_command"] == sut_fingerprint
     rejected_sources = [
-        "print('--enable-ecpa-manager --disable-entrypoints')\n",
+        "print('--disable-ecpa-manager --manual-hooks')\n",
         """import argparse
 import json
 parser = argparse.ArgumentParser()
-parser.add_argument('--enable-ecpa-manager', action='store_true')
-parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--disable-ecpa-manager', action='store_true')
+parser.add_argument('--manual-hooks', action='store_true')
 parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
 parser.parse_args()
 receipt = {
     'schema': 'ecpa-activation-probe/v1',
-    'activation_contract': 'manager-controlled-activation',
-    'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+    'activation_contract': 'explicit-manual-hooks',
+    'accepted_options': ['--disable-ecpa-manager', '--manual-hooks'],
 }
 print(json.dumps(receipt, indent=2))
 """,
         """import argparse
 parser = argparse.ArgumentParser()
-parser.add_argument('--enable-ecpa-manager-evil', action='store_true')
-parser.add_argument('--disable-entrypoints-other', action='store_true')
+parser.add_argument('--disable-ecpa-manager-evil', action='store_true')
+parser.add_argument('--manual-hooks-other', action='store_true')
 parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
 parser.parse_args()
 """,
         """import sys
-sys.stdout.write('{\"accepted_options\":[\"--disable-entry')
-sys.stderr.write('points\",\"--enable-ecpa-manager\"]}')
+sys.stdout.write('{\"accepted_options\":[\"--disable-ecpa')
+sys.stderr.write('-manager\",\"--manual-hooks\"]}')
 """,
         "import sys; sys.stdout.buffer.write(b'x' * (1024 * 1024 + 1))\n",
     ]
@@ -1074,20 +1234,20 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
     sut.write_text("""import argparse
 import json
 parser = argparse.ArgumentParser()
-parser.add_argument('--enable-ecpa-manager', action='store_true')
-parser.add_argument('--disable-entrypoints', action='store_true')
+parser.add_argument('--disable-ecpa-manager', action='store_true')
+parser.add_argument('--manual-hooks', action='store_true')
 parser.add_argument('--ecpa-formal-activation-probe', action='store_true')
 args = parser.parse_args()
 if args.ecpa_formal_activation_probe:
     receipt = {
         'schema': 'ecpa-activation-probe/v1',
-        'activation_contract': 'manager-controlled-activation',
-        'accepted_options': ['--disable-entrypoints', '--enable-ecpa-manager'],
+        'activation_contract': 'explicit-manual-hooks',
+        'accepted_options': ['--disable-ecpa-manager', '--manual-hooks'],
     }
     print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
 """)
     observer.write_text("print('observer')\n")
-    adapter = ECPAAdapter()
+    adapter = ManualIntegrationAdapter()
     sut_arguments = [str(sut), *adapter.activation_arguments]
     observer_arguments = [str(observer)]
     sut_fingerprint = command_fingerprint(sys.executable, sut_arguments)
@@ -1127,8 +1287,20 @@ if args.ecpa_formal_activation_probe:
     }
     command = {
         "argv": [sys.executable, *sut_arguments],
-        "sut_process": {"argv": [sys.executable, *sut_arguments]},
-        "observer_process": {"argv": [sys.executable, *observer_arguments]},
+        "sut_process": {
+            "argv": [sys.executable, *sut_arguments],
+            "executable_identity": {
+                "device": sut_fingerprint["executable_device"],
+                "inode": sut_fingerprint["executable_inode"],
+            },
+        },
+        "observer_process": {
+            "argv": [sys.executable, *observer_arguments],
+            "executable_identity": {
+                "device": observer_fingerprint["executable_device"],
+                "inode": observer_fingerprint["executable_inode"],
+            },
+        },
     }
     harness_module.validate_formal_adapter_verification(record, command)
 
@@ -1145,7 +1317,7 @@ if args.ecpa_formal_activation_probe:
     tampered = copy.deepcopy(record)
     tampered["identity"]["adapter_verification"]["activation_probe"][
         "stdout_base64"
-    ] = base64.b64encode(b"forged --enable-ecpa-manager").decode()
+    ] = base64.b64encode(b"forged --manual-hooks").decode()
     with pytest.raises(ValueError, match="metadata differs|does not satisfy"):
         harness_module.validate_formal_adapter_verification(tampered, command)
     changed_command = copy.deepcopy(command)
@@ -1187,8 +1359,204 @@ if args.ecpa_formal_activation_probe:
         )
 
 
-def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypatch):
+def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
+    tmp_path, monkeypatch
+):
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext").resolve())
+    target = tmp_path / "target.py"
+    observer = tmp_path / "observer.py"
+    target.write_text("print('target')\n")
+    observer.write_text("print('observer')\n")
+    monkeypatch.chdir(tmp_path)
     adapter = ECPAAdapter()
+    target_arguments = [target.name]
+    observer_arguments = [observer.name]
+    manager_prefix = runner_module.executable_launch_prefix(manager)
+    manager_fingerprint = command_fingerprint(manager_prefix[0], manager_prefix[1:])
+    target_fingerprint = command_fingerprint(sys.executable, target_arguments)
+    observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
+    probe_fingerprint = command_fingerprint(
+        manager_prefix[0],
+        [
+            *manager_prefix[1:],
+            "formal-run",
+            "--ecpa-formal-activation-probe",
+        ],
+    )
+    registry = {
+        "schema": "ecpa-formal-adapter-registry/v1",
+        "adapters": [
+            {
+                "id": "managed-test-host-v1",
+                "arm": adapter.arm,
+                "activation_contract": adapter.activation_contract,
+                "evidence_owner": "vllm-hust-host",
+                "evidence_channel": "host-owned-event-stream",
+                "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
+                "manager_command_digest": manager_fingerprint["digest"],
+                "target_command_digest": target_fingerprint["digest"],
+                "observer_command_digest": observer_fingerprint["digest"],
+                "activation_probe": {
+                    "required_options": sorted(
+                        runner_module.ECPA_FORMAL_ACTIVATION_OPTIONS
+                    ),
+                    "timeout_s": 2,
+                    "command_digest": probe_fingerprint["digest"],
+                },
+            }
+        ],
+    }
+    registry_path = tmp_path / "verified-adapters.json"
+    registry_path.write_bytes(canonical(registry) + b"\n")
+    monkeypatch.setattr(runner_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+    monkeypatch.setattr(harness_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+
+    verification = runner_module.verified_ecpa_adapter_contract(
+        "managed-test-host-v1",
+        adapter,
+        manager,
+        sys.executable,
+        target_arguments,
+        sys.executable,
+        observer_arguments,
+    )
+    assert verification["manager_command"] == manager_fingerprint
+    assert verification["target_command"] == target_fingerprint
+    assert verification["observer_command"] == observer_fingerprint
+    assert verification["target_command"]["arguments"] == [str(target)]
+    assert verification["observer_command"]["arguments"] == [str(observer)]
+
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    launch_id = "launch:offline-test"
+    controller = "controller:offline-test"
+    argv, _, binding = adapter.managed_launch(
+        manager_executable=manager,
+        plan_path=plan_path,
+        launch_id=launch_id,
+        controller_instance=controller,
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, *target_arguments],
+        env={},
+    )
+    record = {
+        "arm": adapter.arm,
+        "identity": {"adapter_verification": verification},
+    }
+    command = {
+        "argv": argv,
+        "sut_process": {"argv": argv},
+        "observer_process": {
+            "argv": [
+                verification["observer_command"]["executable"],
+                *verification["observer_command"]["arguments"],
+            ],
+            "executable_identity": {
+                "device": observer_fingerprint["executable_device"],
+                "inode": observer_fingerprint["executable_inode"],
+            },
+        },
+        "execution_identity": {
+            "plan_id": binding["plan_id"],
+            "launch_id": launch_id,
+            "controller_instance": controller,
+        },
+        "managed_binding": binding,
+    }
+    command["sut_process"]["executable_identity"] = {
+        "device": manager_fingerprint["executable_device"],
+        "inode": manager_fingerprint["executable_inode"],
+    }
+    harness_module.validate_formal_adapter_verification(record, command)
+
+    changed_target = copy.deepcopy(command)
+    changed_target["sut_process"]["argv"][-1] = "different-target.py"
+    with pytest.raises(ValueError, match="managed ECPA argv"):
+        harness_module.validate_formal_adapter_verification(record, changed_target)
+    changed_plan = copy.deepcopy(command)
+    changed_plan["managed_binding"]["plan_sha256"] = "sha256:forged"
+    with pytest.raises(ValueError, match="Plan binding"):
+        harness_module.validate_formal_adapter_verification(record, changed_plan)
+
+
+def test_managed_ecpa_record_validates_without_spoofing_target_contract(
+    tmp_path,
+):
+    adapter = ECPAAdapter()
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext").resolve())
+    sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
+    observer_fixture = Path("tests/fixtures/formal_observer_service.py").resolve()
+    observer = tmp_path / "managed-observer.py"
+    observer.write_text(
+        observer_fixture.read_text().replace(
+            'assert "--enable-ecpa-manager" in target_argv',
+            'assert "formal-run" in target_argv',
+        )
+    )
+    launch_id = "launch:complete-record"
+    controller = "controller:complete-record"
+    argv, env, binding = adapter.managed_launch(
+        manager_executable=manager,
+        plan_path=plan_path,
+        launch_id=launch_id,
+        controller_instance=controller,
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, sut],
+        env=dict(os.environ),
+    )
+    manager_prefix = runner_module.executable_launch_prefix(manager)
+    assert "ECPA_ACTIVATION_CONTRACT" not in env
+    identity = runner_module.measured_identity(
+        _minimal_formal_identity(),
+        adapter.arm,
+        env,
+        adapter.activation_contract,
+    )
+    record = runner_module._run_start(
+        tmp_path / "run",
+        scenarios()[0],
+        adapter.arm,
+        1,
+        3,
+        argv=argv,
+        env=env,
+        timeout_s=5,
+        evidence_class="interface-fixture",
+        measurement_source="managed-interface-regression",
+        identity=identity,
+        observations_from_stdout=False,
+        observer_argv=[sys.executable, str(observer)],
+        execution_identity={
+            "plan_id": binding["plan_id"],
+            "launch_id": launch_id,
+            "controller_instance": controller,
+        },
+        activation_contract=adapter.activation_contract,
+        managed_binding=binding,
+        sut_executable_fingerprint=command_fingerprint(
+            manager_prefix[0], manager_prefix[1:]
+        ),
+        observer_executable_fingerprint=command_fingerprint(
+            sys.executable, [str(observer)]
+        ),
+    )
+    assert record["status"] == "complete"
+    validate_record(
+        record,
+        tmp_path / "run",
+        scenario=scenarios()[0],
+        protocol=json.loads((ROOT / "protocol.json").read_text()),
+        schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+    )
+
+
+def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypatch):
+    adapter = ManualIntegrationAdapter()
     sut_fixture = Path("tests/fixtures/formal_sut_service.py").resolve()
     observer_fixture = Path("tests/fixtures/formal_observer_service.py").resolve()
     sut_source = (
