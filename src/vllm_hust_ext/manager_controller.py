@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -40,6 +41,9 @@ def activation_probe_receipt() -> bytes:
                     "--host-event-dir",
                     "--launch-id",
                     "--plan",
+                    "--target-executable-device",
+                    "--target-executable-inode",
+                    "--target-executable-sha256",
                     "formal-run",
                 ],
             }
@@ -113,12 +117,27 @@ def launch_managed(
     controller_instance: str,
     host_event_dir: str | Path,
     command: list[str],
+    target_executable_device: int,
+    target_executable_inode: int,
+    target_executable_sha256: str,
     base_environment: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> int:
     """Validate every manager input before starting the target process."""
     if not command or any(not isinstance(item, str) or not item for item in command):
         raise ValueError("formal-run requires a non-empty target after --")
+    if (
+        not isinstance(target_executable_device, int)
+        or isinstance(target_executable_device, bool)
+        or target_executable_device < 0
+        or not isinstance(target_executable_inode, int)
+        or isinstance(target_executable_inode, bool)
+        or target_executable_inode <= 0
+        or not isinstance(target_executable_sha256, str)
+        or not target_executable_sha256.startswith("sha256:")
+        or len(target_executable_sha256) != 71
+    ):
+        raise ValueError("formal-run target executable fingerprint is invalid")
     artifact = read_plan_artifact(plan_path)
     if (
         artifact.plan.host.runtime != "vllm-hust"
@@ -132,22 +151,51 @@ def launch_managed(
         controller_instance,
         host_event_dir,
     )
-    if dry_run:
-        print(
-            json.dumps(
-                {
-                    "activation_contract": ACTIVATION_CONTRACT,
-                    "command": command,
-                    "controlled_environment": {
-                        key: environment[key] for key in sorted(CONTROLLED_ENVIRONMENT)
-                    },
-                    "controller_instance": environment["ECPA_CONTROLLER_INSTANCE"],
-                    "plan_id": artifact.plan_id,
-                    "schema": "ecpa-managed-launch/v1",
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+    executable_fd = os.open(command[0], os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(executable_fd)
+        digest = hashlib.sha256()
+        while chunk := os.read(executable_fd, 1024 * 1024):
+            digest.update(chunk)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or not stat.S_IMODE(metadata.st_mode) & 0o111
+            or metadata.st_dev != target_executable_device
+            or metadata.st_ino != target_executable_inode
+            or "sha256:" + digest.hexdigest() != target_executable_sha256
+        ):
+            raise ValueError(
+                "formal-run target executable differs from its fingerprint"
             )
+        if dry_run:
+            print(
+                json.dumps(
+                    {
+                        "activation_contract": ACTIVATION_CONTRACT,
+                        "command": command,
+                        "controlled_environment": {
+                            key: environment[key]
+                            for key in sorted(CONTROLLED_ENVIRONMENT)
+                        },
+                        "controller_instance": environment["ECPA_CONTROLLER_INSTANCE"],
+                        "plan_id": artifact.plan_id,
+                        "schema": "ecpa-managed-launch/v1",
+                        "target_executable": {
+                            "device": metadata.st_dev,
+                            "inode": metadata.st_ino,
+                            "sha256": target_executable_sha256,
+                        },
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
+        return subprocess.call(
+            command,
+            executable=f"/proc/self/fd/{executable_fd}",
+            pass_fds=(executable_fd,),
+            env=environment,
         )
-        return 0
-    return subprocess.call(command, env=environment)
+    finally:
+        os.close(executable_fd)

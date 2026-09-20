@@ -51,6 +51,9 @@ ECPA_FORMAL_ACTIVATION_OPTIONS = (
     "--host-event-dir",
     "--launch-id",
     "--plan",
+    "--target-executable-device",
+    "--target-executable-inode",
+    "--target-executable-sha256",
     "formal-run",
 )
 FORMAL_HOST_OBSERVABLES = {
@@ -214,11 +217,15 @@ def executable_launch_prefix(executable: str) -> list[str]:
 
 
 def run_bounded_command(
-    argv: list[str], timeout_s: int, output_limit: int
+    argv: list[str],
+    timeout_s: int,
+    output_limit: int,
+    executable_fingerprint: dict[str, Any] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Capture a child incrementally and terminate before output exceeds the limit."""
-    process = subprocess.Popen(
+    process = popen_pinned(
         argv,
+        executable_fingerprint,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -268,6 +275,35 @@ def run_bounded_command(
             process.wait()
         process.stdout.close()
         process.stderr.close()
+
+
+def popen_pinned(
+    argv: list[str],
+    executable_fingerprint: dict[str, Any] | None,
+    **kwargs: Any,
+) -> subprocess.Popen[Any]:
+    """Open, verify, and exec the exact executable inode behind argv[0]."""
+    if executable_fingerprint is None:
+        return subprocess.Popen(argv, **kwargs)
+    executable_fd = os.open(argv[0], os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(executable_fd)
+        if (
+            metadata.st_dev != executable_fingerprint.get("executable_device")
+            or metadata.st_ino != executable_fingerprint.get("executable_inode")
+            or digest_file(Path(f"/proc/self/fd/{executable_fd}"))
+            != executable_fingerprint.get("executable_sha256")
+        ):
+            raise ValueError("executable differs from its registered fingerprint")
+        inherited = tuple(kwargs.pop("pass_fds", ()))
+        return subprocess.Popen(
+            argv,
+            executable=f"/proc/self/fd/{executable_fd}",
+            pass_fds=(*inherited, executable_fd),
+            **kwargs,
+        )
+    finally:
+        os.close(executable_fd)
 
 
 def run_activation_probe(
@@ -366,6 +402,7 @@ def run_ecpa_activation_probe(
             [fingerprint["executable"], *fingerprint["arguments"]],
             timeout_s,
             1024 * 1024,
+            fingerprint,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError("manager activation probe did not complete") from exc
@@ -744,6 +781,12 @@ class ECPAAdapter(FormalArmAdapter):
             controller_instance,
             "--host-event-dir",
             str(event_root),
+            "--target-executable-device",
+            str(target_command["executable_device"]),
+            "--target-executable-inode",
+            str(target_command["executable_inode"]),
+            "--target-executable-sha256",
+            target_command["executable_sha256"],
         ]
         if dry_run:
             argv.append("--dry-run")
@@ -759,6 +802,11 @@ class ECPAAdapter(FormalArmAdapter):
             "plan_path": plan,
             "plan_sha256": digest_bytes(frozen_artifact.raw),
             "target_argv": list(target_argv),
+            "target_executable": {
+                "device": target_command["executable_device"],
+                "inode": target_command["executable_inode"],
+                "sha256": target_command["executable_sha256"],
+            },
         }
         return argv, launched, binding
 
@@ -850,6 +898,21 @@ def _run_start(
     else:
         if execution_identity is None:
             raise ValueError("observed execution requires plan and launch identity")
+
+        def terminate_child(child: subprocess.Popen[Any] | None) -> None:
+            if child is None:
+                return
+            with contextlib.suppress(ProcessLookupError):
+                child.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                child.wait(timeout=1)
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream is not None:
+                    stream.close()
+
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = __import__("harness").sanitized_env(env)
         (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
@@ -861,8 +924,9 @@ def _run_start(
             and key != "ECPA_FROZEN_SCENARIO"
         }
         sut_start = time.monotonic_ns()
-        sut = subprocess.Popen(
+        sut = popen_pinned(
             argv,
+            sut_executable_fingerprint,
             cwd=run_dir,
             env=sut_env,
             stdin=subprocess.PIPE,
@@ -871,9 +935,13 @@ def _run_start(
             text=True,
             close_fds=True,
         )
-        sut_identity = wait_for_linux_process_identity(
-            sut, argv, timeout_s, sut_executable_fingerprint
-        )
+        try:
+            sut_identity = wait_for_linux_process_identity(
+                sut, argv, timeout_s, sut_executable_fingerprint
+            )
+        except BaseException:
+            terminate_child(sut)
+            raise
         sut_executable_identity = {
             "device": sut_identity.pop("executable_device"),
             "inode": sut_identity.pop("executable_inode"),
@@ -895,23 +963,33 @@ def _run_start(
             "host-observer" if evidence_class == "formal-real" else "interface-observer"
         )
         observer_start = time.monotonic_ns()
-        observer = subprocess.Popen(
-            observer_argv,
-            cwd=run_dir,
-            env=observer_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            close_fds=True,
-            pass_fds=(write_fd,),
-        )
-        observer_identity = wait_for_linux_process_identity(
-            observer,
-            observer_argv,
-            timeout_s,
-            observer_executable_fingerprint,
-        )
+        observer = None
+        try:
+            observer = popen_pinned(
+                observer_argv,
+                observer_executable_fingerprint,
+                cwd=run_dir,
+                env=observer_env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                close_fds=True,
+                pass_fds=(write_fd,),
+            )
+            observer_identity = wait_for_linux_process_identity(
+                observer,
+                observer_argv,
+                timeout_s,
+                observer_executable_fingerprint,
+            )
+        except BaseException:
+            for descriptor in (read_fd, write_fd):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            for child in (observer, sut):
+                terminate_child(child)
+            raise
         observer_executable_identity = {
             "device": observer_identity.pop("executable_device"),
             "inode": observer_identity.pop("executable_inode"),

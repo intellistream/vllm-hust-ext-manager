@@ -75,14 +75,18 @@ the target-only activation contract by design; offline validation instead binds
 that contract through the manager-owned launch record and rejects a caller that
 tries to preseed it.
 
-Executable fingerprints also seal the resolved device and inode. Before the
-phase protocol starts, the runner reads the actual image through
-`/proc/<pid>/exe` and rejects a process whose device/inode differs; that identity
-is stored separately from the PID/start-ticks/argv identity and rechecked
-offline. Retargeting an executable symlink after registry verification therefore
-cannot yield an accepted record, even if the link is restored before offline
-validation. This is a provenance fail-closed check, not a sandbox against code
-that already runs with the experiment user's privileges.
+Executable fingerprints seal the resolved device, inode, and digest. The runner
+opens and verifies the manager and observer images before `exec`, then executes
+the inherited descriptor through `/proc/self/fd` while retaining the reviewed
+`argv[0]`. It also passes the target fingerprint to the manager; the manager
+opens and verifies the target itself and uses the same descriptor-exec pattern.
+The runner additionally reads the actual manager/observer image through
+`/proc/<pid>/exe`, stores that identity separately from PID/start-ticks/argv,
+and rechecks it offline. Retargeting an executable symlink after registry
+verification therefore cannot substitute the manager, target, observer, or
+activation probe, even if the link is later restored. This is a provenance
+fail-closed check, not a sandbox against code that already runs with the
+experiment user's privileges.
 
 ## Remaining gate
 

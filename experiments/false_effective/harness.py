@@ -148,6 +148,9 @@ def validate_formal_adapter_verification(
             "--host-event-dir",
             "--launch-id",
             "--plan",
+            "--target-executable-device",
+            "--target-executable-inode",
+            "--target-executable-sha256",
             "formal-run",
         ],
     }[record["arm"]]
@@ -287,6 +290,7 @@ def validate_formal_adapter_verification(
             "plan_path",
             "plan_sha256",
             "target_argv",
+            "target_executable",
         }
         if not isinstance(binding, dict) or not isinstance(
             binding.get("plan_path"), str
@@ -324,8 +328,9 @@ def validate_formal_adapter_verification(
             "--plan",
         ]
         option_start = len(manager_prefix) + 2
+        target_executable = binding.get("target_executable", {})
         if (
-            len(sut_argv) < len(expected_prefix) + 9
+            len(sut_argv) < len(expected_prefix) + 15
             or sut_argv[0] != manager_fingerprint["executable"]
             or sut_argv[: len(expected_prefix)] != expected_prefix
             or sut_argv[option_start] != binding.get("plan_path")
@@ -339,10 +344,25 @@ def validate_formal_adapter_verification(
                 "--host-event-dir",
                 binding.get("host_event_dir"),
             ]
-            or sut_argv[option_start + 7] != "--"
-            or sut_argv[option_start + 8 :]
+            or sut_argv[option_start + 7 : option_start + 13]
+            != [
+                "--target-executable-device",
+                str(target_executable.get("device")),
+                "--target-executable-inode",
+                str(target_executable.get("inode")),
+                "--target-executable-sha256",
+                target_executable.get("sha256"),
+            ]
+            or target_executable
+            != {
+                "device": target_fingerprint.get("executable_device"),
+                "inode": target_fingerprint.get("executable_inode"),
+                "sha256": target_fingerprint.get("executable_sha256"),
+            }
+            or sut_argv[option_start + 13] != "--"
+            or sut_argv[option_start + 14 :]
             != [target_fingerprint["executable"], *target_fingerprint["arguments"]]
-            or binding.get("target_argv") != sut_argv[option_start + 8 :]
+            or binding.get("target_argv") != sut_argv[option_start + 14 :]
             or command.get("argv") != sut_argv
         ):
             raise ValueError("executed managed ECPA argv differs from the registry")

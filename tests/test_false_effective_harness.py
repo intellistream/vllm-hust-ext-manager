@@ -475,6 +475,8 @@ def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
     fingerprint = command_fingerprint(str(executable), [])
     executable.unlink()
     executable.symlink_to("/bin/sleep")
+    with pytest.raises(ValueError, match="registered fingerprint"):
+        runner_module.popen_pinned([str(executable), "5"], fingerprint)
     process = subprocess.Popen([str(executable), "5"])
     try:
         with pytest.raises(RuntimeError, match="executable differs"):
@@ -487,6 +489,63 @@ def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
     finally:
         process.terminate()
         process.wait(timeout=2)
+
+
+def test_observer_identity_failure_reaps_both_processes_and_pipes(
+    tmp_path, monkeypatch
+):
+    original_wait = runner_module.wait_for_linux_process_identity
+    processes = []
+
+    def reject_observer(process, expected_argv, timeout_s, expected_executable=None):
+        processes.append(process)
+        if len(processes) == 2:
+            raise RuntimeError("injected observer identity failure")
+        return original_wait(process, expected_argv, timeout_s, expected_executable)
+
+    monkeypatch.setattr(
+        runner_module, "wait_for_linux_process_identity", reject_observer
+    )
+    sut = str(Path("tests/fixtures/formal_sut_service.py").resolve())
+    observer = str(Path("tests/fixtures/formal_observer_service.py").resolve())
+    env = dict(os.environ)
+    env["ECPA_EVALUATION_ARM"] = "ecpa"
+    env["ECPA_ACTIVATION_CONTRACT"] = "manager-controlled-activation"
+    before = len(list(Path("/proc/self/fd").iterdir()))
+    with pytest.raises(RuntimeError, match="observer identity failure"):
+        runner_module._run_start(
+            tmp_path,
+            scenarios()[0],
+            "ecpa",
+            1,
+            3,
+            argv=[sys.executable, sut],
+            env=env,
+            timeout_s=2,
+            evidence_class="interface-fixture",
+            measurement_source="cleanup-regression",
+            identity=runner_module.measured_identity(
+                _minimal_formal_identity(),
+                "ecpa",
+                env,
+                "manager-controlled-activation",
+            ),
+            observations_from_stdout=False,
+            observer_argv=[sys.executable, observer],
+            execution_identity={
+                "plan_id": "plan:cleanup",
+                "launch_id": "launch:cleanup",
+                "controller_instance": "controller:cleanup",
+            },
+            activation_contract="manager-controlled-activation",
+            sut_executable_fingerprint=command_fingerprint(sys.executable, [sut]),
+            observer_executable_fingerprint=command_fingerprint(
+                sys.executable, [observer]
+            ),
+        )
+    assert len(processes) == 2
+    assert all(process.poll() is not None for process in processes)
+    assert len(list(Path("/proc/self/fd").iterdir())) == before
 
 
 def _write_formal_execution_plan(tmp_path: Path) -> Path:
@@ -583,6 +642,29 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
         "VLLM_ECPA_LAUNCH_ID": "launch:real-path-test",
         "VLLM_ECPA_PLAN_ID": binding["plan_id"],
     }
+
+
+def test_ecpa_manager_rejects_target_symlink_retarget(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    target = tmp_path / "target"
+    target.symlink_to(Path(sys.executable).absolute())
+    argv, env, _ = ECPAAdapter().managed_launch(
+        manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+        plan_path=plan_path,
+        launch_id="launch:target-retarget",
+        controller_instance="controller:target-retarget",
+        host_event_dir=event_dir,
+        target_argv=[str(target), "-c", "print('GOOD')"],
+        env=dict(os.environ),
+    )
+    target.unlink()
+    target.symlink_to("/bin/echo")
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode != 0
+    assert "target executable differs from its fingerprint" in completed.stderr
+    assert "GOOD" not in completed.stdout
 
 
 def test_ecpa_managed_launch_snapshots_plan_before_original_is_replaced(tmp_path):
