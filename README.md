@@ -26,6 +26,7 @@ drift, and runtime effects that cannot be proved statically.
 - [ECPA 0.1 candidate specification](spec/0.1/README.md)
 - [ECPA Attestation Profile 0.1 candidate](docs/design/attestation-profile-0.1.md)
 - [Host plugin lifecycle evidence 0.1](docs/design/host-plugin-evidence-0.1.md)
+- [Formal-real lifecycle source profile](docs/design/formal-real-lifecycle-sources.md)
 - [Reference ExposureGate M1](docs/design/reference-exposure-gate.md)
 - [Existing plugin-path inventory and next experiments](docs/research/ecpa-existing-path-inventory.md)
 
