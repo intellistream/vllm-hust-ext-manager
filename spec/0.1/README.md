@@ -20,7 +20,9 @@ The Phase A host event input is defined by
 [`host-plugin-evidence.schema.json`](host-plugin-evidence.schema.json) and the
 [host evidence trust-boundary contract](../../docs/design/host-plugin-evidence-0.1.md).
 It is unsigned audit input, not an attestation and never direct proof of
-effectiveness.
+effectiveness. Legacy input without `process.assignment_source` and
+`assignment_source=environment` remain auditable, but formal translation
+requires `assignment_source=host` and binds it into the event identifier.
 
 An ECPA manifest describes identity, semantic capabilities, exclusive/shared
 resources, host/provider compatibility, process evidence obligations, and a

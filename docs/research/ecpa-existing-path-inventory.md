@@ -35,7 +35,9 @@ effect boundary is separately instrumented.
 |---|---|
 | event and entry-point tuple | host loader around `importlib.metadata.EntryPoint` |
 | hostname/PID/start identity | running host process and `/proc/self/stat` |
-| role/ordinal/epoch | trusted launch environment |
+| role/ordinal | native vLLM-HUST EngineCore/worker entry path for formal evidence; launch environment only for compatibility audit events |
+| process epoch | derived from PID/start ticks after host binding for formal evidence; launch environment only for compatibility audit events |
+| assignment source | host code labels native binding versus compatibility environment identity; included in event ID and checked fail-closed at formal translation |
 | observation time | host wall clock (`time.time_ns`), not a monotonic clock |
 | Plan/launch ID | trusted launch environment; checked at ingestion |
 | observation kind and scheduler dispatch identity | native vLLM-HUST policy controller and host-side recomputation |

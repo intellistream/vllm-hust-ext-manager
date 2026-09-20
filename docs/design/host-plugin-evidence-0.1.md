@@ -29,19 +29,26 @@ Fork detection clears inherited delivery and sink state.
 Receivers also recompute `event_id` from the exact host field ordering used by
 vLLM-HUST, rather than treating an arbitrary identifier as causal provenance.
 
-The host supplies hostname, role, ordinal, PID, Linux process start identity,
-integer process epoch, and wall-clock observation time from `time.time_ns()`.
-It is not a monotonic timestamp. Plan and launch IDs are injected
-launch context. Entry-point group/name/value come from import metadata. Phase A
-deliberately emits `plugin_id=null` and `artifact_digest=null`: the loader
-cannot establish either value and must not fabricate them.
+The host supplies hostname, PID, Linux process start identity, integer process
+epoch, and wall-clock observation time from `time.time_ns()`. It is not a
+monotonic timestamp. Current vLLM-HUST processes also label role/ordinal
+provenance as `assignment_source=host` after their native entry path freezes
+that identity, or `assignment_source=environment` on the compatibility path.
+Legacy events without this field and compatibility events remain parseable
+audit inputs, but neither can satisfy formal invocation evidence. The
+`assignment_source` value is included in `event_id`; it is consistency
+metadata from trusted in-process host code, not a cryptographic claim against a
+malicious same-process plugin. Plan and launch IDs are injected launch context.
+Entry-point group/name/value come from import metadata. Phase A deliberately
+emits `plugin_id=null` and `artifact_digest=null`: the loader cannot establish
+either value and must not fabricate them.
 
 The wire schema is
 [`spec/0.1/host-plugin-evidence.schema.json`](../../spec/0.1/host-plugin-evidence.schema.json).
 Receivers reject unknown or missing fields, duplicate JSON keys, non-integer
 epochs, invented plugin identity/digests, inconsistent bound/unbound state,
-malformed scheduler causality, non-`invoked` evidence, and any Plan, launch,
-epoch, or entry-point mismatch.
+malformed scheduler causality, non-`invoked` evidence, non-host-assigned formal
+identity, and any Plan, launch, epoch, or entry-point mismatch.
 
 ## Deployment-owned journal adapter
 
