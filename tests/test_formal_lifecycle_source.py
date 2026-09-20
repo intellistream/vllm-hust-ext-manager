@@ -1,9 +1,12 @@
+import base64
+import hashlib
 import json
 import os
 import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -92,6 +95,23 @@ class _HTTPHandler(BaseHTTPRequestHandler):
         return
 
 
+class _SlowHTTPHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        self.send_response(200)
+        self.send_header("Content-Length", "8")
+        self.end_headers()
+        try:
+            for _ in range(8):
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(0.04)
+        except BrokenPipeError:
+            pass
+
+    def log_message(self, format, *args):  # noqa: A002
+        return
+
+
 @pytest.fixture
 def http_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _HTTPHandler)
@@ -105,7 +125,7 @@ def http_server():
         server.server_close()
 
 
-def test_http_readiness_and_openai_workload_sources(tmp_path, http_server):
+def test_http_readiness_and_openai_workload_sources(tmp_path, http_server, monkeypatch):
     base = f"http://127.0.0.1:{http_server.server_port}"
     payload, returncode, stdout, readiness_audit = run_source(
         ["readiness-http", "--url", f"{base}/health", "--timeout", "1"],
@@ -114,11 +134,16 @@ def test_http_readiness_and_openai_workload_sources(tmp_path, http_server):
     request_path = tmp_path / "request.json"
     request_body = canonical_bytes({"model": "test", "prompt": "hello"}) + b"\n"
     request_path.write_bytes(request_body)
+    workload_audit = {}
+    monkeypatch.setattr(
+        source, "_audit", lambda kind, **values: workload_audit.update(values)
+    )
     workload = source._workload(
         SimpleNamespace(
             url=f"{base}/v1/completions",
             timeout=1.0,
             request=str(request_path),
+            request_sha256="sha256:" + hashlib.sha256(request_body).hexdigest(),
         ),
         request_for("workload-complete"),
     )
@@ -126,9 +151,47 @@ def test_http_readiness_and_openai_workload_sources(tmp_path, http_server):
     assert returncode == 0
     assert stdout == b""
     assert payload["value"] is True
-    assert json.loads(readiness_audit)["kind"] == "http-readiness"
+    readiness_record = json.loads(readiness_audit)
+    assert readiness_record["kind"] == "http-readiness"
+    assert base64.b64decode(readiness_record["response_base64"]) == b"ready"
     assert workload is True
     assert http_server.request_body == request_body
+    assert base64.b64decode(workload_audit["request_base64"]) == request_body
+    assert json.loads(base64.b64decode(workload_audit["response_base64"]))["choices"]
+
+
+def test_http_source_ignores_proxy_environment(monkeypatch, http_server):
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{http_server.server_port}")
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{http_server.server_port}")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+
+    with pytest.raises(source.LifecycleSourceError, match="request failed"):
+        source._http(
+            "http://127.0.0.1:9/health",
+            timeout=0.2,
+            method="GET",
+        )
+
+
+def test_http_source_enforces_total_wall_clock_deadline():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowHTTPHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(source.LifecycleSourceError, match="wall-clock deadline"):
+            source._http(
+                f"http://127.0.0.1:{server.server_port}/slow",
+                timeout=0.05,
+                method="GET",
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert elapsed < 0.2
 
 
 def test_http_source_rejects_nonlocal_and_redirect_urls():
@@ -136,18 +199,37 @@ def test_http_source_rejects_nonlocal_and_redirect_urls():
         source._local_http_url("https://example.com/health")
     with pytest.raises(source.LifecycleSourceError, match="local plain-HTTP"):
         source._local_http_url("http://user@127.0.0.1/health")
+    with pytest.raises(source.LifecycleSourceError, match="local plain-HTTP"):
+        source._local_http_url("http://localhost/health")
 
 
-def test_journal_capture_requires_matching_plan_and_launch(monkeypatch, tmp_path):
+def test_journal_capture_requires_bound_dispatch_for_controller(monkeypatch, tmp_path):
     event = {
+        "event_id": "event-one",
+        "event": "invoked",
+        "observation_kind": "scheduler_dispatch",
+        "binding_status": "bound",
+        "controller_instance_id": "controller:test",
+        "invocation_seq": 1,
+        "dispatch_id": "a" * 64,
         "plan_id": "sha256:" + "1" * 64,
         "launch_id": "launch:test",
+        "process": {"assignment_source": "host"},
     }
+    audit = {}
     monkeypatch.setattr(
         source,
         "read_events",
-        lambda root, identity: [SimpleNamespace(event=event, raw=b"event")],
+        lambda root, identity: [
+            SimpleNamespace(
+                event=event,
+                raw=b"event",
+                journal="one.jsonl",
+                line_number=1,
+            )
+        ],
     )
+    monkeypatch.setattr(source, "_audit", lambda kind, **values: audit.update(values))
 
     assert (
         source._journal(
@@ -156,9 +238,31 @@ def test_journal_capture_requires_matching_plan_and_launch(monkeypatch, tmp_path
         )
         is True
     )
+    assert audit["selected_event_ids"] == ["event-one"]
+    assert base64.b64decode(audit["journal_records"][0]["raw_base64"]) == b"event"
 
-    event["launch_id"] = "launch:other"
-    with pytest.raises(source.LifecycleSourceError, match="no event"):
+    event["event"] = "failed"
+    with pytest.raises(
+        source.LifecycleSourceError, match="no bound scheduler dispatch"
+    ):
+        source._journal(
+            SimpleNamespace(event_dir=str(tmp_path), device=1, inode=2),
+            request_for("observer-captured"),
+        )
+    event["event"] = "invoked"
+    event["observation_kind"] = "loader_lifecycle"
+    with pytest.raises(
+        source.LifecycleSourceError, match="no bound scheduler dispatch"
+    ):
+        source._journal(
+            SimpleNamespace(event_dir=str(tmp_path), device=1, inode=2),
+            request_for("observer-captured"),
+        )
+    event["observation_kind"] = "scheduler_dispatch"
+    event["controller_instance_id"] = "controller:other"
+    with pytest.raises(
+        source.LifecycleSourceError, match="no bound scheduler dispatch"
+    ):
         source._journal(
             SimpleNamespace(event_dir=str(tmp_path), device=1, inode=2),
             request_for("observer-captured"),
@@ -182,6 +286,31 @@ def test_shutdown_source_observes_real_process_exit():
     finally:
         timer.cancel()
         process.wait(timeout=2)
+
+
+def test_shutdown_source_rejects_target_gone_before_identity_binding():
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    identity = source._linux_process_identity(process.pid)
+    process.terminate()
+    process.wait(timeout=2)
+    request = request_for("service-shutdown", pid=process.pid)
+    request["sut_process_identity"] = identity
+
+    with pytest.raises(
+        source.LifecycleSourceError, match="before independent identity"
+    ):
+        source._shutdown(SimpleNamespace(timeout=0.1), request)
+
+
+def test_workload_request_must_match_registered_digest(tmp_path):
+    request_path = tmp_path / "request.json"
+    request_path.write_bytes(canonical_bytes({"model": "changed"}) + b"\n")
+
+    with pytest.raises(source.LifecycleSourceError, match="registered digest"):
+        source._canonical_request_file(
+            str(request_path),
+            "sha256:" + "0" * 64,
+        )
 
 
 def test_request_rejects_noncanonical_bytes(tmp_path):

@@ -321,6 +321,53 @@ def run_bounded_command(
         process.stderr.close()
 
 
+def validate_fingerprint_argument_files(
+    argv: list[str], executable_fingerprint: dict[str, Any]
+) -> None:
+    """Recheck every registry-fingerprinted file immediately before launch."""
+    registered_arguments = executable_fingerprint.get("arguments")
+    if (
+        not isinstance(registered_arguments, list)
+        or argv[1 : 1 + len(registered_arguments)] != registered_arguments
+    ):
+        raise ValueError("launch arguments differ from the registered fingerprint")
+    artifacts = executable_fingerprint.get("argument_files")
+    if not isinstance(artifacts, list):
+        raise ValueError("registered argument-file fingerprints are invalid")
+    seen: set[int] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {
+            "index",
+            "path",
+            "sha256",
+        }:
+            raise ValueError("registered argument-file fingerprint is invalid")
+        index = artifact["index"]
+        path = artifact["path"]
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index >= len(registered_arguments)
+            or index in seen
+            or not isinstance(path, str)
+            or argv[index + 1] != path
+        ):
+            raise ValueError("registered argument-file binding is invalid")
+        seen.add(index)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("registered argument file is not regular")
+            if digest_file(Path(f"/proc/self/fd/{descriptor}")) != artifact["sha256"]:
+                raise ValueError(
+                    "argument file differs from its registered fingerprint"
+                )
+        finally:
+            os.close(descriptor)
+
+
 def popen_pinned(
     argv: list[str],
     executable_fingerprint: dict[str, Any] | None,
@@ -329,6 +376,7 @@ def popen_pinned(
     """Open, verify, and exec the exact executable inode behind argv[0]."""
     if executable_fingerprint is None:
         return subprocess.Popen(argv, **kwargs)
+    validate_fingerprint_argument_files(argv, executable_fingerprint)
     executable_fd = os.open(argv[0], os.O_RDONLY | os.O_CLOEXEC)
     try:
         metadata = os.fstat(executable_fd)

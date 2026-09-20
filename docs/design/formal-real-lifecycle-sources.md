@@ -12,16 +12,21 @@ that process. The source then waits for the runner's challenge-bound commit.
 
 | Command | Owned fact | Independent operation |
 |---|---|---|
-| `readiness-http` | service ready | bounded GET to an exact loopback HTTP endpoint; exact status required |
-| `workload-http` | workload complete | bounded POST of a registry-fingerprinted canonical request file; a non-empty OpenAI `choices` response is required |
-| `journal-capture` | observer captured | strict read of the deployment-owned host journal at its frozen device/inode; at least one exact Plan/launch event is required |
+| `readiness-http` | service ready | total-wall-clock-bounded GET to an exact `127.0.0.1` or `::1` HTTP endpoint; proxies and redirects are disabled and the exact status is required |
+| `workload-http` | workload complete | bounded POST of a canonical request whose required digest is part of the registered command; a non-empty OpenAI `choices` response is required |
+| `journal-capture` | observer captured | strict read of the deployment-owned host journal at its frozen device/inode; at least one host-assigned, bound scheduler dispatch for the exact Plan, launch, and controller is required |
 | `shutdown-process` | service shutdown | PID/start-ticks/argv verification followed by a pidfd wait for that exact controller process |
 
 Every command writes a canonical audit record to stderr. The runner retains
-the exact stderr bytes and digest in its source-process record. HTTP sources
-accept only loopback plain-HTTP URLs, reject redirects, cap response bytes, and
-use bounded timeouts. Workload request bytes must already be canonical JSON;
-the command fingerprint therefore binds the request file and its digest.
+the exact stderr bytes and digest in its source-process record. The audit embeds
+the exact bounded HTTP request/response bytes and every record returned by the
+strict bounded host-journal read as base64, so the runner generation retains
+the raw evidence rather than only a source-generated summary. HTTP sources accept only numeric
+loopback plain-HTTP URLs, ignore proxy environment variables, reject redirects,
+cap response bytes, and enforce a total wall-clock deadline. Workload request
+bytes must already be canonical JSON and match the required `--request-sha256`
+argument; the runner also rechecks every fingerprinted argument file immediately
+before launch.
 
 ## Intentionally missing fault source
 
@@ -53,6 +58,7 @@ then:
 - no runtime-effect, overhead, or false-effective result is claimed.
 
 The first accepted cell must preserve the model, request body, endpoint,
-hardware/software identity, process snapshot, Plan, host journal, source audit
-bytes, and runner generation. BidKV remains an independent case-study
-algorithm; this source profile does not replace or rewrite it.
+hardware/software identity, process snapshot, Plan, exact bounded host-journal
+read, source audit bytes, and runner generation. BidKV remains an
+independent case-study algorithm; this source profile does not replace or
+rewrite it.

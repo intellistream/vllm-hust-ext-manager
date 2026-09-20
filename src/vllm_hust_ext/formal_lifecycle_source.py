@@ -9,10 +9,12 @@ commits that exact challenge.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import select
+import signal
 import socket
 import sys
 import time
@@ -28,7 +30,8 @@ from .host_event_sink import HostEventSinkError, read_events
 
 FACT_SCHEMA = "ecpa-formal-lifecycle-fact/v1"
 REQUEST_SCHEMA = "ecpa-lifecycle-fact-request/v1"
-MAX_HTTP_BYTES = 1024 * 1024
+MAX_HTTP_BYTES = 128 * 1024
+MAX_JOURNAL_BYTES = 512 * 1024
 SOURCE_KINDS = {
     "service-ready": "readiness-probe",
     "workload-complete": "workload-driver",
@@ -118,7 +121,7 @@ def _local_http_url(value: str) -> str:
     parsed = urllib.parse.urlsplit(value)
     if (
         parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+        or parsed.hostname not in {"127.0.0.1", "::1"}
         or parsed.username is not None
         or parsed.password is not None
         or parsed.fragment
@@ -146,15 +149,39 @@ def _http(
         method=method,
         headers={"Content-Type": "application/json"} if body is not None else {},
     )
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+
+    def deadline_handler(signum: int, frame: Any) -> None:
+        del signum, frame
+        raise TimeoutError("formal HTTP source exceeded its wall-clock deadline")
+
     try:
+        signal.signal(signal.SIGALRM, deadline_handler)
+        signal.setitimer(signal.ITIMER_REAL, _timeout(timeout))
         with opener.open(request, timeout=_timeout(timeout)) as response:
             if response.geturl() != url:
                 raise LifecycleSourceError("formal HTTP source followed a redirect")
             payload = response.read(MAX_HTTP_BYTES + 1)
             status = response.status
+    except TimeoutError as exc:
+        raise LifecycleSourceError(
+            "formal HTTP source exceeded its wall-clock deadline"
+        ) from exc
     except (OSError, urllib.error.URLError) as exc:
         raise LifecycleSourceError("formal HTTP source request failed") from exc
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_delay > 0:
+            elapsed = time.monotonic() - started
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(0.000001, previous_delay - elapsed),
+                previous_interval,
+            )
     if len(payload) > MAX_HTTP_BYTES:
         raise LifecycleSourceError("formal HTTP response exceeds the evidence limit")
     return status, payload
@@ -180,12 +207,13 @@ def _readiness(args: argparse.Namespace, request: dict[str, Any]) -> bool:
         "http-readiness",
         status=status,
         response_bytes=len(payload),
+        response_base64=base64.b64encode(payload).decode(),
         response_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
     )
     return True
 
 
-def _canonical_request_file(path: str) -> bytes:
+def _canonical_request_file(path: str, expected_digest: str) -> bytes:
     raw = Path(path).read_bytes()
     if len(raw) > MAX_HTTP_BYTES:
         raise LifecycleSourceError("workload request exceeds the evidence limit")
@@ -195,13 +223,18 @@ def _canonical_request_file(path: str) -> bytes:
         raise LifecycleSourceError("workload request JSON is invalid") from exc
     if not isinstance(value, dict) or raw != canonical_bytes(value) + b"\n":
         raise LifecycleSourceError("workload request file must be canonical JSON")
+    actual_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if expected_digest != actual_digest:
+        raise LifecycleSourceError(
+            "workload request differs from its registered digest"
+        )
     return raw
 
 
 def _workload(args: argparse.Namespace, request: dict[str, Any]) -> bool:
     if request["fact"] != "workload-complete":
         raise LifecycleSourceError("workload source received another phase")
-    body = _canonical_request_file(args.request)
+    body = _canonical_request_file(args.request, args.request_sha256)
     status, payload = _http(
         args.url,
         timeout=args.timeout,
@@ -222,8 +255,10 @@ def _workload(args: argparse.Namespace, request: dict[str, Any]) -> bool:
     _audit(
         "openai-workload",
         status=status,
+        request_base64=base64.b64encode(body).decode(),
         request_sha256="sha256:" + hashlib.sha256(body).hexdigest(),
         response_bytes=len(payload),
+        response_base64=base64.b64encode(payload).decode(),
         response_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
     )
     return True
@@ -239,14 +274,42 @@ def _journal(args: argparse.Namespace, request: dict[str, Any]) -> bool:
         for item in records
         if item.event["plan_id"] == request["plan_id"]
         and item.event["launch_id"] == request["launch_id"]
+        and item.event["event"] == "invoked"
+        and item.event["observation_kind"] == "scheduler_dispatch"
+        and item.event["binding_status"] == "bound"
+        and item.event["controller_instance_id"] == request["controller_instance"]
+        and item.event["process"].get("assignment_source") == "host"
     ]
     if not selected:
-        raise LifecycleSourceError("host journal has no event for this Plan and launch")
+        raise LifecycleSourceError(
+            "host journal has no bound scheduler dispatch for this Plan, "
+            "launch, and controller"
+        )
+    total_bytes = sum(len(item.raw) for item in records)
+    if total_bytes > MAX_JOURNAL_BYTES:
+        raise LifecycleSourceError("host journal exceeds the evidence limit")
     _audit(
         "host-journal-capture",
+        plan_id=request["plan_id"],
+        launch_id=request["launch_id"],
+        controller_instance=request["controller_instance"],
+        lifecycle_invocation_id=request["invocation_id"],
         event_count=len(selected),
-        raw_digests=[
-            "sha256:" + hashlib.sha256(item.raw).hexdigest() for item in selected
+        selected_event_ids=[item.event["event_id"] for item in selected],
+        journal_records=[
+            {
+                "journal": item.journal,
+                "line_number": item.line_number,
+                "event_id": item.event["event_id"],
+                "event": item.event["event"],
+                "observation_kind": item.event["observation_kind"],
+                "controller_instance_id": item.event["controller_instance_id"],
+                "invocation_seq": item.event["invocation_seq"],
+                "dispatch_id": item.event["dispatch_id"],
+                "raw_base64": base64.b64encode(item.raw).decode(),
+                "raw_sha256": "sha256:" + hashlib.sha256(item.raw).hexdigest(),
+            }
+            for item in records
         ],
     )
     return True
@@ -271,8 +334,10 @@ def _shutdown(args: argparse.Namespace, request: dict[str, Any]) -> bool:
         readable, _, _ = select.select([pidfd], [], [], _timeout(args.timeout))
         if not readable:
             raise LifecycleSourceError("SUT did not exit after shutdown phase")
-    except ProcessLookupError:
-        pass
+    except ProcessLookupError as exc:
+        raise LifecycleSourceError(
+            "shutdown target exited before independent identity binding"
+        ) from exc
     finally:
         if pidfd >= 0:
             os.close(pidfd)
@@ -369,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     workload = commands.add_parser("workload-http")
     workload.add_argument("--url", required=True)
     workload.add_argument("--request", required=True)
+    workload.add_argument("--request-sha256", required=True)
     workload.add_argument("--timeout", type=float, default=60.0)
     journal = commands.add_parser("journal-capture")
     journal.add_argument("--event-dir", required=True)
