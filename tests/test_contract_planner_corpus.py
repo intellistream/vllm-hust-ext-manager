@@ -82,13 +82,20 @@ def test_source_snapshots_bind_every_corpus_evidence_object() -> None:
     records = [*corpus["plugins"], *corpus["candidates"]]
     assert set(by_repository) == {item["repository"] for item in records}
 
+    expected_paths_by_repository: dict[str, set[str]] = {}
     for record in records:
         source = by_repository[record["repository"]]
         object_paths = [item["path"] for item in source["evidence_objects"]]
         assert len(object_paths) == len(set(object_paths))
-        assert {_evidence_path(item) for item in record["evidence"]} <= set(
-            object_paths
+        evidence_paths = {_evidence_path(item) for item in record["evidence"]}
+        expected_paths_by_repository.setdefault(record["repository"], set()).update(
+            evidence_paths
         )
+        assert evidence_paths <= set(object_paths)
+    for repository, paths in expected_paths_by_repository.items():
+        assert paths == {
+            item["path"] for item in by_repository[repository]["evidence_objects"]
+        }
 
     profiler = by_repository["intellistream/vllm-request-lifecycle-profiler-plugin"]
     assert profiler["resolved_repository"] == (

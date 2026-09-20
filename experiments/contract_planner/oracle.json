@@ -4,9 +4,19 @@
   "taxonomy_sha256": "4ce872bb430365de198a1c74129da981e826601f58750dd15497b637cc3321b9",
   "source_corpus_sha256": "41dd4504a166d594ccd3e07b3aac9561ab1878a76a1d51aceca56f7eb2e17550",
   "source_snapshots_sha256": "72166123ce677cf10d7bab7a38b0e20df8c5c58ee6f09f504f1802951a0dfbbb",
-  "status": "candidate-awaiting-independent-review",
-  "labeling_policy": "Labels are manually derived from the digest-bound canonical resource taxonomy, source corpus, source snapshots, capability cardinality, and mediation authority rules. Checks follow taxonomy decision_precedence; inconsistent mediator names therefore produce RESOURCE_CONFLICT before mediator-presence authority is tested. The source-binding revision requires independent reconstruction before these labels can return to independently-reviewed status.",
+  "status": "independently-reviewed",
+  "labeling_policy": "Labels are manually derived from the digest-bound canonical resource taxonomy, source corpus, source snapshots, capability cardinality, and mediation authority rules. Checks follow taxonomy decision_precedence; inconsistent mediator names therefore produce RESOURCE_CONFLICT before mediator-presence authority is tested. An independent reviewer verified all 15 source repositories, all 41 evidence objects, and reconstructed all 31 decisions and error codes before evaluator artifacts were regenerated.",
   "counts": {"admit": 21, "reject": 10},
+  "review": {
+    "reviewer": "Codex independent Agent ecpa_source_binding_review",
+    "reviewed_commit": "c373c1506018974502012cd0114fc35e33fe66f9",
+    "cases_sha256": "cd1f853cccc9d4c9b74d505d4c5d304fa7817520067ad1fb716774fc568b3f49",
+    "taxonomy_sha256": "4ce872bb430365de198a1c74129da981e826601f58750dd15497b637cc3321b9",
+    "source_corpus_sha256": "41dd4504a166d594ccd3e07b3aac9561ab1878a76a1d51aceca56f7eb2e17550",
+    "source_snapshots_sha256": "72166123ce677cf10d7bab7a38b0e20df8c5c58ee6f09f504f1802951a0dfbbb",
+    "verdict": "MERGE",
+    "notes": "Independent live GitHub verification matched 15/15 repository identities and pinned trees, 41/41 evidence objects, and 31/31 decisions and expected errors; no P0/P1/P2 findings."
+  },
   "labels": [
     {"case_id": "case.single-bidkv", "decision": "admit", "expected_error": null, "conflict_class": null, "reason": "A single known exclusive owner has no competing claimant."},
     {"case_id": "case.single-mooncake", "decision": "admit", "expected_error": null, "conflict_class": null, "reason": "A single known exclusive owner has no competing claimant."},

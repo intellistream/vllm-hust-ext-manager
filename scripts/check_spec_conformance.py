@@ -46,14 +46,21 @@ def main() -> int:
     assert set(snapshots_by_repository) == {
         item["repository"] for item in corpus_records
     }
+    expected_paths_by_repository: dict[str, set[str]] = {}
     for item in corpus_records:
         paths = {corpus_evidence_path(value) for value in item["evidence"]}
+        expected_paths_by_repository.setdefault(item["repository"], set()).update(paths)
         snapshot_objects = snapshots_by_repository[item["repository"]][
             "evidence_objects"
         ]
         object_paths = [value["path"] for value in snapshot_objects]
         assert len(object_paths) == len(set(object_paths))
         assert paths <= set(object_paths)
+    for repository, paths in expected_paths_by_repository.items():
+        assert paths == {
+            value["path"]
+            for value in snapshots_by_repository[repository]["evidence_objects"]
+        }
     planner = ROOT / "experiments/contract_planner"
     for schema_path, artifact_path in (
         (spec / "contract-taxonomy.schema.json", spec / "contract-taxonomy.json"),
