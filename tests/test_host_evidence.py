@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import stat
 from dataclasses import replace
 
 import pytest
@@ -480,7 +482,10 @@ def test_deployment_sink_preserves_canonical_exact_bytes(tmp_path, monkeypatch):
         raw_event(delivery_attempt=2, observed_at_ns=1_800_000_000_000_000_001)
     )
     append_event(first)
+    path = next(journal.glob("*.jsonl"))
+    path.chmod(0o644)
     append_event(second)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
     records = read_events(journal)
     assert [record.raw for record in records] == [
         canonical_event(first),
@@ -519,3 +524,23 @@ def test_sink_rejects_invalid_durability_mode_before_writing(tmp_path, monkeypat
     with pytest.raises(HostEventSinkError, match="must be 0 or 1"):
         append_event(json.loads(raw_event()))
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_fsync_mode_syncs_new_file_and_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(tmp_path.resolve()))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "1")
+    synced = []
+
+    def record_fsync(descriptor):
+        mode = os.fstat(descriptor).st_mode
+        synced.append(
+            "file"
+            if stat.S_ISREG(mode)
+            else "directory"
+            if stat.S_ISDIR(mode)
+            else "other"
+        )
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    append_event(json.loads(raw_event()))
+    assert synced == ["file", "directory"]

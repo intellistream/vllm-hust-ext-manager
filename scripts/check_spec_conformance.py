@@ -7,6 +7,8 @@ from pathlib import Path
 
 import jsonschema
 
+from vllm_hust_ext.host_evidence import parse_host_event
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -32,7 +34,9 @@ def main() -> int:
         load(spec / "host-plugin-evidence.schema.json")
     )
     for name in ("host-plugin-invoked.json", "host-preemption-dispatch.json"):
-        host_validator.validate(load(spec / "examples" / name))
+        path = spec / "examples" / name
+        host_validator.validate(load(path))
+        parse_host_event(path.read_bytes())
     attestation_schema = load(spec / "attestation.schema.json")
     vectors = load(spec / "attestation-vectors.json")
     for case in vectors["cases"]:

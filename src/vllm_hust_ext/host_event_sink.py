@@ -80,15 +80,27 @@ def append_event(event: dict[str, Any]) -> None:
     fsync = os.getenv(FSYNC_ENV, "0")
     if fsync not in {"0", "1"}:
         raise HostEventSinkError(f"{FSYNC_ENV} must be 0 or 1")
-    flags = os.O_APPEND | os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_WRONLY
+    path = root / _journal_name(event)
+    flags = os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_WRONLY
+    created = False
     try:
-        descriptor = os.open(root / _journal_name(event), flags, 0o600)
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise HostEventSinkError("cannot open host event journal") from exc
     except OSError as exc:
         raise HostEventSinkError("cannot open host event journal") from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
             raise HostEventSinkError("host event journal is not an owned regular file")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            os.fchmod(descriptor, 0o600)
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+                raise HostEventSinkError("host event journal mode is not 0600")
         view = memoryview(raw)
         while view:
             written = os.write(descriptor, view)
@@ -97,8 +109,22 @@ def append_event(event: dict[str, Any]) -> None:
             view = view[written:]
         if fsync == "1":
             os.fsync(descriptor)
+    except OSError as exc:
+        raise HostEventSinkError("cannot write or sync host event journal") from exc
     finally:
         os.close(descriptor)
+    if fsync == "1" and created:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        try:
+            directory = os.open(root, directory_flags)
+        except OSError as exc:
+            raise HostEventSinkError("cannot open host event directory") from exc
+        try:
+            os.fsync(directory)
+        except OSError as exc:
+            raise HostEventSinkError("cannot sync host event directory") from exc
+        finally:
+            os.close(directory)
 
 
 def read_events(root: Path) -> tuple[JournalEvent, ...]:

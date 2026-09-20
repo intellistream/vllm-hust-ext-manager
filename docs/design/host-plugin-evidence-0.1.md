@@ -54,12 +54,15 @@ VLLM_ECPA_EVIDENCE_SINK=vllm_hust_ext.host_event_sink:append_event
 ```
 
 The sink validates the current strict wire contract, canonicalizes the event,
-and appends it to a process-specific mode-0600 JSONL journal. It refuses
-symlink destinations and non-owned/non-regular files. To avoid silently adding
-a synchronous scheduler-hot-path durability cost, fsync is off by default and
-must be explicitly enabled with `ECPA_HOST_EVENT_FSYNC=1` when the experiment
-requires crash-durable local evidence; that choice belongs in the environment
-manifest and overhead results.
+and appends it to a process-specific mode-0600 JSONL journal. It restores mode
+0600 before appending to a pre-existing owned journal and refuses symlink
+destinations and non-owned/non-regular files. To avoid silently adding a
+synchronous scheduler-hot-path durability cost, fsync is off by default. With
+`ECPA_HOST_EVENT_FSYNC=1`, the sink requests an fsync of each appended record
+and, when it creates a journal, the containing directory entry. The environment
+manifest and overhead results must record this choice. Filesystem and hardware
+durability still follow the deployment's fsync guarantees; the adapter does not
+claim stronger distributed or storage-device semantics.
 `read_events` independently opens journals without following symlinks,
 preserves each exact line, rejects partial records and duplicate event IDs, and
 returns both the raw bytes and parsed event. The journal is an observer input,
