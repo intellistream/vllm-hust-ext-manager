@@ -95,9 +95,9 @@ capability resolution, deterministic dependency order, observation authority,
 and exclusive/shared/mediated resource ownership. L2 still requires the
 independently labeled corpus precision/recall gate; L3--L4 remain experimental.
 The candidate L2 inputs and manual oracle are frozen under
-`experiments/contract_planner`, but they have not yet passed independent label
-review or been evaluated by the compiler. No L2 precision/recall result is
-claimed from those artifacts.
+`experiments/contract_planner` and have passed exact-digest independent label
+review, but they have not been evaluated by the compiler. No L2
+precision/recall result is claimed from those artifacts.
 
 The executable 0.1 protocol vocabulary is in `protocol.schema.json`, with a
 checked instance in `protocol-instance.json`. Identifiers are SHA-256 content

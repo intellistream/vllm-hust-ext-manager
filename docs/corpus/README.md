@@ -18,8 +18,9 @@ generality evidence; they are not all claimed to conform to ECPA 0.1.
 The [L2 contract-planner corpus](../../experiments/contract_planner/README.md)
 maps these 11 registered entries to minimal modeled contract abstractions and
 freezes a canonical resource/alias taxonomy. Its separately stored labels are
-candidate oracle judgments awaiting independent review; they are not compiler
-outputs or precision/recall results. The five adaptation candidates remain
+independently reviewed oracle judgments bound to the cases, taxonomy, and
+source-corpus digests; they are not compiler outputs or precision/recall
+results. The five adaptation candidates remain
 excluded rather than being assigned fabricated manifests.
 
 Corpus paths were verified against shallow read-only clones on 2026-09-17.

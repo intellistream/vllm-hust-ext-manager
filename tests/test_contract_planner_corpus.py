@@ -93,7 +93,7 @@ def test_cases_and_candidate_oracle_are_complete_and_bound() -> None:
     assert len(case_ids) == len(cases["cases"])
     assert len(label_ids) == len(set(label_ids))
     assert case_ids == set(labels)
-    assert oracle["status"] == "candidate-awaiting-independent-review"
+    assert oracle["status"] == "independently-reviewed"
     assert oracle["cases_sha256"] == hashlib.sha256(cases_path.read_bytes()).hexdigest()
     assert (
         oracle["taxonomy_sha256"]
@@ -105,6 +105,9 @@ def test_cases_and_candidate_oracle_are_complete_and_bound() -> None:
             (ROOT / "docs" / "corpus" / "plugins.json").read_bytes()
         ).hexdigest()
     )
+    assert oracle["review"]["verdict"] == "MERGE"
+    for name in ("cases_sha256", "taxonomy_sha256", "source_corpus_sha256"):
+        assert oracle["review"][name] == oracle[name]
     assert oracle["counts"] == {
         "admit": sum(label["decision"] == "admit" for label in labels.values()),
         "reject": sum(label["decision"] == "reject" for label in labels.values()),

@@ -77,7 +77,7 @@ def main() -> int:
         f"2 invalid examples rejected, 2 host events valid, corpus valid, "
         f"{len(vectors['cases'])} attestation vectors indexed, "
         f"{len(planner_cases['cases'])} L2 cases structurally validated "
-        f"with a {planner_oracle['status']} oracle"
+        f"with status {planner_oracle['status']}"
     )
     return 0
 

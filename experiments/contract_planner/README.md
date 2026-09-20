@@ -24,11 +24,11 @@ closed until the taxonomy is deliberately extended. Its ordered
 violates more than one rule.
 
 `oracle.json` is manually labeled from that taxonomy and the specification's
-provider-cardinality and mediation rules. Its status remains
-`candidate-awaiting-independent-review` until a reviewer records a verdict for
-the exact raw-byte SHA-256 digests of the cases, taxonomy, and source corpus.
-The future evaluator must consume this artifact; it must not generate or
-rewrite expected labels.
+provider-cardinality and mediation rules. An independent Agent reconstructed
+all 31 decisions and expected errors for the recorded content commit and three
+raw-byte SHA-256 digests, then returned `MERGE`. The future evaluator must
+consume this reviewed artifact; it must not generate or rewrite expected
+labels.
 
 The source corpus points to repository paths rather than immutable external
 repository trees, so the modeled resource mapping remains a study assumption,
