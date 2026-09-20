@@ -112,6 +112,12 @@ payload = {
     'sut_process_identity': identity,
 }
 print(json.dumps(payload, sort_keys=True, separators=(',', ':')), flush=True)
+commit = json.loads(sys.stdin.readline())
+assert commit == {
+    'command': 'commit',
+    'challenge': request['challenge'],
+    'phase': request['fact'],
+}
 """
     )
     commands = {
@@ -1823,6 +1829,67 @@ def test_lifecycle_fact_source_output_is_bounded(tmp_path):
             env=dict(os.environ),
             timeout_s=2,
         )
+
+
+def test_lifecycle_fact_source_rejects_exec_after_initial_identity(tmp_path):
+    source = tmp_path / "execing_lifecycle_source.py"
+    source.write_text(
+        """import os, sys
+sys.stdin.readline()
+code = "import json,sys; print(json.dumps({}), flush=True); sys.stdin.readline()"
+os.execv(sys.executable, [sys.executable, '-c', code])
+"""
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source)])
+
+    with pytest.raises(ValueError, match="changed exec identity"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request={"schema": "test", "challenge": "challenge"},
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=2,
+        )
+
+
+def test_lifecycle_fact_source_timeout_kills_process_group(tmp_path):
+    descendant_pid_path = tmp_path / "lifecycle-descendant.pid"
+    source = tmp_path / "forking_lifecycle_source.py"
+    source.write_text(
+        """import subprocess, sys
+from pathlib import Path
+sys.stdin.readline()
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+Path(sys.argv[1]).write_text(str(child.pid))
+"""
+    )
+    fingerprint = command_fingerprint(
+        sys.executable, [str(source), str(descendant_pid_path)]
+    )
+
+    with pytest.raises(ValueError, match="timed out"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request={"schema": "test", "challenge": "challenge"},
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=0.2,
+        )
+
+    descendant_pid = int(descendant_pid_path.read_text())
+    descendant_stat = Path(f"/proc/{descendant_pid}/stat")
+    for _ in range(200):
+        try:
+            state = descendant_stat.read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            break
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"lifecycle source descendant {descendant_pid} survived cleanup")
 
 
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):

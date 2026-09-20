@@ -57,9 +57,13 @@ actuator, host observer, or process monitor. Those bytes and their digest bind
 the challenge, sequence, invocation, Plan/launch/controller, value, timestamp,
 and observed process identity. The runner launches each source through its own
 dedicated stdin/stdout channel and records its Linux PID/start-ticks/argv plus
-the registry-pinned executable fingerprint; the generic observer receives no
-phase message in formal-real runs. Duplicate, missing, reordered, inconsistent,
-unregistered, or source-process-mismatched bindings fail closed. The canonical
+the registry-pinned executable fingerprint. A source must remain alive after
+flushing exactly one receipt: the runner re-reads PID/start-ticks/argv/executable
+before sending a challenge-bound commit message, so an intervening `exec` fails
+closed. The entire source process group is terminated on every success or
+failure path. The generic observer receives no phase message in formal-real
+runs. Duplicate, missing, reordered, inconsistent, unregistered, or
+source-process-mismatched bindings fail closed. The canonical
 receipt payload is machine-checked by `formal-lifecycle-fact.schema.json`; the
 enclosing observation retains the exact payload bytes as base64 and a SHA-256
 digest. Registry review remains responsible for establishing that each source

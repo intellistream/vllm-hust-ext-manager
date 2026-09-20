@@ -371,22 +371,77 @@ def run_lifecycle_fact_source(
         start_new_session=True,
     )
     try:
-        identity = wait_for_linux_process_identity(
+        initial_identity = wait_for_linux_process_identity(
             process, argv, timeout_s, fingerprint
         )
         executable_identity = {
-            "device": identity.pop("executable_device"),
-            "inode": identity.pop("executable_inode"),
+            "device": initial_identity["executable_device"],
+            "inode": initial_identity["executable_inode"],
+        }
+        identity = {
+            key: initial_identity[key] for key in ("pid", "start_ticks", "argv")
         }
         if process.stdin is None or process.stdout is None or process.stderr is None:
             raise RuntimeError("lifecycle fact source pipes were not created")
         process.stdin.write(canonical(request) + b"\n")
-        process.stdin.close()
+        process.stdin.flush()
         streams = {process.stdout: bytearray(), process.stderr: bytearray()}
         active = set(streams)
         for stream in active:
             os.set_blocking(stream.fileno(), False)
         deadline = time.monotonic() + timeout_s
+        receipt_complete = False
+        while active and not receipt_complete:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError(f"lifecycle fact source timed out: {phase}")
+            readable, _, _ = select.select(list(active), [], [], remaining)
+            if not readable:
+                raise ValueError(f"lifecycle fact source timed out: {phase}")
+            for stream in readable:
+                captured = sum(len(value) for value in streams.values())
+                try:
+                    chunk = os.read(
+                        stream.fileno(), min(65536, 1024 * 1024 - captured + 1)
+                    )
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    stream.close()
+                    active.remove(stream)
+                    continue
+                streams[stream].extend(chunk)
+                if captured + len(chunk) > 1024 * 1024:
+                    raise ValueError(
+                        f"lifecycle fact source output exceeds the limit: {phase}"
+                    )
+                if stream is process.stdout and b"\n" in streams[stream]:
+                    receipt_complete = True
+        if not receipt_complete:
+            raise ValueError(f"lifecycle fact source exited before receipt: {phase}")
+        stdout_prefix = bytes(streams[process.stdout])
+        if stdout_prefix.count(b"\n") != 1 or not stdout_prefix.endswith(b"\n"):
+            raise ValueError(f"lifecycle fact source output is not one record: {phase}")
+        try:
+            final_identity = linux_process_identity(process.pid)
+        except (FileNotFoundError, ProcessLookupError, RuntimeError) as exc:
+            raise ValueError(
+                f"lifecycle fact source exited before identity recheck: {phase}"
+            ) from exc
+        if final_identity != initial_identity:
+            raise ValueError(f"lifecycle fact source changed exec identity: {phase}")
+        process.stdin.write(
+            canonical(
+                {
+                    "command": "commit",
+                    "challenge": request.get("challenge"),
+                    "phase": phase,
+                }
+            )
+            + b"\n"
+        )
+        process.stdin.flush()
+        process.stdin.close()
         while active:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -418,9 +473,9 @@ def run_lifecycle_fact_source(
         stdout = bytes(streams[process.stdout])
         stderr = bytes(streams[process.stderr])
     finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         if process.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
             process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None and not stream.closed:
