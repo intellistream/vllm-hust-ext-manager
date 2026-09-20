@@ -1972,6 +1972,32 @@ def test_formal_oracle_rejects_one_linux_identity_covering_two_roles(tmp_path):
     assert "formal effect process identities contain duplicates" in result["reasons"]
 
 
+def test_formal_oracle_rejects_exec_argv_change_covering_two_roles(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    after_exec = {**controller, "argv": ["renamed-after-exec", "30"]}
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0),
+        _effect_identity(after_exec, role="worker", ordinal=0),
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+
+    assert result["verdict"] == "INCOMPLETE"
+    assert "formal effect process identities contain duplicates" in result["reasons"]
+
+
 def test_formal_oracle_rejects_stale_process_epoch(tmp_path):
     record = _formal_process_record(tmp_path)
     controller = record["command"]["sut_process"]["linux_identity"]
