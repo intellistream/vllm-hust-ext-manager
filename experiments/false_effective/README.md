@@ -80,12 +80,13 @@ events are mandatory; startup is launch-to-ready.
 Admission also executes a registry-pinned, bounded activation probe before the
 service starts. The runner constructs the probe from the exact registered SUT
 executable and base argv, appends the actual arm activation options and a fixed
-`--help`, then fingerprints that complete command. It must exit successfully and
-its bounded raw stdout/stderr must expose every activation option. Those raw
-bytes are sealed so offline validation can recompute the output digest and
-recheck the options. This is parser-admission evidence, not runtime-effect truth;
-a command digest, separate self-reporting helper, or caller assertion cannot
-substitute for it.
+`--ecpa-formal-activation-probe`, then fingerprints that complete command. The
+target parser must accept that complete argv and emit the exact canonical JSON
+receipt naming its activation contract and accepted options. Its bounded raw
+stdout/stderr are sealed so offline validation can recompute the output digest
+and receipt. This is parser-admission evidence, not runtime-effect truth; help
+text, a substring match, a separate self-reporting helper, or a caller assertion
+cannot substitute for it.
 
 `write_formal_manifest` writes each canonical JSONL/index pair into a new
 generation directory, then atomically swaps one canonical current pointer.

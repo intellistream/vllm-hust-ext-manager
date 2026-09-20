@@ -148,6 +148,11 @@ def validate_formal_adapter_verification(
     except (ValueError, TypeError) as exc:
         raise ValueError("formal activation probe bytes are invalid") from exc
     probe_output = probe_stdout + probe_stderr
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": expected_contract,
+        "accepted_options": sorted(expected_options),
+    }
     if (
         activation_probe.get("exit_code") != 0
         or activation_probe.get("required_options") != sorted(expected_options)
@@ -156,7 +161,8 @@ def validate_formal_adapter_verification(
         or not isinstance(activation_probe.get("output_sha256"), str)
         or activation_probe.get("output_sha256") != digest_bytes(probe_output)
         or len(probe_output) > 1024 * 1024
-        or any(option.encode() not in probe_output for option in expected_options)
+        or activation_probe.get("receipt") != expected_receipt
+        or probe_stdout != canonical(expected_receipt) + b"\n"
     ):
         raise ValueError("formal activation probe does not satisfy the registry")
 
@@ -233,7 +239,7 @@ def validate_formal_adapter_verification(
         "executable"
     ) or probe_fingerprint.get("arguments") != [
         *sut_fingerprint.get("arguments", []),
-        "--help",
+        "--ecpa-formal-activation-probe",
     ]:
         raise ValueError("activation probe does not exercise the registered SUT argv")
     sut_argv = command.get("sut_process", {}).get("argv", [])

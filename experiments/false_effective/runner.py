@@ -32,6 +32,7 @@ from harness import (
 
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
+FORMAL_ACTIVATION_PROBE_OPTION = "--ecpa-formal-activation-probe"
 FORMAL_HOST_OBSERVABLES = {
     "service-ready",
     "workload-complete",
@@ -164,7 +165,11 @@ def run_activation_probe(
         or not 1 <= timeout_s <= 30
     ):
         raise ValueError("verified adapter activation probe is invalid")
-    probe_arguments = [*arguments, *adapter.activation_arguments, "--help"]
+    probe_arguments = [
+        *arguments,
+        *adapter.activation_arguments,
+        FORMAL_ACTIVATION_PROBE_OPTION,
+    ]
     if command_references_fixture([executable, *probe_arguments]):
         raise ValueError("fixture-referencing activation probe is forbidden")
     fingerprint = command_fingerprint(executable, probe_arguments)
@@ -181,9 +186,16 @@ def run_activation_probe(
     output = completed.stdout + completed.stderr
     if len(output) > 1024 * 1024:
         raise ValueError("activation probe output exceeds the evidence limit")
-    if completed.returncode != 0 or any(
-        option.encode() not in output for option in required
-    ):
+    try:
+        receipt = json.loads(completed.stdout)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("activation probe did not emit a JSON receipt") from exc
+    expected_receipt = {
+        "schema": "ecpa-activation-probe/v1",
+        "activation_contract": adapter.activation_contract,
+        "accepted_options": sorted(required),
+    }
+    if completed.returncode != 0 or receipt != expected_receipt:
         raise ValueError("executable does not expose the registered activation options")
     return {
         "command": fingerprint,
@@ -192,6 +204,7 @@ def run_activation_probe(
         "output_sha256": digest_bytes(output),
         "stdout_base64": base64.b64encode(completed.stdout).decode(),
         "stderr_base64": base64.b64encode(completed.stderr).decode(),
+        "receipt": receipt,
     }
 
 
