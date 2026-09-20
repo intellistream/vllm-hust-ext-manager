@@ -49,7 +49,9 @@ and its stdout cannot become formal truth. Each instruction carries a random
 challenge and sequence plus a runner-generated plan ID, launch ID, controller
 instance, and invocation ID. An ACK proves only that this process answered that
 instruction; it is not evidence that the requested workload, fault, hook, or
-policy effect occurred.
+policy effect occurred. Every observer event must echo the matching ACK result,
+challenge, sequence, and invocation identity; duplicate, missing, reordered, or
+inconsistent phase bindings fail closed.
 
 `formal-real` is fail closed behind the canonical `verified-adapters.json`
 registry. A registered entry pins the resolved executable, every file-backed
@@ -60,7 +62,9 @@ telemetry path to the observer. Effectiveness, invocation, activation path, and
 lifecycle facts must be emitted by the registry-pinned observer after reading
 host-owned evidence and must carry the same plan/launch/controller/invocation
 identity. Linux process identity is PID plus `/proc/PID/stat` start ticks and
-exact `/proc/PID/cmdline` argv. Controlled services are labeled
+exact `/proc/PID/cmdline` argv. The runner reads start ticks both before and
+after argv to reject PID-reuse races, and the observer independently records
+the SUT identity it saw. Controlled services are labeled
 `interface-fixture`, may test protocol mechanics, never create a formal
 manifest, and are rejected from formal aggregation even if copied, renamed, or
 reached through a symlink. The harness can generate raw formal records only

@@ -2,6 +2,7 @@ import copy
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -606,6 +607,39 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
     with pytest.raises(ValueError, match="executed SUT argv"):
         harness_module.validate_formal_adapter_verification(record, changed_command)
 
+    fixture_sut = Path("tests/fixtures/formal_sut_service.py").resolve()
+    fixture_observer = Path("tests/fixtures/formal_observer_service.py").resolve()
+    fixture_sut_arguments = [str(fixture_sut), *adapter.activation_arguments]
+    fixture_observer_arguments = [str(fixture_observer)]
+    fixture_sut_fingerprint = command_fingerprint(sys.executable, fixture_sut_arguments)
+    fixture_observer_fingerprint = command_fingerprint(
+        sys.executable, fixture_observer_arguments
+    )
+    fixture_registry = copy.deepcopy(registry)
+    fixture_entry = fixture_registry["adapters"][0]
+    fixture_entry["sut_command_digest"] = fixture_sut_fingerprint["digest"]
+    fixture_entry["observer_command_digest"] = fixture_observer_fingerprint["digest"]
+    registry_path.write_bytes(canonical(fixture_registry) + b"\n")
+    fixture_verification = {
+        **verification,
+        "registry_digest": harness_module.digest_bytes(registry_path.read_bytes()),
+        "sut_command": fixture_sut_fingerprint,
+        "observer_command": fixture_observer_fingerprint,
+    }
+    fixture_record = {
+        "arm": adapter.arm,
+        "identity": {"adapter_verification": fixture_verification},
+    }
+    fixture_command = {
+        "argv": [sys.executable, *fixture_sut_arguments],
+        "sut_process": {"argv": [sys.executable, *fixture_sut_arguments]},
+        "observer_process": {"argv": [sys.executable, *fixture_observer_arguments]},
+    }
+    with pytest.raises(ValueError, match="fixture-resolved"):
+        harness_module.validate_formal_adapter_verification(
+            fixture_record, fixture_command
+        )
+
 
 def test_fixture_evidence_is_nonformal_and_execution_identity_is_bound(tmp_path):
     record = formal_complete_records(tmp_path)[0]
@@ -623,11 +657,80 @@ def test_fixture_evidence_is_nonformal_and_execution_identity_is_bound(tmp_path)
     assert all(
         event["launch_id"] == execution["launch_id"] for event in record["observations"]
     )
+    assert all(
+        event["sut_process_identity"]
+        == record["command"]["sut_process"]["linux_identity"]
+        for event in record["observations"]
+    )
     counterexample = copy.deepcopy(record)
     counterexample["observations"][0]["launch_id"] = "launch:replayed"
     assert oracle(scenarios()[0], counterexample)["verdict"] == "INCOMPLETE"
     with pytest.raises(ValueError, match="fixture-only"):
         validate_batch([record], tmp_path, formal=True)
+
+
+def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):
+    observer = tmp_path / "inconsistent_observer.py"
+    observer.write_text(
+        """import json, os, sys
+from pathlib import Path
+pid = int(os.environ['ECPA_SUT_PID'])
+stat = Path(f'/proc/{pid}/stat').read_text()
+close = stat.rfind(')')
+ticks = int(stat[close + 2:].split()[19])
+argv_bytes = Path(f'/proc/{pid}/cmdline').read_bytes()
+argv = [
+    part.decode(errors='surrogateescape')
+    for part in argv_bytes.split(b'\\0')
+    if part
+]
+identity = {'pid': pid, 'start_ticks': ticks, 'argv': argv}
+events = []
+for raw in sys.stdin:
+    message = json.loads(raw)
+    common = {
+        'source_role': 'interface-observer', 'clock': 'monotonic',
+        'monotonic_ns': message['monotonic_ns'],
+        'plan_id': message['plan_id'], 'launch_id': message['launch_id'],
+        'controller_instance': message['controller_instance'],
+        'invocation_id': message['invocation_id'], 'sequence': 999,
+        'challenge': 'wrong', 'causal_ack': False,
+        'sut_process_identity': identity,
+    }
+    phase = message['phase']
+    value = message['scenario'] if phase == 'fault-injected' else True
+    events.append({'event': phase, 'value': value, **common})
+    if phase == 'observer-captured':
+        for name, value in (
+            ('activation-path', os.environ['ECPA_EXPECTED_CONTRACT']),
+            ('effective-claim', False), ('plugin-invoked', False),
+            ('service_started', True), ('plugin_not_invoked', True),
+        ):
+            events.append({'event': name, 'value': value, **common})
+os.write(int(os.environ['ECPA_OBSERVER_FD']), json.dumps({'events': events}).encode())
+"""
+    )
+    record = run_formal_start(
+        tmp_path / "formal",
+        scenarios()[0],
+        json.loads((ROOT / "protocol.json").read_text()),
+        ECPAAdapter(),
+        1,
+        3,
+        executable=sys.executable,
+        arguments=[str(Path("tests/fixtures/formal_sut_service.py").resolve())],
+        observer_executable=sys.executable,
+        observer_arguments=[str(observer)],
+        identity=_minimal_formal_identity(),
+        timeout_s=2,
+        fixture_mode=True,
+    )
+    assert record["status"] == "failed"
+    assert record["oracle"]["verdict"] == "INCOMPLETE"
+    assert any(
+        "causal acknowledgement mismatch" in reason
+        for reason in record["oracle"]["reasons"]
+    )
 
 
 def test_exact_observer_pipe_bytes_are_bound_independently(tmp_path):
@@ -759,7 +862,19 @@ def test_proc_stat_parser_handles_parentheses_in_comm():
 
 
 @pytest.mark.parametrize(
-    "mutation", ["duplicate", "reverse", "false", "source", "fault", "activation"]
+    "mutation",
+    [
+        "duplicate",
+        "reverse",
+        "false",
+        "source",
+        "fault",
+        "activation",
+        "causal-ack",
+        "sequence",
+        "challenge",
+        "sut-identity",
+    ],
 )
 def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
     record = copy.deepcopy(formal_complete_records(tmp_path)[0])
@@ -785,10 +900,31 @@ def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
         next(item for item in events if item["event"] == "fault-injected")["value"] = (
             "other"
         )
-    else:
+    elif mutation == "activation":
         next(item for item in events if item["event"] == "activation-path")["value"] = (
             "wrong-path"
         )
+    elif mutation == "causal-ack":
+        events[0]["causal_ack"] = False
+    elif mutation == "sequence":
+        events[0]["sequence"] = 999
+    elif mutation == "challenge":
+        events[0]["challenge"] = "replayed"
+    else:
+        events[0]["sut_process_identity"]["start_ticks"] += 1
+    assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
+
+
+def test_oracle_rejects_duplicate_or_reordered_phase_invocations(tmp_path):
+    record = copy.deepcopy(formal_complete_records(tmp_path)[0])
+    duplicate = copy.deepcopy(record["command"]["phase_invocations"][0])
+    duplicate["challenge"] = "different"
+    duplicate["invocation_id"] = "different"
+    record["command"]["phase_invocations"].append(duplicate)
+    assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
+
+    record = copy.deepcopy(formal_complete_records(tmp_path / "reordered")[0])
+    record["command"]["phase_invocations"].reverse()
     assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
 
 
@@ -846,6 +982,45 @@ def test_manifest_rejects_noncanonical_jsonl_and_wrong_start_binding(tmp_path):
     current_path.write_bytes(canonical(current) + b"\n")
     with pytest.raises(ValueError, match="canonical"):
         _reproduce_module().generate(tmp_path / "noncanonical", current_path)
+
+
+def test_manifest_requires_runner_owned_pointer_and_generation_layout(tmp_path):
+    formal_complete_records(tmp_path)
+    root = tmp_path / "formal"
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    current_path = write_formal_manifest(root, records)
+    renamed = root / "caller-chosen.json"
+    renamed.write_bytes(current_path.read_bytes())
+    with pytest.raises(ValueError, match="runner-owned current pointer"):
+        _reproduce_module().generate(tmp_path / "renamed-output", renamed)
+
+    current = json.loads(current_path.read_text())
+    index_path = root / current["generation_index"]
+    outside = root / "not-a-generation" / "index.json"
+    outside.parent.mkdir()
+    outside.write_bytes(index_path.read_bytes())
+    current["generation_index"] = "not-a-generation/index.json"
+    current["generation_index_digest"] = digest_file(outside)
+    current_path.write_bytes(canonical(current) + b"\n")
+    with pytest.raises(ValueError, match="generation index path"):
+        _reproduce_module().generate(tmp_path / "layout-output", current_path)
+
+
+def test_reproduce_default_output_uses_nonexistent_child():
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "reproduce.py")],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["starts"] == 45
+    assert result["formal_completed_cells"] == 0
 
 
 def test_cli_rejects_fixture_completed_and_failed_manifest_without_partial_output(

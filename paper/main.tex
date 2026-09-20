@@ -186,7 +186,10 @@ trusted observation.  Controlled fixture services are explicitly classified
 as interface-only and cannot produce a formal manifest or enter the paper
 aggregate.  The production adapter registry is empty until the real host seam,
 observer, and exact command fingerprints are reviewed, so no formal-real result
-is currently claimed.
+is currently claimed.  Each observer event must match the phase's ACK result,
+challenge, sequence, and invocation identity.  The runner double-reads process
+start ticks around exact-argv capture to reject PID-reuse races, while the
+observer independently reports the SUT process identity it observed.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger

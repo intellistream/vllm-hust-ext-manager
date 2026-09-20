@@ -124,6 +124,7 @@ def validate_formal_adapter_verification(
     if verification != expected:
         raise ValueError("formal adapter metadata differs from the trusted registry")
 
+    fixture_root = (Path(__file__).parents[2] / "tests" / "fixtures").resolve()
     for role, fingerprint, registered_digest in (
         ("SUT", verification["sut_command"], entry.get("sut_command_digest")),
         (
@@ -132,6 +133,16 @@ def validate_formal_adapter_verification(
             entry.get("observer_command_digest"),
         ),
     ):
+        if not isinstance(fingerprint, dict):
+            raise ValueError(f"{role} fingerprint is missing")
+        for value in [fingerprint.get("executable"), *fingerprint.get("arguments", [])]:
+            if not isinstance(value, str):
+                raise ValueError(f"{role} fingerprint contains a non-string argv")
+            candidate = Path(value)
+            if candidate.exists() and candidate.resolve().is_relative_to(fixture_root):
+                raise ValueError(
+                    f"{role} fixture-resolved command is forbidden for formal-real"
+                )
         unsigned = {key: value for key, value in fingerprint.items() if key != "digest"}
         if (
             fingerprint.get("digest") != digest_bytes(canonical(unsigned))
@@ -323,20 +334,30 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             else "interface-observer"
         )
         execution_identity = record.get("command", {}).get("execution_identity", {})
-        invocations = {
-            item.get("phase"): item
-            for item in record.get("command", {}).get("phase_invocations", [])
-        }
+        invocation_rows = record.get("command", {}).get("phase_invocations", [])
+        invocations = {item.get("phase"): item for item in invocation_rows}
         if set(execution_identity) != {
             "plan_id",
             "launch_id",
             "controller_instance",
         } or not all(execution_identity.values()):
             reasons.append("missing plan/launch/controller execution identity")
-        if len(invocations) != 5 or any(
-            not item.get("acknowledged") for item in invocations.values()
+        if (
+            len(invocation_rows) != len(lifecycle)
+            or [item.get("phase") for item in invocation_rows] != lifecycle
+            or [item.get("sequence") for item in invocation_rows]
+            != list(range(1, len(lifecycle) + 1))
+            or len(invocations) != len(lifecycle)
+            or len({item.get("challenge") for item in invocation_rows})
+            != len(lifecycle)
+            or len({item.get("invocation_id") for item in invocation_rows})
+            != len(lifecycle)
+            or any(not item.get("acknowledged") for item in invocation_rows)
         ):
             reasons.append("phase invocation identity is incomplete")
+        sut_identity = (
+            record.get("command", {}).get("sut_process", {}).get("linux_identity")
+        )
         for name in required:
             event = events.get(name)
             if event and event.get("source_role") != expected_source:
@@ -352,6 +373,14 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
                 reasons.append(f"execution identity mismatch: {name}")
             if event and event.get("invocation_id") != invocation.get("invocation_id"):
                 reasons.append(f"invocation identity mismatch: {name}")
+            if event and (
+                event.get("sequence") != invocation.get("sequence")
+                or event.get("challenge") != invocation.get("challenge")
+                or event.get("causal_ack") is not True
+            ):
+                reasons.append(f"causal acknowledgement mismatch: {name}")
+            if event and event.get("sut_process_identity") != sut_identity:
+                reasons.append(f"observer SUT identity mismatch: {name}")
         times = [events.get(name, {}).get("monotonic_ns") for name in lifecycle]
         if all(isinstance(value, int) for value in times):
             if times != sorted(times) or len(set(times)) != len(times):
@@ -714,6 +743,17 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
             for item in complete
             for invocation in item.get("command", {}).get("phase_invocations", [])
         ]
+        process_identities = [
+            (
+                process.get("pid"),
+                process.get("linux_identity", {}).get("start_ticks"),
+            )
+            for item in complete
+            for process in (
+                item.get("command", {}).get("sut_process", {}),
+                item.get("command", {}).get("observer_process", {}),
+            )
+        ]
         if (
             None in launch_ids
             or len(launch_ids) != len(set(launch_ids))
@@ -721,8 +761,12 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
             or len(controllers) != len(set(controllers))
             or None in invocation_ids
             or len(invocation_ids) != len(set(invocation_ids))
+            or any(None in identity for identity in process_identities)
+            or len(process_identities) != len(set(process_identities))
         ):
-            raise ValueError("launch/controller/invocation identity is not unique")
+            raise ValueError(
+                "launch/controller/invocation/process identity is not unique"
+            )
         groups: dict[str, list[dict[str, Any]]] = {}
         for item in complete:
             groups.setdefault(item["cell_id"], []).append(item)

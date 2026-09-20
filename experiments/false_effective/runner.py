@@ -55,8 +55,12 @@ def parse_proc_stat_start_ticks(stat: str) -> int:
 
 def linux_process_identity(pid: int) -> dict[str, Any]:
     """Read Linux PID identity using /proc stat starttime (field 22)."""
-    start_ticks = parse_proc_stat_start_ticks(Path(f"/proc/{pid}/stat").read_text())
+    stat_path = Path(f"/proc/{pid}/stat")
+    start_ticks = parse_proc_stat_start_ticks(stat_path.read_text())
     argv_raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    confirmed_start_ticks = parse_proc_stat_start_ticks(stat_path.read_text())
+    if confirmed_start_ticks != start_ticks:
+        raise RuntimeError("process identity changed while reading /proc")
     argv = [
         part.decode(errors="surrogateescape") for part in argv_raw.split(b"\0") if part
     ]
@@ -74,7 +78,7 @@ def wait_for_linux_process_identity(
             raise RuntimeError("process exited before its exec identity was observable")
         try:
             last_identity = linux_process_identity(process.pid)
-        except (FileNotFoundError, ProcessLookupError):
+        except (FileNotFoundError, ProcessLookupError, RuntimeError):
             last_identity = None
         if last_identity is not None and last_identity["argv"] == expected_argv:
             return last_identity
@@ -875,6 +879,8 @@ def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
 
 
 def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
+    if path.name != "formal-record-index.json" or path.is_symlink():
+        raise ValueError("formal input must be the runner-owned current pointer")
     root = path.parent
     current_bytes = path.read_bytes()
     current = json.loads(current_bytes)
@@ -883,6 +889,16 @@ def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
         or current.get("schema") != "ecpa-formal-current/v1"
     ):
         raise ValueError("formal input must be a canonical runner current pointer")
+    generation_index = Path(current["generation_index"])
+    parts = generation_index.parts
+    if (
+        len(parts) != 3
+        or parts[0] != "formal-generations"
+        or len(parts[1]) != 32
+        or any(char not in "0123456789abcdef" for char in parts[1])
+        or parts[2] != "index.json"
+    ):
+        raise ValueError("formal generation index path is not runner-owned")
     index_path = safe_path(root, current["generation_index"])
     if digest_file(index_path) != current["generation_index_digest"]:
         raise ValueError("formal generation index digest mismatch")
@@ -893,6 +909,9 @@ def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
         or manifest.get("schema") != "ecpa-formal-record-index/v1"
     ):
         raise ValueError("formal generation index is not canonical")
+    expected_jsonl = generation_index.parent / "formal-records.jsonl"
+    if Path(manifest.get("records_jsonl", "")) != expected_jsonl:
+        raise ValueError("formal JSONL is outside its generation")
     jsonl = safe_path(root, manifest["records_jsonl"])
     if digest_file(jsonl) != manifest["records_jsonl_digest"]:
         raise ValueError("formal JSONL digest mismatch")

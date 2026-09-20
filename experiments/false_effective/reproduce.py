@@ -156,7 +156,11 @@ def main() -> int:
     args = parser.parse_args()
     if args.output is None:
         with tempfile.TemporaryDirectory(prefix="ecpa-false-effective-") as directory:
-            print(json.dumps(generate(Path(directory), args.records), sort_keys=True))
+            print(
+                json.dumps(
+                    generate(Path(directory) / "result", args.records), sort_keys=True
+                )
+            )
     else:
         generate(args.output, args.records)
     return 0
