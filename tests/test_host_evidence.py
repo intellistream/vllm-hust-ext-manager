@@ -44,12 +44,18 @@ from vllm_hust_ext.host_event_sink import (
     quarantine_journal,
     read_events,
     restore_quarantined_journal,
+    snapshot_journal,
 )
 from vllm_hust_ext.host_evidence import (
     EntryPointBinding,
     HostReceipt,
     parse_host_event,
     translate_invocation,
+)
+from vllm_hust_ext.quarantine_transaction import (
+    install_quarantine_source_fence,
+    prepare_quarantine_transaction,
+    quarantine_transaction_id,
 )
 
 PLUGIN = PluginIdentity("org.vllm-hust", "demo", "1", "a" * 64)
@@ -575,6 +581,57 @@ def test_quarantine_atomically_retains_exact_journal(tmp_path, monkeypatch):
         quarantined_path.stat().st_ino,
     )
     assert read_events(quarantine, quarantine_identity)[0].event == event
+
+
+def test_durable_quarantine_fence_prevents_journal_recreation(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "1")
+    event = json.loads(raw_event())
+    append_event(event)
+    path = next(journal.glob("*.jsonl"))
+    source_identity = (journal.stat().st_dev, journal.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    snapshot = snapshot_journal(
+        journal,
+        path.name,
+        expected_root_identity=source_identity,
+        max_bytes=4096,
+    )
+    binding = {"schema": "ecpa-quarantine-transaction-binding/v1", "challenge": "x"}
+    transaction_id = quarantine_transaction_id(binding)
+    intent = prepare_quarantine_transaction(
+        quarantine,
+        quarantine_identity,
+        transaction_id,
+        binding=binding,
+        source_identity=source_identity,
+        snapshot=snapshot,
+    )
+    install_quarantine_source_fence(
+        journal,
+        source_identity,
+        transaction_id,
+        intent_digest=intent.digest,
+        snapshot=snapshot,
+    )
+    quarantine_journal(
+        journal,
+        quarantine,
+        path.name,
+        expected_root_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=4096,
+        expected_journal=snapshot,
+    )
+
+    with pytest.raises(HostEventSinkError, match="durably quarantined"):
+        append_event(event)
+    assert not path.exists()
+    assert (quarantine / path.name).read_bytes() == snapshot.raw
 
 
 def test_quarantine_collision_fails_without_moving_source(tmp_path, monkeypatch):

@@ -19,7 +19,15 @@ from vllm_hust_ext.ecpa_model import (
     PluginIdentity,
     PredecessorSnapshot,
 )
+from vllm_hust_ext.host_event_sink import quarantine_journal, snapshot_journal
 from vllm_hust_ext.plan_artifact import plan_artifact_bytes, read_plan_artifact
+from vllm_hust_ext.quarantine_transaction import (
+    install_quarantine_source_fence,
+    mark_quarantine_applied,
+    prepare_quarantine_transaction,
+    quarantine_transaction_id,
+    read_quarantine_record,
+)
 
 ROOT = Path("experiments/false_effective").resolve()
 sys.path.insert(0, str(ROOT))
@@ -74,6 +82,178 @@ def activation_probe(adapter, arguments):
         "timeout_s": 2,
         "command_digest": fingerprint["digest"],
     }
+
+
+def test_runner_alone_finalizes_bound_quarantine_transaction(tmp_path):
+    events = tmp_path / "events"
+    quarantine = tmp_path / "quarantine"
+    events.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    event_identity = (events.stat().st_dev, events.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    journal = events / "worker.jsonl"
+    journal.write_bytes(b'{"event":"invoked"}\n')
+    snapshot = snapshot_journal(
+        events,
+        journal.name,
+        expected_root_identity=event_identity,
+        max_bytes=4096,
+    )
+    target = {"host": "host-a", "role": "worker", "ordinal": 0, "process_epoch": 1}
+    entry_point = {"group": "vllm.general_plugins", "name": "p", "value": "p:r"}
+    request = {
+        "scenario": "partial-worker-coverage",
+        "plan_id": "sha256:" + "1" * 64,
+        "launch_id": "launch:test",
+        "controller_instance": "controller:test",
+        "invocation_id": "invocation:test",
+        "challenge": "challenge:test",
+    }
+    descriptor_digest = "sha256:" + "2" * 64
+    binding = {
+        "schema": "ecpa-quarantine-transaction-binding/v1",
+        **request,
+        "target": target,
+        "entry_point": entry_point,
+        "journal": journal.name,
+        "descriptor_sha256": descriptor_digest,
+    }
+    transaction_id = quarantine_transaction_id(binding)
+    intent = prepare_quarantine_transaction(
+        quarantine,
+        quarantine_identity,
+        transaction_id,
+        binding=binding,
+        source_identity=event_identity,
+        snapshot=snapshot,
+    )
+    install_quarantine_source_fence(
+        events,
+        event_identity,
+        transaction_id,
+        intent_digest=intent.digest,
+        snapshot=snapshot,
+    )
+    retained = quarantine_journal(
+        events,
+        quarantine,
+        journal.name,
+        expected_root_identity=event_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=4096,
+        expected_journal=snapshot,
+    )
+    applied = mark_quarantine_applied(
+        quarantine,
+        quarantine_identity,
+        transaction_id,
+        intent_digest=intent.digest,
+        quarantined=retained,
+    )
+    fingerprint = {
+        "arguments": [
+            "partial-coverage",
+            "--quarantine-dir",
+            str(quarantine),
+            "--quarantine-device",
+            str(quarantine_identity[0]),
+            "--quarantine-inode",
+            str(quarantine_identity[1]),
+            "--event-dir",
+            str(events),
+            "--device",
+            str(event_identity[0]),
+            "--inode",
+            str(event_identity[1]),
+            "--descriptor-sha256",
+            descriptor_digest,
+        ]
+    }
+    audit = {
+        "schema": "ecpa-lifecycle-source-audit/v1",
+        "kind": "partial-worker-evidence-quarantine",
+        "scenario": request["scenario"],
+        "plan_id": request["plan_id"],
+        "launch_id": request["launch_id"],
+        "controller_instance": request["controller_instance"],
+        "lifecycle_invocation_id": request["invocation_id"],
+        "transaction_id": transaction_id,
+        "transaction_directory": str(quarantine),
+        "transaction_directory_device": quarantine_identity[0],
+        "transaction_directory_inode": quarantine_identity[1],
+        "transaction_intent_sha256": intent.digest,
+        "transaction_applied_sha256": applied.digest,
+        "descriptor_sha256": descriptor_digest,
+        "target": target,
+        "entry_point": entry_point,
+        "quarantined_journal": journal.name,
+    }
+    stderr = canonical(audit) + b"\n"
+    source_identity = {
+        "pid": os.getpid(),
+        "start_ticks": 1,
+        "argv": ["source"],
+        "executable_device": 1,
+        "executable_inode": 1,
+    }
+
+    result = runner_module._finalize_fault_transaction(
+        fingerprint, request, stderr, b"receipt", source_identity
+    )
+
+    finalized = read_quarantine_record(
+        quarantine, quarantine_identity, transaction_id, "finalized"
+    )
+    assert finalized is not None
+    assert result["finalized_sha256"] == finalized.digest
+
+
+def test_runner_rejects_unbound_audit_without_finalizing(tmp_path):
+    quarantine = tmp_path / "quarantine"
+    events = tmp_path / "events"
+    quarantine.mkdir(mode=0o700)
+    events.mkdir(mode=0o700)
+    identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    event_identity = (events.stat().st_dev, events.stat().st_ino)
+    fingerprint = {
+        "arguments": [
+            "--quarantine-dir",
+            str(quarantine),
+            "--quarantine-device",
+            str(identity[0]),
+            "--quarantine-inode",
+            str(identity[1]),
+            "--event-dir",
+            str(events),
+            "--device",
+            str(event_identity[0]),
+            "--inode",
+            str(event_identity[1]),
+            "--descriptor-sha256",
+            "sha256:" + "2" * 64,
+        ]
+    }
+    audit = {
+        "schema": "ecpa-lifecycle-source-audit/v1",
+        "kind": "partial-worker-evidence-quarantine",
+        "scenario": "another-scenario",
+    }
+    with pytest.raises(ValueError, match="audit binding"):
+        runner_module._finalize_fault_transaction(
+            fingerprint,
+            {
+                "scenario": "partial-worker-coverage",
+                "plan_id": "plan",
+                "launch_id": "launch",
+                "controller_instance": "controller",
+                "invocation_id": "invocation",
+                "challenge": "challenge",
+            },
+            canonical(audit) + b"\n",
+            b"receipt",
+            {},
+        )
+    assert not list(quarantine.glob("*.finalized.json"))
 
 
 def lifecycle_registry_fields(tmp_path):

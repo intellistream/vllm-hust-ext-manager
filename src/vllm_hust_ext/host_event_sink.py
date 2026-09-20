@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ FSYNC_ENV = "ECPA_HOST_EVENT_FSYNC"
 DEVICE_ENV = "ECPA_HOST_EVENT_DEVICE"
 INODE_ENV = "ECPA_HOST_EVENT_INODE"
 RENAME_NOREPLACE = 1
+QUARANTINE_LOCK = ".ecpa-quarantine.lock"
 
 
 class HostEventSinkError(RuntimeError):
@@ -171,15 +173,70 @@ def _journal_name(event: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest() + ".jsonl"
 
 
+def _quarantine_fence_name(journal: str) -> str:
+    """Return the persistent fence name protecting one quarantined journal."""
+    return ".ecpa-quarantine-" + hashlib.sha256(journal.encode()).hexdigest() + ".fence"
+
+
+def _acquire_quarantine_lock(
+    directory: int, *, exclusive: bool, nonblocking: bool = True
+) -> int:
+    """Acquire the source-directory fence shared by writers and the actuator."""
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            QUARANTINE_LOCK,
+            os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDWR | os.O_CREAT,
+            0o600,
+            dir_fd=directory,
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            os.close(descriptor)
+            descriptor = -1
+            raise HostEventSinkError("host event quarantine lock is unsafe")
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if nonblocking:
+            operation |= fcntl.LOCK_NB
+        fcntl.flock(descriptor, operation)
+        return descriptor
+    except BlockingIOError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HostEventSinkError("host event journal is fenced for quarantine") from exc
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HostEventSinkError("cannot acquire host event quarantine lock") from exc
+
+
 def append_event(event: dict[str, Any]) -> None:
     """Validate and append one host event to its process-specific journal."""
     raw = canonical_event(event) + b"\n"
     _root, directory = _configured_journal_root()
+    fence = -1
     try:
+        fence = _acquire_quarantine_lock(directory, exclusive=False, nonblocking=False)
         fsync = os.getenv(FSYNC_ENV, "0")
         if fsync not in {"0", "1"}:
             raise HostEventSinkError(f"{FSYNC_ENV} must be 0 or 1")
         name = _journal_name(event)
+        try:
+            os.stat(
+                _quarantine_fence_name(name),
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise HostEventSinkError("cannot inspect journal quarantine fence") from exc
+        else:
+            raise HostEventSinkError("host event journal is durably quarantined")
         flags = os.O_APPEND | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_WRONLY
         created = False
         try:
@@ -227,6 +284,8 @@ def append_event(event: dict[str, Any]) -> None:
             except OSError as exc:
                 raise HostEventSinkError("cannot sync host event directory") from exc
     finally:
+        if fence >= 0:
+            os.close(fence)
         os.close(directory)
 
 
@@ -302,6 +361,62 @@ def read_events(
     finally:
         os.close(directory)
     return tuple(records)
+
+
+def snapshot_journal(
+    root: Path,
+    journal: str,
+    *,
+    expected_root_identity: tuple[int, int],
+    max_bytes: int,
+) -> QuarantinedJournal:
+    """Read one stable journal and bind its exact bytes and inode before mutation."""
+    if (
+        Path(journal).name != journal
+        or not journal.endswith(".jsonl")
+        or isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes <= 0
+    ):
+        raise HostEventSinkError("journal snapshot request is invalid")
+    _root, directory = _open_journal_root(root, expected_root_identity)
+    try:
+        try:
+            descriptor = os.open(
+                journal,
+                os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_RDONLY,
+                dir_fd=directory,
+            )
+        except OSError as exc:
+            raise HostEventSinkError("cannot open journal for snapshot") from exc
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid():
+                raise HostEventSinkError(
+                    "journal snapshot source is not an owned regular file"
+                )
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                raw = stream.read(max_bytes + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(raw) > max_bytes:
+            raise HostEventSinkError("journal snapshot source exceeds the limit")
+        if raw and not raw.endswith(b"\n"):
+            raise HostEventSinkError("journal snapshot source is partial")
+        try:
+            after = os.stat(journal, dir_fd=directory, follow_symlinks=False)
+        except OSError as exc:
+            raise HostEventSinkError("journal snapshot source disappeared") from exc
+        if (after.st_dev, after.st_ino) != (
+            before.st_dev,
+            before.st_ino,
+        ) or after.st_size != before.st_size:
+            raise HostEventSinkError("journal snapshot source identity changed")
+        return QuarantinedJournal(journal, raw, before.st_dev, before.st_ino)
+    finally:
+        os.close(directory)
 
 
 def quarantine_journal(

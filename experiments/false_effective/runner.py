@@ -51,6 +51,11 @@ from vllm_hust_ext.manager_controller import (
     CONTROLLED_ENVIRONMENT,
 )
 from vllm_hust_ext.plan_artifact import read_plan_artifact
+from vllm_hust_ext.quarantine_transaction import (
+    QuarantineTransactionError,
+    finalize_quarantine_transaction,
+    read_quarantine_record,
+)
 
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
@@ -66,6 +71,126 @@ ECPA_FORMAL_ACTIVATION_OPTIONS = (
     "formal-run",
 )
 CHILD_TERMINATION_GRACE_S = 2.0
+
+
+def _single_option(arguments: list[str], name: str) -> str:
+    positions = [index for index, value in enumerate(arguments) if value == name]
+    if len(positions) != 1 or positions[0] + 1 >= len(arguments):
+        raise ValueError(
+            f"lifecycle fact source option is missing or duplicated: {name}"
+        )
+    value = arguments[positions[0] + 1]
+    if not value or value.startswith("--"):
+        raise ValueError(f"lifecycle fact source option is invalid: {name}")
+    return value
+
+
+def _finalize_fault_transaction(
+    fingerprint: dict[str, Any],
+    request: dict[str, Any],
+    stderr: bytes,
+    receipt_raw: bytes,
+    source_identity: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the actuator audit and durably accept exactly its transaction."""
+    if not stderr.endswith(b"\n") or stderr.count(b"\n") != 1:
+        raise ValueError("fault actuator must emit exactly one audit record")
+    try:
+        audit = json.loads(stderr[:-1])
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("fault actuator audit JSON is invalid") from exc
+    if not isinstance(audit, dict) or stderr != canonical(audit) + b"\n":
+        raise ValueError("fault actuator audit is not canonical")
+    transaction_id = audit.get("transaction_id")
+    transaction_root_text = audit.get("transaction_directory")
+    transaction_device = audit.get("transaction_directory_device")
+    transaction_inode = audit.get("transaction_directory_inode")
+    intent_digest = audit.get("transaction_intent_sha256")
+    applied_digest = audit.get("transaction_applied_sha256")
+    expected_root = Path(
+        _single_option(fingerprint["arguments"], "--quarantine-dir")
+    ).resolve(strict=True)
+    expected_device = int(
+        _single_option(fingerprint["arguments"], "--quarantine-device")
+    )
+    expected_inode = int(_single_option(fingerprint["arguments"], "--quarantine-inode"))
+    source_root = Path(_single_option(fingerprint["arguments"], "--event-dir")).resolve(
+        strict=True
+    )
+    event_directory_identity = (
+        int(_single_option(fingerprint["arguments"], "--device")),
+        int(_single_option(fingerprint["arguments"], "--inode")),
+    )
+    expected_descriptor_digest = _single_option(
+        fingerprint["arguments"], "--descriptor-sha256"
+    )
+    if (
+        audit.get("schema") != "ecpa-lifecycle-source-audit/v1"
+        or audit.get("kind") != "partial-worker-evidence-quarantine"
+        or audit.get("scenario") != request["scenario"]
+        or audit.get("plan_id") != request["plan_id"]
+        or audit.get("launch_id") != request["launch_id"]
+        or audit.get("controller_instance") != request["controller_instance"]
+        or audit.get("lifecycle_invocation_id") != request["invocation_id"]
+        or not isinstance(transaction_id, str)
+        or len(transaction_id) != 64
+        or any(character not in "0123456789abcdef" for character in transaction_id)
+        or not isinstance(transaction_root_text, str)
+        or Path(transaction_root_text).resolve(strict=True) != expected_root
+        or transaction_device != expected_device
+        or transaction_inode != expected_inode
+        or audit.get("descriptor_sha256") != expected_descriptor_digest
+        or not isinstance(intent_digest, str)
+        or not isinstance(applied_digest, str)
+    ):
+        raise ValueError("fault actuator audit binding is invalid")
+    identity = (expected_device, expected_inode)
+    try:
+        intent = read_quarantine_record(
+            expected_root, identity, transaction_id, "intent"
+        )
+        applied = read_quarantine_record(
+            expected_root, identity, transaction_id, "applied"
+        )
+        assert intent is not None and applied is not None
+        expected_binding = {
+            "schema": "ecpa-quarantine-transaction-binding/v1",
+            "scenario": request["scenario"],
+            "plan_id": request["plan_id"],
+            "launch_id": request["launch_id"],
+            "controller_instance": request["controller_instance"],
+            "invocation_id": request["invocation_id"],
+            "challenge": request["challenge"],
+            "target": audit.get("target"),
+            "entry_point": audit.get("entry_point"),
+            "journal": audit.get("quarantined_journal"),
+            "descriptor_sha256": expected_descriptor_digest,
+        }
+        if (
+            intent.digest != intent_digest
+            or applied.digest != applied_digest
+            or intent.value.get("binding") != expected_binding
+        ):
+            raise ValueError("fault actuator transaction chain differs from audit")
+        finalized = finalize_quarantine_transaction(
+            expected_root,
+            identity,
+            transaction_id,
+            source_root=source_root,
+            source_identity=event_directory_identity,
+            applied_digest=applied_digest,
+            fact_receipt_sha256=digest_bytes(receipt_raw),
+            source_process_identity=source_identity,
+        )
+    except QuarantineTransactionError as exc:
+        raise ValueError("fault actuator transaction finalization failed") from exc
+    return {
+        "transaction_id": transaction_id,
+        "intent_sha256": intent.digest,
+        "applied_sha256": applied.digest,
+        "finalized_sha256": finalized.digest,
+        "finalized_record_base64": base64.b64encode(finalized.raw).decode(),
+    }
 
 
 def command_references_fixture(values: list[str]) -> bool:
@@ -723,6 +848,17 @@ def run_lifecycle_fact_source(
     validate_formal_lifecycle_receipt(phase, event, source_process, reasons)
     if reasons:
         raise ValueError(reasons[0])
+    if (
+        phase == "fault-injected"
+        and request.get("scenario") == "partial-worker-coverage"
+    ):
+        source_process["quarantine_finalization"] = _finalize_fault_transaction(
+            fingerprint,
+            request,
+            stderr,
+            raw,
+            initial_identity,
+        )
     return event, source_process
 
 
