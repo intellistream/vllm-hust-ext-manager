@@ -83,6 +83,13 @@ conditionally compatible before running the planner. Include conflicts with
 the same resource under different names and non-conflicting plugins that share
 a provider so precision cannot be inflated by blanket rejection.
 
+The first reviewed static corpus instantiates 31 modeled compositions: 21
+admit and 10 reject. The taxonomy-aware reference evaluator matches every
+decision and reject error code, while reject-all achieves only 10/31 precision
+and zero admit recall. This closes the small modeled-corpus mechanics gate, not
+the external-validity gate: every conflicting composition currently includes a
+synthetic boundary control, and no runtime effectiveness follows from L2.
+
 ### Version-skew matrix
 
 For each formal provider, test the current supported host/plugin/manifest tuple,

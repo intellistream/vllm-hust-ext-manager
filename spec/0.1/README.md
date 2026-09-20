@@ -96,8 +96,9 @@ and exclusive/shared/mediated resource ownership. L2 still requires the
 independently labeled corpus precision/recall gate; L3--L4 remain experimental.
 The candidate L2 inputs and manual oracle are frozen under
 `experiments/contract_planner` and have passed exact-digest independent label
-review, but they have not been evaluated by the compiler. No L2
-precision/recall result is claimed from those artifacts.
+review. The taxonomy-aware reference evaluator matches all 31 modeled cases;
+its precision/recall result is limited to that static corpus and does not prove
+real-plugin runtime effectiveness or conflict prevalence.
 
 The executable 0.1 protocol vocabulary is in `protocol.schema.json`, with a
 checked instance in `protocol-instance.json`. Identifiers are SHA-256 content

@@ -41,7 +41,33 @@ The five adaptation candidates remain excluded because the evidence corpus has
 no verified registration surface for them. This study does not fabricate
 conforming manifests from repository names or policy code.
 
-The next change, after independent review of these frozen inputs, may add the
-taxonomy-aware evaluator, preserve every raw decision, and compute per-class
-and aggregate confusion matrices. Only that later measured artifact may support
-precision or recall claims.
+## Modeled static evaluation
+
+`evaluate.py` converts each minimal descriptor into a complete in-memory ECPA
+L2 contract object with no invented lifecycle capability or L3 evidence
+obligation, invokes the reference compiler with the frozen taxonomy, and writes
+canonical per-case decisions plus aggregate and per-dimension confusion
+matrices. The checked-in `results/` artifacts bind the three reviewed inputs,
+the exact reviewed oracle bytes and review commits, the evaluator source, the
+compiler source, and the raw-decision digest. The evaluator contains the
+reviewed oracle digest as a code-reviewed constant, so editing status/verdict
+or regenerating labels from compiler output fails before scoring.
+
+Run:
+
+```console
+python experiments/contract_planner/evaluate.py
+```
+
+For the reviewed 31-case corpus, all 21 admits and 10 rejects match, including
+all reject error codes. Reject precision, reject recall, and admit recall are
+1.0. A reject-all baseline has precision 10/31 and admit recall 0, so blanket
+rejection does not pass. Per-dimension metrics with zero positive or negative
+support are reported as `null`, not 0 or 1.
+
+These numbers establish conformance to a small, modeled static corpus; they do
+not establish runtime effectiveness, real-plugin conflict prevalence, or
+external validity. Every conflicting composition includes a synthetic boundary
+control, and the evidence-backed descriptors remain study abstractions rather
+than source-shipped ECPA manifests. Real manifest migration and runtime cells
+remain separate work.
