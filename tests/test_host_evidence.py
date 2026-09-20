@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -516,6 +518,55 @@ def test_deployment_sink_and_reader_reject_symlink_or_partial_journal(
     path.write_bytes(canonical_event(event))
     with pytest.raises(HostEventSinkError, match="partial"):
         read_events(journal)
+
+
+def test_sink_and_reader_reject_fifo_without_blocking(tmp_path, monkeypatch):
+    journal = tmp_path.resolve()
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    event = json.loads(raw_event())
+    append_event(event)
+    path = next(journal.glob("*.jsonl"))
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    environment = os.environ.copy()
+    environment["ECPA_TEST_HOST_EVENT"] = json.dumps(event, separators=(",", ":"))
+
+    writer = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, os; "
+                "from vllm_hust_ext.host_event_sink import append_event; "
+                "append_event(json.loads(os.environ['ECPA_TEST_HOST_EVENT']))"
+            ),
+        ],
+        capture_output=True,
+        env=environment,
+        text=True,
+        timeout=2,
+    )
+    assert writer.returncode != 0
+    assert "HostEventSinkError" in writer.stderr
+
+    reader = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; from pathlib import Path; "
+                "from vllm_hust_ext.host_event_sink import read_events; "
+                "read_events(Path(os.environ['ECPA_HOST_EVENT_DIR']))"
+            ),
+        ],
+        capture_output=True,
+        env=environment,
+        text=True,
+        timeout=2,
+    )
+    assert reader.returncode != 0
+    assert "HostEventSinkError" in reader.stderr
 
 
 def test_sink_rejects_invalid_durability_mode_before_writing(tmp_path, monkeypatch):

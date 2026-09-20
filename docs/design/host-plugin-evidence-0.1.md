@@ -56,7 +56,9 @@ VLLM_ECPA_EVIDENCE_SINK=vllm_hust_ext.host_event_sink:append_event
 The sink validates the current strict wire contract, canonicalizes the event,
 and appends it to a process-specific mode-0600 JSONL journal. It restores mode
 0600 before appending to a pre-existing owned journal and refuses symlink
-destinations and non-owned/non-regular files. To avoid silently adding a
+destinations and non-owned/non-regular files. Existing journals and reader
+inputs are opened nonblocking so a FIFO cannot stall the scheduler or evidence
+ingestion before the regular-file check. To avoid silently adding a
 synchronous scheduler-hot-path durability cost, fsync is off by default. With
 `ECPA_HOST_EVENT_FSYNC=1`, the sink requests an fsync of each appended record
 and, when it creates a journal, the containing directory entry. The environment

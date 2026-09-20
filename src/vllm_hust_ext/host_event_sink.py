@@ -81,7 +81,7 @@ def append_event(event: dict[str, Any]) -> None:
     if fsync not in {"0", "1"}:
         raise HostEventSinkError(f"{FSYNC_ENV} must be 0 or 1")
     path = root / _journal_name(event)
-    flags = os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_WRONLY
+    flags = os.O_APPEND | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_WRONLY
     created = False
     try:
         descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
@@ -137,7 +137,10 @@ def read_events(root: Path) -> tuple[JournalEvent, ...]:
         if path.suffix != ".jsonl":
             continue
         try:
-            descriptor = os.open(path, os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY)
+            descriptor = os.open(
+                path,
+                os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_RDONLY,
+            )
         except OSError as exc:
             raise HostEventSinkError("cannot open host event journal") from exc
         try:
