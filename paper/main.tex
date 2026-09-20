@@ -311,17 +311,17 @@ process-owned observer can establish runtime effectiveness.  Existing evidence
 includes provider-specific integration campaigns, but those campaigns were not
 designed as the matched experiment required by this paper.
 
-Two important evaluation pieces are incomplete.  The implementation now has a
+One major evaluation piece remains incomplete.  The implementation now has a
 pure contract compiler that resolves normalized public-PEP-440 requirements to
 exactly one provider, derives deterministic dependency order, rejects cycles,
 binds typed observation authority and quorum policy, and checks exclusive,
-shared-read, and selected-mediator resource ownership.  However,
-capability and conflict data still need one frozen machine-readable taxonomy
-with an independently labeled oracle.  Process-owned evidence also needs a
-completed real launch and aggregation experiment across parent/worker
-topologies.  Consequently we claim an implementation foundation and admission
-mechanics, not a completed end-to-end \system evaluation or measured conflict
-accuracy.
+shared-read, and selected-mediator resource ownership.  A frozen
+machine-readable taxonomy and independently labeled modeled oracle now measure
+the static admission mechanics, with the limitations reported in
+Section~\ref{sec:evaluation}.  Process-owned evidence still needs a completed
+real launch and aggregation experiment across parent/worker topologies.
+Consequently we claim measured modeled L2 admission, not a completed end-to-end
+\system evaluation.
 
 The coordinator persists an immutable canonical plan before launching work.
 Each plan has a monotonically increasing generation, predecessor, launch ID,
@@ -416,16 +416,24 @@ oracle before implementing the evaluator.  The models cover all 11 registered
 extensions and add explicitly marked synthetic controls for otherwise absent
 conflict boundaries; the five adaptation candidates remain excluded.  The
 oracle passed independent exact-digest label review.  This preregistration is
-still not a planner result and establishes no precision or recall value.
+evaluated after review: the reference planner matches all 21 admits and 10
+rejects, including reject error codes.  Reject precision, reject recall, and
+admit recall are each 1.0; a reject-all baseline has precision $10/31$ and admit
+recall 0.  This result establishes conformance only to the small modeled static
+corpus.  Every conflict case contains a synthetic boundary control, so the
+result does not establish real-plugin conflict prevalence, runtime
+effectiveness, or external validity.
 
 \section{Evaluation Methodology and Current Evidence}
+\label{sec:evaluation}
 The executable false-effective harness preregisters three matched arms:
 vanilla vLLM entry points, manual integration, and ECPA.  Formal cells require
 three independent service starts per arm under a three-by-three Latin-square
 order.  A separate oracle derives outcomes from preregistered truth predicates
 and raw runtime observations; implementation decisions are not accepted as
 ground truth.  The current checked matrix has zero completed formal-real cells,
-so every paper metric remains null.  A 45-start helper-process run tests the
+so activation, rollback, and performance metrics remain null; the modeled L2
+result above is separate.  A 45-start helper-process run tests the
 harness lifecycle and failure classification, but is explicitly
 reference-synthetic and excluded from paper aggregates.  Formal ingestion is
 runner-owned and content-addresses the command, semantic environment, raw

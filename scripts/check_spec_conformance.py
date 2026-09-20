@@ -51,6 +51,30 @@ def main() -> int:
         planner_oracle["source_corpus_sha256"]
         == hashlib.sha256((ROOT / "docs/corpus/plugins.json").read_bytes()).hexdigest()
     )
+    decisions_path = planner / "results/decisions.jsonl"
+    decisions = [json.loads(line) for line in decisions_path.read_text().splitlines()]
+    decision_validator = jsonschema.Draft7Validator(
+        load(planner / "decision.schema.json")
+    )
+    for decision in decisions:
+        decision_validator.validate(decision)
+    planner_metrics = load(planner / "results/metrics.json")
+    jsonschema.Draft7Validator(load(planner / "metrics.schema.json")).validate(
+        planner_metrics
+    )
+    assert planner_metrics["case_count"] == len(decisions)
+    assert (
+        planner_metrics["decisions_sha256"]
+        == hashlib.sha256(decisions_path.read_bytes()).hexdigest()
+    )
+    assert planner_metrics["inputs"] == {
+        "cases_sha256": planner_oracle["cases_sha256"],
+        "taxonomy_sha256": planner_oracle["taxonomy_sha256"],
+        "source_corpus_sha256": planner_oracle["source_corpus_sha256"],
+        "oracle_sha256": hashlib.sha256(
+            (planner / "oracle.json").read_bytes()
+        ).hexdigest(),
+    }
     jsonschema.Draft7Validator(load(spec / "protocol.schema.json")).validate(
         load(spec / "protocol-instance.json")
     )
@@ -77,7 +101,7 @@ def main() -> int:
         f"2 invalid examples rejected, 2 host events valid, corpus valid, "
         f"{len(vectors['cases'])} attestation vectors indexed, "
         f"{len(planner_cases['cases'])} L2 cases structurally validated "
-        f"with status {planner_oracle['status']}"
+        f"with status {planner_oracle['status']}; modeled decisions indexed"
     )
     return 0
 

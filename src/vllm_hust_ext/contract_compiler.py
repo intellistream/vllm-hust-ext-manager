@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -25,6 +25,15 @@ _COMPLETION_MODES = {"all", "quorum", "optional"}
 _EVENTS = {"loaded", "invoked", "health-observed"}
 _AUTHORITY_KINDS = {"provider", "runtime", "external"}
 _CAPABILITY_DIRECTIONS = {"provides", "requires"}
+_TAXONOMY_DECISION_PRECEDENCE = (
+    "unknown-resource",
+    "invalid-mode",
+    "capability-cardinality",
+    "resource-mode",
+    "mediator-consistency",
+    "mediator-presence",
+)
+_TAXONOMY_SCOPE = "vLLM-HUST-static-contract-study"
 
 
 class PlanningErrorCode(str, Enum):
@@ -37,6 +46,8 @@ class PlanningErrorCode(str, Enum):
     DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
     RESOURCE_CONFLICT = "RESOURCE_CONFLICT"
     AUTHORITY_VIOLATION = "AUTHORITY_VIOLATION"
+    UNKNOWN_RESOURCE = "UNKNOWN_RESOURCE"
+    INVALID_RESOURCE_MODE = "INVALID_RESOURCE_MODE"
 
 
 class ContractPlanningError(ValueError):
@@ -59,6 +70,22 @@ class ContractResource:
     name: str
     mode: str
     mediator: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomyResource:
+    canonical: str
+    aliases: tuple[str, ...]
+    allowed_modes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ContractTaxonomy:
+    schema: str
+    scope: str
+    decision_precedence: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    resources: tuple[TaxonomyResource, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +334,117 @@ def _authority_grants(
                 item.capability,
             ),
         )
+    )
+
+
+def parse_contract_taxonomy(payload: Any) -> ContractTaxonomy:
+    """Parse the frozen resource alias and ownership-mode taxonomy."""
+    item = _object(
+        payload,
+        "taxonomy",
+        {"schema", "scope", "decision_precedence", "capabilities", "resources"},
+    )
+    schema = _string(item["schema"], "taxonomy.schema")
+    if schema != "ecpa-contract-taxonomy/0.1-draft":
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.schema is unsupported",
+        )
+    scope = _string(item["scope"], "taxonomy.scope")
+    if scope != _TAXONOMY_SCOPE:
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.scope is unsupported",
+        )
+    raw_precedence = item["decision_precedence"]
+    if not isinstance(raw_precedence, list):
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.decision_precedence must be an array",
+        )
+    precedence = tuple(
+        _string(value, "taxonomy.decision_precedence[]") for value in raw_precedence
+    )
+    if precedence != _TAXONOMY_DECISION_PRECEDENCE:
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.decision_precedence is unsupported",
+        )
+
+    raw_capabilities = item["capabilities"]
+    if not isinstance(raw_capabilities, list) or not raw_capabilities:
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.capabilities must be a non-empty array",
+        )
+    capabilities: list[str] = []
+    for index, raw in enumerate(raw_capabilities):
+        capability = _object(
+            raw,
+            f"taxonomy.capabilities[{index}]",
+            {"name", "description"},
+        )
+        capabilities.append(
+            _identifier(capability["name"], f"taxonomy.capabilities[{index}].name")
+        )
+        _string(
+            capability["description"],
+            f"taxonomy.capabilities[{index}].description",
+        )
+    if len(capabilities) != len(set(capabilities)):
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.capabilities contains duplicate names",
+        )
+
+    raw_resources = item["resources"]
+    if not isinstance(raw_resources, list) or not raw_resources:
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy.resources must be a non-empty array",
+        )
+    resources: list[TaxonomyResource] = []
+    all_names: list[str] = []
+    for index, raw in enumerate(raw_resources):
+        resource = _object(
+            raw,
+            f"taxonomy.resources[{index}]",
+            {"canonical", "aliases", "allowed_modes", "description"},
+        )
+        canonical = _identifier(
+            resource["canonical"], f"taxonomy.resources[{index}].canonical"
+        )
+        aliases = _string_array(
+            resource["aliases"], f"taxonomy.resources[{index}].aliases"
+        )
+        for alias_index, alias in enumerate(aliases):
+            _identifier(alias, f"taxonomy.resources[{index}].aliases[{alias_index}]")
+        allowed_modes = _string_array(
+            resource["allowed_modes"],
+            f"taxonomy.resources[{index}].allowed_modes",
+        )
+        if not allowed_modes or not set(allowed_modes) <= _RESOURCE_MODES:
+            raise ContractPlanningError(
+                PlanningErrorCode.INVALID_CONTRACT,
+                f"taxonomy.resources[{index}].allowed_modes is unsupported",
+            )
+        _string(
+            resource["description"],
+            f"taxonomy.resources[{index}].description",
+        )
+        resources.append(TaxonomyResource(canonical, aliases, allowed_modes))
+        all_names.extend((canonical, *aliases))
+    if len(all_names) != len(set(all_names)):
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_CONTRACT,
+            "taxonomy resource canonical names and aliases must be globally unique",
+        )
+    return ContractTaxonomy(
+        schema=schema,
+        scope=scope,
+        decision_precedence=precedence,
+        capabilities=tuple(sorted(capabilities)),
+        resources=tuple(sorted(resources, key=lambda value: value.canonical)),
     )
 
 
@@ -649,38 +787,115 @@ def _resolve_resources(
             claims.setdefault(resource.name, []).append(
                 (contract.extension_id, resource)
             )
-    result: list[ResourceOwnership] = []
+    summaries = []
     for resource_name, raw_claims in sorted(claims.items()):
         owners = tuple(sorted(owner for owner, _ in raw_claims))
         modes = {claim.mode for _, claim in raw_claims}
         mediators = {claim.mediator for _, claim in raw_claims}
+        summaries.append((resource_name, raw_claims, owners, modes, mediators))
+
+    resource_mode_errors = [
+        (resource_name, owners)
+        for resource_name, raw_claims, owners, modes, _ in summaries
+        if len(owners) != len(set(owners))
+        or (len(raw_claims) > 1 and modes not in ({"shared-read"}, {"mediated"}))
+    ]
+    if resource_mode_errors:
+        resource_name, owners = resource_mode_errors[0]
+        raise ContractPlanningError(
+            PlanningErrorCode.RESOURCE_CONFLICT,
+            f"{resource_name} has incompatible or duplicate claims from {list(owners)}",
+        )
+
+    mediator_consistency_errors = [
+        (resource_name, owners)
+        for resource_name, _, owners, modes, mediators in summaries
+        if modes == {"mediated"} and len(mediators) != 1
+    ]
+    if mediator_consistency_errors:
+        resource_name, owners = mediator_consistency_errors[0]
+        raise ContractPlanningError(
+            PlanningErrorCode.RESOURCE_CONFLICT,
+            f"{resource_name} has inconsistent mediators from {list(owners)}",
+        )
+
+    mediator_presence_errors = [
+        (resource_name, next(iter(mediators)))
+        for resource_name, _, owners, modes, mediators in summaries
+        if modes == {"mediated"} and next(iter(mediators)) not in owners
+    ]
+    if mediator_presence_errors:
+        resource_name, mediator = mediator_presence_errors[0]
+        raise ContractPlanningError(
+            PlanningErrorCode.AUTHORITY_VIOLATION,
+            f"{resource_name} mediator {mediator!r} has no selected ownership claim",
+        )
+
+    result: list[ResourceOwnership] = []
+    for resource_name, raw_claims, owners, modes, mediators in summaries:
         if modes == {"mediated"}:
-            if len(mediators) != 1:
-                raise ContractPlanningError(
-                    PlanningErrorCode.RESOURCE_CONFLICT,
-                    f"{resource_name} has inconsistent mediators from {list(owners)}",
-                )
-            mediator = next(iter(mediators))
-            if mediator not in owners:
-                raise ContractPlanningError(
-                    PlanningErrorCode.AUTHORITY_VIOLATION,
-                    f"{resource_name} mediator {mediator!r} has no selected "
-                    "ownership claim",
-                )
             mode = "mediated"
+            mediator = next(iter(mediators))
         elif len(raw_claims) == 1:
             mode = raw_claims[0][1].mode
             mediator = raw_claims[0][1].mediator
-        elif modes == {"shared-read"}:
+        else:
             mode = "shared-read"
             mediator = None
-        else:
-            raise ContractPlanningError(
-                PlanningErrorCode.RESOURCE_CONFLICT,
-                f"{resource_name} has incompatible claims from {list(owners)}",
-            )
         result.append(ResourceOwnership(resource_name, mode, owners, mediator))
     return tuple(result)
+
+
+def _normalize_taxonomy_resources(
+    contracts: tuple[ExtensionContract, ...], taxonomy: ContractTaxonomy
+) -> tuple[ExtensionContract, ...]:
+    lookup = {
+        name: resource
+        for resource in taxonomy.resources
+        for name in (resource.canonical, *resource.aliases)
+    }
+    unknown = sorted(
+        (contract.extension_id, claim.name)
+        for contract in contracts
+        for claim in contract.resources
+        if claim.name not in lookup
+    )
+    if unknown:
+        extension_id, resource_name = unknown[0]
+        raise ContractPlanningError(
+            PlanningErrorCode.UNKNOWN_RESOURCE,
+            f"{extension_id} claims unknown resource {resource_name}",
+        )
+    invalid_modes = sorted(
+        (contract.extension_id, lookup[claim.name].canonical, claim.mode)
+        for contract in contracts
+        for claim in contract.resources
+        if claim.mode not in lookup[claim.name].allowed_modes
+    )
+    if invalid_modes:
+        extension_id, resource_name, mode = invalid_modes[0]
+        allowed_modes = lookup[resource_name].allowed_modes
+        raise ContractPlanningError(
+            PlanningErrorCode.INVALID_RESOURCE_MODE,
+            f"{extension_id} claims {resource_name} as {mode}; "
+            f"allowed modes are {list(allowed_modes)}",
+        )
+
+    normalized: list[ExtensionContract] = []
+    for contract in contracts:
+        resources: list[ContractResource] = []
+        for claim in contract.resources:
+            rule = lookup[claim.name]
+            resources.append(
+                ContractResource(rule.canonical, claim.mode, claim.mediator)
+            )
+        normalized.append(
+            replace(
+                contract,
+                resources=tuple(sorted(resources, key=lambda value: value.name)),
+            )
+        )
+    return tuple(normalized)
 
 
 def _validate_obligation_authority(contracts: tuple[ExtensionContract, ...]) -> None:
@@ -747,7 +962,11 @@ def _bind_obligations(
 
 
 def compile_contracts(
-    contracts: tuple[ExtensionContract, ...], *, host_runtime: str, host_version: str
+    contracts: tuple[ExtensionContract, ...],
+    *,
+    host_runtime: str,
+    host_version: str,
+    resource_taxonomy: ContractTaxonomy | None = None,
 ) -> ContractPlan:
     """Compile compatible contracts into one deterministic immutable plan."""
     if not contracts:
@@ -771,6 +990,8 @@ def compile_contracts(
                 f"{contract.host_runtime}{contract.host_version_range}",
             )
     normalized = tuple(sorted(contracts, key=lambda item: item.extension_id))
+    if resource_taxonomy is not None:
+        normalized = _normalize_taxonomy_resources(normalized, resource_taxonomy)
     _validate_obligation_authority(normalized)
     bindings, dependencies = _resolve_capabilities(normalized)
     ordered = _order_contracts(normalized, dependencies)

@@ -10,6 +10,7 @@ from vllm_hust_ext.contract_compiler import (
     PlanningErrorCode,
     compile_contracts,
     parse_contract,
+    parse_contract_taxonomy,
 )
 
 
@@ -198,6 +199,195 @@ def test_same_resource_different_plugin_names_conflict():
     second = manifest("org.example.beta", resources=[(resource, "exclusive", None)])
 
     assert_code(PlanningErrorCode.RESOURCE_CONFLICT, first, second)
+
+
+def test_frozen_taxonomy_normalizes_aliases_and_fails_unknown_resources_closed():
+    taxonomy = parse_contract_taxonomy(
+        json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+    )
+    first = parse_contract(
+        manifest(
+            "org.example.alpha",
+            resources=[("org.vllm-hust.scheduler.preemption-slot", "exclusive", None)],
+        )
+    )
+    alias = parse_contract(
+        manifest(
+            "org.example.beta",
+            resources=[("org.vllm.scheduler.victim-selector", "exclusive", None)],
+        )
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            (first, alias),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.RESOURCE_CONFLICT
+
+    unknown = parse_contract(
+        manifest(
+            "org.example.unknown",
+            resources=[("org.example.hidden-resource", "exclusive", None)],
+        )
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            (unknown,),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.UNKNOWN_RESOURCE
+
+
+def test_frozen_taxonomy_rejects_disallowed_mode_before_capability_resolution():
+    taxonomy = parse_contract_taxonomy(
+        json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+    )
+    item = manifest(
+        "org.example.invalid-mode",
+        requires=[("org.example.missing", ">=1")],
+        resources=[("org.vllm-hust.platform.backend-slot", "shared-read", None)],
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            (parse_contract(item),),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.INVALID_RESOURCE_MODE
+
+
+def test_taxonomy_precedence_is_global_not_resource_traversal_order():
+    taxonomy = parse_contract_taxonomy(
+        json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+    )
+    item = manifest(
+        "org.example.multiple-invalid",
+        resources=[
+            ("org.vllm-hust.platform.backend-slot", "mediated", "org.example.m"),
+            ("org.zzz.unknown-resource", "exclusive", None),
+        ],
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            (parse_contract(item),),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.UNKNOWN_RESOURCE
+
+
+def test_alias_normalization_rejects_duplicate_claim_by_same_contract():
+    taxonomy = parse_contract_taxonomy(
+        json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+    )
+    duplicate = parse_contract(
+        manifest(
+            "org.example.duplicate-reader",
+            resources=[
+                ("org.vllm-hust.runtime.lifecycle-events", "shared-read", None),
+                ("org.vllm.runtime.lifecycle-observation", "shared-read", None),
+            ],
+        )
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            (duplicate,),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.RESOURCE_CONFLICT
+
+
+def test_resource_mode_and_mediator_checks_use_global_precedence():
+    taxonomy = parse_contract_taxonomy(
+        json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+    )
+    ghost = manifest(
+        "org.example.deployment-client",
+        resources=[
+            (
+                "org.vllm-hust.deployment.replicas",
+                "mediated",
+                "org.example.absent-mediator",
+            )
+        ],
+    )
+    exclusive_a = manifest(
+        "org.example.preemption-a",
+        resources=[("org.vllm-hust.scheduler.preemption-slot", "exclusive", None)],
+    )
+    exclusive_b = manifest(
+        "org.example.preemption-b",
+        resources=[("org.vllm.scheduler.victim-selector", "exclusive", None)],
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            tuple(parse_contract(item) for item in (ghost, exclusive_a, exclusive_b)),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.RESOURCE_CONFLICT
+
+    mediated_a = manifest(
+        "org.example.preemption-mediated-a",
+        resources=[
+            (
+                "org.vllm-hust.scheduler.preemption-slot",
+                "mediated",
+                "org.example.mediator-a",
+            )
+        ],
+    )
+    mediated_b = manifest(
+        "org.example.preemption-mediated-b",
+        resources=[
+            (
+                "org.vllm.scheduler.victim-selector",
+                "mediated",
+                "org.example.mediator-b",
+            )
+        ],
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        compile_contracts(
+            tuple(parse_contract(item) for item in (ghost, mediated_a, mediated_b)),
+            host_runtime="vllm",
+            host_version="0.11.2",
+            resource_taxonomy=taxonomy,
+        )
+    assert error.value.code is PlanningErrorCode.RESOURCE_CONFLICT
+
+
+def test_taxonomy_parser_rejects_scope_order_and_alias_ambiguity():
+    payload = json.loads(Path("spec/0.1/contract-taxonomy.json").read_text())
+
+    wrong_scope = copy.deepcopy(payload)
+    wrong_scope["scope"] = "another-runtime"
+    with pytest.raises(ContractPlanningError) as error:
+        parse_contract_taxonomy(wrong_scope)
+    assert error.value.code is PlanningErrorCode.INVALID_CONTRACT
+
+    wrong_order = copy.deepcopy(payload)
+    wrong_order["decision_precedence"].reverse()
+    with pytest.raises(ContractPlanningError) as error:
+        parse_contract_taxonomy(wrong_order)
+    assert error.value.code is PlanningErrorCode.INVALID_CONTRACT
+
+    duplicate_alias = copy.deepcopy(payload)
+    duplicate_alias["resources"][1]["aliases"].append(
+        duplicate_alias["resources"][0]["canonical"]
+    )
+    with pytest.raises(ContractPlanningError) as error:
+        parse_contract_taxonomy(duplicate_alias)
+    assert error.value.code is PlanningErrorCode.INVALID_CONTRACT
 
 
 def test_mediated_sharing_requires_one_explicit_mediator():

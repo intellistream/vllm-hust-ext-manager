@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/experiments/contract-planner/metrics.schema.json",
+  "type": "object",
+  "required": ["schema", "classification", "generator", "implementation", "inputs", "oracle", "decisions_sha256", "case_count", "overall", "by_dimension", "degenerate_baselines", "reject_error_code_accuracy", "all_decisions_match", "all_errors_match"],
+  "properties": {
+    "schema": {"const": "ecpa-contract-planner-results/0.1"},
+    "classification": {"const": "modeled-static-contract-corpus"},
+    "generator": {"const": "ecpa-l2-evaluator/0.1"},
+    "implementation": {
+      "type": "object",
+      "required": ["evaluator_sha256", "contract_compiler_sha256"],
+      "properties": {
+        "evaluator_sha256": {"$ref": "#/definitions/digest"},
+        "contract_compiler_sha256": {"$ref": "#/definitions/digest"}
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "oracle_sha256"],
+      "properties": {
+        "cases_sha256": {"$ref": "#/definitions/digest"},
+        "taxonomy_sha256": {"$ref": "#/definitions/digest"},
+        "source_corpus_sha256": {"$ref": "#/definitions/digest"},
+        "oracle_sha256": {"$ref": "#/definitions/digest"}
+      },
+      "additionalProperties": false
+    },
+    "oracle": {
+      "type": "object",
+      "required": ["sha256", "content_review_commit", "artifact_review_commit"],
+      "properties": {
+        "sha256": {"$ref": "#/definitions/digest"},
+        "content_review_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "artifact_review_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      },
+      "additionalProperties": false
+    },
+    "decisions_sha256": {"$ref": "#/definitions/digest"},
+    "case_count": {"type": "integer", "minimum": 1},
+    "overall": {"$ref": "#/definitions/confusion"},
+    "by_dimension": {"type": "object", "additionalProperties": {"$ref": "#/definitions/confusion"}},
+    "degenerate_baselines": {
+      "type": "object",
+      "required": ["admit-all", "reject-all"],
+      "properties": {"admit-all": {"$ref": "#/definitions/confusion"}, "reject-all": {"$ref": "#/definitions/confusion"}},
+      "additionalProperties": false
+    },
+    "reject_error_code_accuracy": {"$ref": "#/definitions/ratio"},
+    "all_decisions_match": {"type": "boolean"},
+    "all_errors_match": {"type": "boolean"}
+  },
+  "definitions": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ratio": {
+      "type": "object",
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "confusion": {
+      "type": "object",
+      "required": ["true_reject", "true_admit", "false_reject", "false_admit", "reject_precision", "reject_recall", "admit_recall", "accuracy"],
+      "properties": {
+        "true_reject": {"type": "integer", "minimum": 0},
+        "true_admit": {"type": "integer", "minimum": 0},
+        "false_reject": {"type": "integer", "minimum": 0},
+        "false_admit": {"type": "integer", "minimum": 0},
+        "reject_precision": {"$ref": "#/definitions/ratio"},
+        "reject_recall": {"$ref": "#/definitions/ratio"},
+        "admit_recall": {"$ref": "#/definitions/ratio"},
+        "accuracy": {"$ref": "#/definitions/ratio"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
