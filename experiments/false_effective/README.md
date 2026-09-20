@@ -77,19 +77,30 @@ deployment-registration gate, is specified in
 [`docs/design/formal-real-lifecycle-sources.md`](../../docs/design/formal-real-lifecycle-sources.md).
 
 `formal-real` is fail closed behind the canonical `verified-adapters.json`
-registry. A registered entry pins the resolved executable, every file-backed
-argv component, observer command, arm contract, and a `vllm-hust-host`-owned
-event channel. It also enumerates supported scenarios: the first
+registry. Registry schema v2 additionally requires a producer-admission
+receipt before any activation probe or target process can run. The receipt
+binds the exact producer repository identity, pull request, reviewed head and
+tree, base, merge commit, default branch, observation time, and affirmative
+human line, command, activation-path, and observer-independence reviews. An
+open producer, an unreviewed producer, a v1 registry downgrade, or an
+incomplete receipt fails both runtime admission and offline validation. The
+receipt is a repository-owned, code-reviewed assertion: it makes the reviewed
+merge facts mandatory and auditable, but it is not a live GitHub oracle,
+cryptographic attestation, or runtime-effect proof. Reviewers must independently
+recheck those facts before adding an entry. A registered entry pins the
+resolved executable, every file-backed argv component, observer command, arm
+contract, and a `vllm-hust-host`-owned event channel. It also enumerates
+supported scenarios: the first
 `partial-worker-coverage` binding pins the actuator subcommand by strictly
 parsing the production actuator's complete option grammar, canonical fault descriptor digest, and exact plugin entry
 point. Runtime and offline validators
 reopen that descriptor, and formal aggregation requires the same derived
 scenario/descriptor/entry-point/actuator comparison identity across all three
 arms. The registry is
-intentionally empty until a real vLLM-HUST
-adapter and host observer are reviewed. The runner gives no SUT-authored
-telemetry path to the observer. Effectiveness, invocation, activation path, and
-coverage must be emitted by the registry-pinned observer after reading
+intentionally empty until the vLLM-HUST producer is merged after its required
+human line review and a real adapter and host observer are reviewed. The runner
+gives no SUT-authored telemetry path to the observer. Effectiveness, invocation,
+activation path, and coverage must be emitted by the registry-pinned observer after reading
 host-owned evidence; lifecycle facts come from the separately pinned sources
 described above. Every event must carry the same
 plan/launch/controller/invocation identity. Linux process identity is PID plus

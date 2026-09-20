@@ -373,6 +373,27 @@ assert commit == {
     return fields, commands
 
 
+def adapter_admission():
+    return {
+        "schema": "ecpa-formal-adapter-admission/v1",
+        "repository": "vLLM-HUST/vllm-hust",
+        "repository_id": 1360701120,
+        "node_id": "R_kgDOURE3QwA",
+        "default_branch": "main",
+        "pull_request": 27,
+        "reviewed_head": "1" * 40,
+        "reviewed_tree": "2" * 40,
+        "base": "3" * 40,
+        "state": "merged",
+        "merge_commit": "4" * 40,
+        "human_line_review": True,
+        "commands_reviewed": True,
+        "activation_path_reviewed": True,
+        "observer_independence_reviewed": True,
+        "observed_at": "2026-09-21T07:00:00+08:00",
+    }
+
+
 def lifecycle_process_records(fingerprints):
     metadata = Path(sys.executable).resolve().stat()
     return {
@@ -1527,10 +1548,11 @@ if args.ecpa_formal_activation_probe:
     observer_fingerprint = command_fingerprint(sys.executable, [str(observer)])
     lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
-        "schema": "ecpa-formal-adapter-registry/v1",
+        "schema": "ecpa-formal-adapter-registry/v2",
         "adapters": [
             {
                 "id": "test-host-v1",
+                "admission": adapter_admission(),
                 "arm": adapter.arm,
                 "activation_contract": adapter.activation_contract,
                 "evidence_owner": "vllm-hust-host",
@@ -1715,10 +1737,11 @@ if args.ecpa_formal_activation_probe:
     observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
     lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
-        "schema": "ecpa-formal-adapter-registry/v1",
+        "schema": "ecpa-formal-adapter-registry/v2",
         "adapters": [
             {
                 "id": "test-host-v1",
+                "admission": adapter_admission(),
                 "arm": adapter.arm,
                 "activation_contract": adapter.activation_contract,
                 "evidence_owner": "vllm-hust-host",
@@ -1794,6 +1817,12 @@ if args.ecpa_formal_activation_probe:
 
     tampered = copy.deepcopy(record)
     tampered["identity"]["adapter_verification"]["registry_digest"] = "sha256:fake"
+    with pytest.raises(ValueError, match="metadata differs"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["admission"]["reviewed_head"] = (
+        "5" * 40
+    )
     with pytest.raises(ValueError, match="metadata differs"):
         harness_module.validate_formal_adapter_verification(tampered, command)
     tampered = copy.deepcopy(record)
@@ -1874,10 +1903,11 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
     )
     lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
-        "schema": "ecpa-formal-adapter-registry/v1",
+        "schema": "ecpa-formal-adapter-registry/v2",
         "adapters": [
             {
                 "id": "managed-test-host-v1",
+                "admission": adapter_admission(),
                 "arm": adapter.arm,
                 "activation_contract": adapter.activation_contract,
                 "evidence_owner": "vllm-hust-host",
@@ -2079,10 +2109,11 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
     observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
     lifecycle_fields, lifecycle_commands = lifecycle_registry_fields(tmp_path)
     registry = {
-        "schema": "ecpa-formal-adapter-registry/v1",
+        "schema": "ecpa-formal-adapter-registry/v2",
         "adapters": [
             {
                 "id": "indirect-fixture",
+                "admission": adapter_admission(),
                 "arm": adapter.arm,
                 "activation_contract": adapter.activation_contract,
                 "evidence_owner": "vllm-hust-host",

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "ecpa-formal-adapter-admission/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "repository",
+    "repository_id",
+    "node_id",
+    "default_branch",
+    "pull_request",
+    "reviewed_head",
+    "reviewed_tree",
+    "base",
+    "state",
+    "merge_commit",
+    "human_line_review",
+    "commands_reviewed",
+    "activation_path_reviewed",
+    "observer_independence_reviewed",
+    "observed_at"
+  ],
+  "properties": {
+    "schema": {"const": "ecpa-formal-adapter-admission/v1"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "repository_id": {"type": "integer", "minimum": 1},
+    "node_id": {"type": "string", "minLength": 1},
+    "default_branch": {"type": "string", "minLength": 1},
+    "pull_request": {"type": "integer", "minimum": 1},
+    "reviewed_head": {"$ref": "#/definitions/git_sha"},
+    "reviewed_tree": {"$ref": "#/definitions/git_sha"},
+    "base": {"$ref": "#/definitions/git_sha"},
+    "state": {"const": "merged"},
+    "merge_commit": {"$ref": "#/definitions/git_sha"},
+    "human_line_review": {"const": true},
+    "commands_reviewed": {"const": true},
+    "activation_path_reviewed": {"const": true},
+    "observer_independence_reviewed": {"const": true},
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:Z|[+-]\\d{2}:\\d{2})$"
+    }
+  },
+  "definitions": {
+    "git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  },
+  "additionalProperties": false
+}
