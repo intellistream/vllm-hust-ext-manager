@@ -432,7 +432,7 @@ def formal_process_coverage(
         "assignment_source",
     }
     observed_keys: list[tuple[str, str, int, int]] = []
-    linux_identities: list[tuple[int, int, tuple[str, ...]]] = []
+    linux_identities: list[tuple[str, int, int, tuple[str, ...]]] = []
     malformed = False
     for item in observed:
         if not isinstance(item, dict) or set(item) != observed_fields:
@@ -471,7 +471,7 @@ def formal_process_coverage(
             malformed = True
             break
         observed_keys.append((host, role, ordinal, epoch))
-        linux_identities.append((pid, start_ticks, tuple(argv)))
+        linux_identities.append((host, pid, start_ticks, tuple(argv)))
     if malformed:
         reasons.append("formal effect process identity is malformed")
         return None

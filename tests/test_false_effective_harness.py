@@ -1153,9 +1153,16 @@ def test_formal_oracle_rejects_lifecycle_counterexamples(tmp_path, mutation):
     assert oracle(scenarios()[0], record)["verdict"] == "INCOMPLETE"
 
 
-def _effect_identity(linux_identity, *, role: str, ordinal: int, epoch: int = 7):
+def _effect_identity(
+    linux_identity,
+    *,
+    role: str,
+    ordinal: int,
+    epoch: int = 7,
+    host: str = "host-a",
+):
     return {
-        "host": "host-a",
+        "host": host,
         "role": role,
         "ordinal": ordinal,
         "process_epoch": epoch,
@@ -1270,6 +1277,30 @@ def test_formal_oracle_accepts_distinct_complete_effect_processes(tmp_path):
     invoked["effect_process_identities"] = [
         _effect_identity(controller, role="engine-core", ordinal=0),
         _effect_identity(worker, role="worker", ordinal=0),
+    ]
+    next(item for item in record["observations"] if item["event"] == "coverage")[
+        "value"
+    ] = 1.0
+
+    result = oracle(scenarios()[0], record)
+    assert result["verdict"] == "PASS"
+    assert result["outcome"]["activation_event_coverage"] == 1.0
+
+
+def test_formal_oracle_accepts_same_numeric_identity_on_distinct_hosts(tmp_path):
+    record = _formal_process_record(tmp_path)
+    controller = record["command"]["sut_process"]["linux_identity"]
+    record["identity"]["required_processes"] = [
+        {"host": "host-a", "role": "engine-core", "ordinal": 0, "process_epoch": 7},
+        {"host": "host-b", "role": "worker", "ordinal": 0, "process_epoch": 7},
+    ]
+    invoked = next(
+        item for item in record["observations"] if item["event"] == "plugin-invoked"
+    )
+    invoked["value"] = True
+    invoked["effect_process_identities"] = [
+        _effect_identity(controller, role="engine-core", ordinal=0, host="host-a"),
+        _effect_identity(controller, role="worker", ordinal=0, host="host-b"),
     ]
     next(item for item in record["observations"] if item["event"] == "coverage")[
         "value"
