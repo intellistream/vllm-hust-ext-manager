@@ -90,7 +90,8 @@ def test_adapter_admission_rejects_schema_or_field_set_changes() -> None:
         ("repository_id", True, "identity"),
         ("reviewed_head", "1" * 39, "Git identity"),
         ("reviewed_tree", "g" * 40, "Git identity"),
-        ("observed_at", "2026-09-21T07:00:00", "timezone"),
+        ("observed_at", "2026-09-21T07:00:00", "canonical"),
+        ("observed_at", "2026-09-21T07:00:00+0800", "canonical"),
     ],
 )
 def test_adapter_admission_rejects_malformed_authority_fields(
@@ -100,6 +101,34 @@ def test_adapter_admission_rejects_malformed_authority_fields(
     rejected[field] = value
     with pytest.raises(ValueError, match=message):
         validate_formal_adapter_admission(rejected)
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-09-21T07:00:00+0800",
+        "2026-09-21 07:00:00+08:00",
+        "2026-09-21t07:00:00+08:00",
+        "2026-09-21T07:00:00z",
+        "2026-09-21T07:00:00.1+08:00",
+    ],
+)
+def test_schema_and_runtime_reject_noncanonical_observation_time(
+    timestamp: str,
+) -> None:
+    receipt = admission()
+    receipt["observed_at"] = timestamp
+    schema = json.loads(
+        Path(
+            "experiments/false_effective/formal-adapter-admission.schema.json"
+        ).read_text()
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft7Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).validate(receipt)
+    with pytest.raises(ValueError, match="not canonical"):
+        validate_formal_adapter_admission(receipt)
 
 
 def test_unmerged_producer_fails_before_ecpa_probe_or_target_launch(

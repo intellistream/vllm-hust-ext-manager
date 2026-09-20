@@ -11,6 +11,7 @@ FORMAL_ADAPTER_ADMISSION_SCHEMA = "ecpa-formal-adapter-admission/v1"
 
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_OBSERVED_AT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
 _FIELDS = {
     "schema",
     "repository",
@@ -74,8 +75,9 @@ def validate_formal_adapter_admission(value: Any) -> dict[str, Any]:
         not isinstance(observed_at, str)
         or not observed_at
         or observed_at.strip() != observed_at
+        or _OBSERVED_AT.fullmatch(observed_at) is None
     ):
-        raise ValueError("formal adapter producer observation time is invalid")
+        raise ValueError("formal adapter producer observation time is not canonical")
     try:
         observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
     except ValueError as exc:

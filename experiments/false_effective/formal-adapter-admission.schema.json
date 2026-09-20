@@ -36,7 +36,11 @@
     "commands_reviewed": {"const": true},
     "activation_path_reviewed": {"const": true},
     "observer_independence_reviewed": {"const": true},
-    "observed_at": {"type": "string", "format": "date-time"}
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:Z|[+-]\\d{2}:\\d{2})$"
+    }
   },
   "definitions": {
     "git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
