@@ -125,6 +125,9 @@ def validate_formal_adapter_verification(
         raise ValueError("formal adapter metadata differs from the trusted registry")
 
     fixture_root = (Path(__file__).parents[2] / "tests" / "fixtures").resolve()
+    fixture_files = [path for path in fixture_root.rglob("*") if path.is_file()]
+    fixture_digests = {digest_file(path) for path in fixture_files}
+    fixture_markers = {str(fixture_root), "tests/fixtures", "tests\\fixtures"}
     for role, fingerprint, registered_digest in (
         ("SUT", verification["sut_command"], entry.get("sut_command_digest")),
         (
@@ -135,13 +138,29 @@ def validate_formal_adapter_verification(
     ):
         if not isinstance(fingerprint, dict):
             raise ValueError(f"{role} fingerprint is missing")
-        for value in [fingerprint.get("executable"), *fingerprint.get("arguments", [])]:
+        values = [fingerprint.get("executable"), *fingerprint.get("arguments", [])]
+        for value in values:
             if not isinstance(value, str):
                 raise ValueError(f"{role} fingerprint contains a non-string argv")
-            candidate = Path(value)
-            if candidate.exists() and candidate.resolve().is_relative_to(fixture_root):
+            if any(marker in value for marker in fixture_markers):
                 raise ValueError(
-                    f"{role} fixture-resolved command is forbidden for formal-real"
+                    f"{role} fixture-referencing command is forbidden for formal-real"
+                )
+            candidate = Path(value)
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            try:
+                content = resolved.read_text(errors="ignore")
+            except OSError:
+                content = ""
+            if (
+                resolved.is_relative_to(fixture_root)
+                or digest_file(resolved) in fixture_digests
+                or any(marker in content for marker in fixture_markers)
+            ):
+                raise ValueError(
+                    f"{role} fixture-referencing command is forbidden for formal-real"
                 )
         unsigned = {key: value for key, value in fingerprint.items() if key != "digest"}
         if (

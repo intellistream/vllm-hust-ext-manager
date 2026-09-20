@@ -32,6 +32,7 @@ from runner import (  # noqa: E402
     ManualIntegrationAdapter,
     VanillaVLLMAdapter,
     command_fingerprint,
+    command_references_fixture,
     parse_proc_stat_start_ticks,
     planned_records,
     run_formal_start,
@@ -536,7 +537,7 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
 
     fixture_link = tmp_path / "renamed-sut.py"
     fixture_link.symlink_to(Path("tests/fixtures/formal_sut_service.py").resolve())
-    with pytest.raises(ValueError, match="fixture-resolved"):
+    with pytest.raises(ValueError, match="fixture-referencing"):
         runner_module.verified_adapter_contract(
             "test-host-v1",
             adapter,
@@ -635,9 +636,58 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
         "sut_process": {"argv": [sys.executable, *fixture_sut_arguments]},
         "observer_process": {"argv": [sys.executable, *fixture_observer_arguments]},
     }
-    with pytest.raises(ValueError, match="fixture-resolved"):
+    with pytest.raises(ValueError, match="fixture-referencing"):
         harness_module.validate_formal_adapter_verification(
             fixture_record, fixture_command
+        )
+
+
+def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypatch):
+    adapter = ECPAAdapter()
+    sut_fixture = Path("tests/fixtures/formal_sut_service.py").resolve()
+    observer_fixture = Path("tests/fixtures/formal_observer_service.py").resolve()
+    sut_source = (
+        f"exec(compile(open({str(sut_fixture)!r},'rb').read(),"
+        f"{str(sut_fixture)!r},'exec'))"
+    )
+    observer_source = (
+        f"exec(compile(open({str(observer_fixture)!r},'rb').read(),"
+        f"{str(observer_fixture)!r},'exec'))"
+    )
+    sut_arguments = ["-c", sut_source, *adapter.activation_arguments]
+    observer_arguments = ["-c", observer_source]
+    assert command_references_fixture(
+        [sys.executable, *sut_arguments, sys.executable, *observer_arguments]
+    )
+    sut_fingerprint = command_fingerprint(sys.executable, sut_arguments)
+    observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
+    registry = {
+        "schema": "ecpa-formal-adapter-registry/v1",
+        "adapters": [
+            {
+                "id": "indirect-fixture",
+                "arm": adapter.arm,
+                "activation_contract": adapter.activation_contract,
+                "evidence_owner": "vllm-hust-host",
+                "evidence_channel": "host-owned-event-stream",
+                "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
+                "sut_command_digest": sut_fingerprint["digest"],
+                "observer_command_digest": observer_fingerprint["digest"],
+            }
+        ],
+    }
+    registry_path = tmp_path / "verified-adapters.json"
+    registry_path.write_bytes(canonical(registry) + b"\n")
+    monkeypatch.setattr(runner_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+    with pytest.raises(ValueError, match="fixture-referencing"):
+        runner_module.verified_adapter_contract(
+            "indirect-fixture",
+            adapter,
+            sys.executable,
+            ["-c", sut_source],
+            sys.executable,
+            observer_arguments,
         )
 
 
@@ -1007,6 +1057,38 @@ def test_manifest_requires_runner_owned_pointer_and_generation_layout(tmp_path):
     current_path.write_bytes(canonical(current) + b"\n")
     with pytest.raises(ValueError, match="generation index path"):
         _reproduce_module().generate(tmp_path / "layout-output", current_path)
+
+
+def test_manifest_rejects_generation_symlinks(tmp_path):
+    formal_complete_records(tmp_path)
+    root = tmp_path / "formal"
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    current_path = write_formal_manifest(root, records)
+    current = json.loads(current_path.read_text())
+    index_path = root / current["generation_index"]
+    index_bytes = index_path.read_bytes()
+    outside = root / "outside"
+    outside.mkdir()
+    outside_index = outside / "index.json"
+    outside_index.write_bytes(index_bytes)
+    index_path.unlink()
+    index_path.symlink_to(outside_index)
+    with pytest.raises(ValueError, match="symlink|invalid component"):
+        _reproduce_module().generate(tmp_path / "index-symlink", current_path)
+
+    index_path.unlink()
+    index_path.write_bytes(index_bytes)
+    manifest = json.loads(index_bytes)
+    jsonl_path = root / manifest["records_jsonl"]
+    outside_jsonl = outside / "records.jsonl"
+    outside_jsonl.write_bytes(jsonl_path.read_bytes())
+    jsonl_path.unlink()
+    jsonl_path.symlink_to(outside_jsonl)
+    with pytest.raises(ValueError, match="symlink|invalid component"):
+        _reproduce_module().generate(tmp_path / "jsonl-symlink", current_path)
 
 
 def test_reproduce_default_output_uses_nonexistent_child():

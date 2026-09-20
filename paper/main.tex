@@ -190,6 +190,10 @@ is currently claimed.  Each observer event must match the phase's ACK result,
 challenge, sequence, and invocation identity.  The runner double-reads process
 start ticks around exact-argv capture to reject PID-reuse races, while the
 observer independently reports the SUT process identity it observed.
+Known fixture artifacts and textual interpreter references are excluded both at
+launch and offline validation; this remains a trusted-registry boundary, not a
+sandbox for malicious registered code.  Manifest ingestion opens every path
+component without following symlinks and hashes the same bytes it parses.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger

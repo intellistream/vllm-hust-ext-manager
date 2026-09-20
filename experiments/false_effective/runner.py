@@ -7,6 +7,7 @@ import os
 import platform
 import secrets
 import select
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,33 @@ FORMAL_HOST_OBSERVABLES = {
     "effective-claim",
     "plugin-invoked",
 }
+
+
+def command_references_fixture(values: list[str]) -> bool:
+    """Reject direct, textual, or byte-identical fixture command artifacts."""
+    fixture_root = (HERE.parents[1] / "tests" / "fixtures").resolve()
+    fixture_files = [path for path in fixture_root.rglob("*") if path.is_file()]
+    fixture_digests = {digest_file(path) for path in fixture_files}
+    markers = {str(fixture_root), "tests/fixtures", "tests\\fixtures"}
+    for value in values:
+        if any(marker in value for marker in markers):
+            return True
+        candidate = Path(value)
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        if (
+            resolved.is_relative_to(fixture_root)
+            or digest_file(resolved) in fixture_digests
+        ):
+            return True
+        try:
+            content = resolved.read_text(errors="ignore")
+        except OSError:
+            continue
+        if any(marker in content for marker in markers):
+            return True
+    return False
 
 
 def parse_proc_stat_start_ticks(stat: str) -> int:
@@ -150,12 +178,9 @@ def verified_adapter_contract(
         )
     ):
         raise ValueError("verified adapter contract does not match the requested arm")
-    fixture_root = (HERE.parents[1] / "tests" / "fixtures").resolve()
     launch_paths = [executable, observer_executable, *arguments, *observer_arguments]
-    for value in launch_paths:
-        candidate = Path(value)
-        if candidate.exists() and candidate.resolve().is_relative_to(fixture_root):
-            raise ValueError("fixture-resolved command is forbidden for formal-real")
+    if command_references_fixture(launch_paths):
+        raise ValueError("fixture-referencing command is forbidden for formal-real")
     sut = command_fingerprint(executable, [*arguments, *adapter.activation_arguments])
     observer = command_fingerprint(observer_executable, observer_arguments)
     if sut["digest"] != entry.get("sut_command_digest"):
@@ -878,11 +903,52 @@ def write_formal_manifest(root: Path, records: list[dict[str, Any]]) -> Path:
     return path
 
 
+def read_manifest_bytes(root: Path, relative: str | Path) -> bytes:
+    """Read one regular file beneath root without following any symlink component."""
+    relative_path = Path(relative)
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+    ):
+        raise ValueError("manifest path is not a strict relative path")
+    directory_fd = os.open(root.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+    opened_directories = [directory_fd]
+    file_fd: int | None = None
+    try:
+        for part in relative_path.parts[:-1]:
+            directory_fd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            opened_directories.append(directory_fd)
+        file_fd = os.open(
+            relative_path.parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ValueError("manifest artifact is not a regular file")
+        with os.fdopen(file_fd, "rb") as stream:
+            file_fd = None
+            return stream.read()
+    except OSError as exc:
+        raise ValueError(
+            "manifest path contains a symlink or invalid component"
+        ) from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for opened in reversed(opened_directories):
+            os.close(opened)
+
+
 def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
     if path.name != "formal-record-index.json" or path.is_symlink():
         raise ValueError("formal input must be the runner-owned current pointer")
     root = path.parent
-    current_bytes = path.read_bytes()
+    current_bytes = read_manifest_bytes(root, path.name)
     current = json.loads(current_bytes)
     if (
         current_bytes != canonical(current) + b"\n"
@@ -899,10 +965,9 @@ def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
         or parts[2] != "index.json"
     ):
         raise ValueError("formal generation index path is not runner-owned")
-    index_path = safe_path(root, current["generation_index"])
-    if digest_file(index_path) != current["generation_index_digest"]:
+    index_bytes = read_manifest_bytes(root, generation_index)
+    if digest_bytes(index_bytes) != current["generation_index_digest"]:
         raise ValueError("formal generation index digest mismatch")
-    index_bytes = index_path.read_bytes()
     manifest = json.loads(index_bytes)
     if (
         index_bytes != canonical(manifest) + b"\n"
@@ -912,18 +977,18 @@ def load_formal_manifest(path: Path) -> tuple[list[dict[str, Any]], Path]:
     expected_jsonl = generation_index.parent / "formal-records.jsonl"
     if Path(manifest.get("records_jsonl", "")) != expected_jsonl:
         raise ValueError("formal JSONL is outside its generation")
-    jsonl = safe_path(root, manifest["records_jsonl"])
-    if digest_file(jsonl) != manifest["records_jsonl_digest"]:
+    jsonl_bytes = read_manifest_bytes(root, expected_jsonl)
+    if digest_bytes(jsonl_bytes) != manifest["records_jsonl_digest"]:
         raise ValueError("formal JSONL digest mismatch")
-    indexed = [json.loads(line) for line in jsonl.read_text().splitlines() if line]
-    if jsonl.read_bytes() != b"".join(canonical(row) + b"\n" for row in indexed):
+    indexed = [json.loads(line) for line in jsonl_bytes.splitlines() if line]
+    if jsonl_bytes != b"".join(canonical(row) + b"\n" for row in indexed):
         raise ValueError("formal JSONL is not canonical")
     records = []
     for entry in manifest["records"]:
-        record_path = safe_path(root, entry["record"])
-        if digest_file(record_path) != entry["digest"]:
+        record_bytes = read_manifest_bytes(root, entry["record"])
+        if digest_bytes(record_bytes) != entry["digest"]:
             raise ValueError("indexed record digest mismatch")
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_bytes)
         if entry["start_id"] != record.get("start_id"):
             raise ValueError("index start_id does not match record")
         expected_path = f"{record['artifact_root']}/record.json"

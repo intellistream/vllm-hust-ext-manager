@@ -67,7 +67,11 @@ after argv to reject PID-reuse races, and the observer independently records
 the SUT identity it saw. Controlled services are labeled
 `interface-fixture`, may test protocol mechanics, never create a formal
 manifest, and are rejected from formal aggregation even if copied, renamed, or
-reached through a symlink. The harness can generate raw formal records only
+reached through a symlink. Direct and textual interpreter references to known
+fixture paths, byte-identical fixture command files, and reviewed command files
+that reference the fixture tree are also rejected. The registry remains a
+trusted code-review boundary rather than a sandbox against malicious registered
+code. The harness can generate raw formal records only
 from registry-approved commands, but the
 checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown
@@ -75,6 +79,9 @@ events are mandatory; startup is launch-to-ready.
 
 `write_formal_manifest` writes each canonical JSONL/index pair into a new
 generation directory, then atomically swaps one canonical current pointer.
+The reader opens every pointer, generation, JSONL, and record path component
+with `O_NOFOLLOW`, reads each artifact once, and validates its digest against
+those same bytes.
 Paper generation accepts only that runner current pointer (not arbitrary
 hand-written JSON or JSONL),
 verifies both representations, validates the complete batch in a temporary
