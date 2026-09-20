@@ -77,6 +77,13 @@ preserves each exact line, rejects partial records and duplicate event IDs, and
 returns both the raw bytes and parsed event. The journal is an observer input,
 not by itself a signed receipt or proof of complete worker coverage.
 
+For manager-controlled launches, the launcher freezes the journal directory's
+device and inode in `ECPA_HOST_EVENT_DEVICE` and `ECPA_HOST_EVENT_INODE`. Both
+writer and reader open the directory itself with `O_DIRECTORY|O_NOFOLLOW`,
+recheck that it is private and owned, compare the frozen identity, and perform
+journal operations relative to that open directory descriptor. Permission
+drift and replacement of the configured path fail closed at the use point.
+
 ## Trust boundary
 
 Raw host bytes remain unsigned audit input and can never directly make a Plan
@@ -97,7 +104,8 @@ Thus these are separate facts:
 No earlier fact implies a later one.
 
 The journal sink must be configured by a deployment-controlled launcher before
-its output is useful evidence. This adapter does not itself implement trusted
-environment injection, authenticated transport, a multi-host durable outbox,
-production key custody, or malicious-plugin isolation. Those remain frozen
-follow-up architecture and real-experiment boundaries.
+its output is useful evidence. The manager-controller provides a single-host
+launch binding, but the sink does not itself implement authenticated transport,
+a multi-host durable outbox, production key custody, or malicious-plugin
+isolation. Those remain frozen follow-up architecture and real-experiment
+boundaries.

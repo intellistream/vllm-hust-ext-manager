@@ -30,6 +30,7 @@ def main() -> int:
     jsonschema.Draft7Validator(load(spec / "protocol.schema.json")).validate(
         load(spec / "protocol-instance.json")
     )
+    jsonschema.Draft7Validator.check_schema(load(spec / "execution-plan.schema.json"))
     host_validator = jsonschema.Draft7Validator(
         load(spec / "host-plugin-evidence.schema.json")
     )
