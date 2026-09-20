@@ -25,6 +25,7 @@ from vllm_hust_ext.manager_controller import (
 )
 from vllm_hust_ext.plan_artifact import (
     PlanArtifactError,
+    parse_plan_artifact,
     plan_artifact_bytes,
     read_plan_artifact,
 )
@@ -79,6 +80,22 @@ def test_plan_artifact_matches_candidate_schema() -> None:
     Draft7Validator(json.loads(schema_path.read_text())).validate(
         json.loads(plan_artifact_bytes(plan()))
     )
+
+
+@pytest.mark.parametrize(
+    "invalid_name", ["bad name", "bad\nname", "bad\n", "bad\u00a0name"]
+)
+def test_schema_and_parser_both_reject_whitespace_strings(invalid_name) -> None:
+    schema_path = Path(__file__).parents[1] / "spec/0.1/execution-plan.schema.json"
+    schema = json.loads(schema_path.read_text())
+    original = plan()
+    invalid_plugin = replace(original.plugins[0], name=invalid_name)
+    invalid = replace(original, plugins=(invalid_plugin,))
+    raw = plan_artifact_bytes(invalid)
+
+    assert list(Draft7Validator(schema).iter_errors(json.loads(raw)))
+    with pytest.raises(PlanArtifactError, match="without whitespace"):
+        parse_plan_artifact(raw)
 
 
 @pytest.mark.parametrize("mutation", ["identity", "unknown", "noncanonical"])
@@ -150,6 +167,8 @@ def test_manager_owns_host_binding_and_rejects_conflicting_caller_values(
     assert environment["VLLM_ECPA_EVIDENCE_STRICT"] == "1"
     assert environment["ECPA_HOST_EVENT_DIR"] == str(journal)
     assert environment["ECPA_HOST_EVENT_FSYNC"] == "1"
+    assert environment["ECPA_HOST_EVENT_DEVICE"] == str(journal.stat().st_dev)
+    assert environment["ECPA_HOST_EVENT_INODE"] == str(journal.stat().st_ino)
     assert environment["ECPA_CONTROLLER_INSTANCE"] == "controller:one"
     assert environment["ECPA_ACTIVATION_CONTRACT"] == ACTIVATION_CONTRACT
 

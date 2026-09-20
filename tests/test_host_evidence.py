@@ -35,6 +35,8 @@ from vllm_hust_ext.ecpa_model import (
     ProcessIdentity,
 )
 from vllm_hust_ext.host_event_sink import (
+    DEVICE_ENV,
+    INODE_ENV,
     HostEventSinkError,
     append_event,
     canonical_event,
@@ -560,6 +562,44 @@ def test_deployment_sink_and_reader_reject_symlink_or_partial_journal(
     path.write_bytes(canonical_event(event))
     with pytest.raises(HostEventSinkError, match="partial"):
         read_events(journal)
+
+
+def test_sink_and_reader_recheck_directory_permissions_at_use_time(
+    tmp_path, monkeypatch
+):
+    journal = (tmp_path / "events").resolve()
+    journal.mkdir(mode=0o700)
+    metadata = journal.stat()
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    monkeypatch.setenv(DEVICE_ENV, str(metadata.st_dev))
+    monkeypatch.setenv(INODE_ENV, str(metadata.st_ino))
+    journal.chmod(0o770)
+
+    with pytest.raises(HostEventSinkError, match="private and owned"):
+        append_event(json.loads(raw_event()))
+    with pytest.raises(HostEventSinkError, match="private and owned"):
+        read_events(journal)
+
+
+def test_sink_and_reader_reject_directory_replacement_after_binding(
+    tmp_path, monkeypatch
+):
+    journal = (tmp_path / "events").resolve()
+    journal.mkdir(mode=0o700)
+    metadata = journal.stat()
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    monkeypatch.setenv(DEVICE_ENV, str(metadata.st_dev))
+    monkeypatch.setenv(INODE_ENV, str(metadata.st_ino))
+    journal.rename(tmp_path / "original-events")
+    journal.mkdir(mode=0o700)
+
+    with pytest.raises(HostEventSinkError, match="identity changed"):
+        append_event(json.loads(raw_event()))
+    with pytest.raises(HostEventSinkError, match="identity changed"):
+        read_events(journal)
+    assert not list(journal.iterdir())
 
 
 def test_sink_and_reader_reject_fifo_without_blocking(tmp_path, monkeypatch):

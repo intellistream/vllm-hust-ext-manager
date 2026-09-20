@@ -21,6 +21,8 @@ CONTROLLED_ENVIRONMENT = {
     "VLLM_ECPA_EVIDENCE_STRICT",
     "ECPA_HOST_EVENT_DIR",
     "ECPA_HOST_EVENT_FSYNC",
+    "ECPA_HOST_EVENT_DEVICE",
+    "ECPA_HOST_EVENT_INODE",
     "ECPA_CONTROLLER_INSTANCE",
     "ECPA_ACTIVATION_CONTRACT",
 }
@@ -88,6 +90,8 @@ def managed_host_environment(
         "VLLM_ECPA_EVIDENCE_STRICT": "1",
         "ECPA_HOST_EVENT_DIR": str(root),
         "ECPA_HOST_EVENT_FSYNC": "1",
+        "ECPA_HOST_EVENT_DEVICE": str(metadata.st_dev),
+        "ECPA_HOST_EVENT_INODE": str(metadata.st_ino),
         "ECPA_CONTROLLER_INSTANCE": controller_instance,
         "ECPA_ACTIVATION_CONTRACT": ACTIVATION_CONTRACT,
     }

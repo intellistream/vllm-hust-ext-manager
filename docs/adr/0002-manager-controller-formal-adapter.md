@@ -32,6 +32,12 @@ contract/runtime boundary while reusing the existing vLLM-HUST plugin paths.
 - bind an existing private, owned, canonical host-event directory; and
 - install strict, manager-owned vLLM-HUST evidence environment values.
 
+The controller also freezes the event directory's device and inode. The sink
+and reader reopen it with `O_DIRECTORY|O_NOFOLLOW`, recheck ownership and mode
+on the directory descriptor, compare the frozen identity, and use that same
+descriptor for journal I/O. A permissions drift or path replacement therefore
+fails before evidence is appended or consumed.
+
 Its activation probe does not launch the target. The command is not yet in the
 verified adapter registry and therefore cannot produce a formal-real result.
 

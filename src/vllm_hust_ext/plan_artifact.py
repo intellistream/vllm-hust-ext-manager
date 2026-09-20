@@ -58,8 +58,14 @@ def _exact_fields(value: Any, fields: set[str], context: str) -> dict[str, Any]:
 
 
 def _string(value: Any, context: str) -> str:
-    if not isinstance(value, str) or not value or value.strip() != value:
-        raise PlanArtifactError(f"{context} must be a non-empty canonical string")
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(character.isspace() for character in value)
+    ):
+        raise PlanArtifactError(
+            f"{context} must be a non-empty string without whitespace"
+        )
     return value
 
 
