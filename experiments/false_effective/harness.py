@@ -285,6 +285,7 @@ def validate_formal_adapter_verification(
             "activation_contract",
             "controller_instance",
             "host_event_dir",
+            "host_event_directory",
             "launch_id",
             "plan_id",
             "plan_path",
@@ -297,18 +298,27 @@ def validate_formal_adapter_verification(
         ):
             raise ValueError("managed ECPA binding is malformed")
         plan_path = Path(binding["plan_path"])
+        event_path = Path(binding.get("host_event_dir", ""))
         if (
             set(binding) != expected_binding_fields
             or not plan_path.is_absolute()
             or plan_path.is_symlink()
+            or not event_path.is_absolute()
+            or event_path.is_symlink()
         ):
             raise ValueError("managed ECPA binding is malformed")
         try:
             if plan_path.resolve(strict=True) != plan_path:
                 raise ValueError("managed ECPA Plan path is not canonical")
             plan_artifact = read_plan_artifact(plan_path)
+            if event_path.resolve(strict=True) != event_path:
+                raise ValueError("managed ECPA event path is not canonical")
+            event_metadata = event_path.stat()
         except (OSError, ValueError) as exc:
-            raise ValueError("managed ECPA Plan artifact is unavailable") from exc
+            raise ValueError(
+                "managed ECPA Plan or event directory is unavailable"
+            ) from exc
+        event_identity = binding.get("host_event_directory")
         if (
             binding.get("activation_contract") != expected_contract
             or binding.get("plan_id") != plan_artifact.plan_id
@@ -316,6 +326,8 @@ def validate_formal_adapter_verification(
             or binding.get("launch_id") != execution.get("launch_id")
             or binding.get("controller_instance")
             != execution.get("controller_instance")
+            or event_identity
+            != {"device": event_metadata.st_dev, "inode": event_metadata.st_ino}
         ):
             raise ValueError("managed ECPA Plan binding differs from execution")
         manager_prefix = [

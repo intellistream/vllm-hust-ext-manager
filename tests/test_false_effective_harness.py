@@ -1479,6 +1479,12 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
     changed_plan["managed_binding"]["plan_sha256"] = "sha256:forged"
     with pytest.raises(ValueError, match="Plan binding"):
         harness_module.validate_formal_adapter_verification(record, changed_plan)
+    changed_event_directory = copy.deepcopy(command)
+    changed_event_directory["managed_binding"]["host_event_directory"]["inode"] += 1
+    with pytest.raises(ValueError, match="Plan binding"):
+        harness_module.validate_formal_adapter_verification(
+            record, changed_event_directory
+        )
 
 
 def test_managed_ecpa_record_validates_without_spoofing_target_contract(

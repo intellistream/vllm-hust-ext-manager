@@ -109,3 +109,31 @@ launch binding, but the sink does not itself implement authenticated transport,
 a multi-host durable outbox, production key custody, or malicious-plugin
 isolation. Those remain frozen follow-up architecture and real-experiment
 boundaries.
+
+## Independent effect snapshot
+
+`vllm_hust_ext.host_observer.observe_bound_invocations` is the production-side
+primitive for turning the deployment-owned journal into an independently
+auditable effect snapshot. It reopens the private journal directory against a
+device/inode identity, rejects unbound, cross-launch, and non-host-assigned
+records, matches explicit Plan plugin, obligation, and entry-point tuples,
+and rereads each effect process from `/proc`. PID, field 22 start ticks, and
+exact argv are captured with a before/after start-tick check so PID reuse or
+process exit fails closed. Exact host-event bytes are retained as base64 plus a
+SHA-256 digest. Stale-epoch invocation bytes remain auditable but contribute
+zero coverage; an unrelated entry point cannot satisfy the selected binding;
+one Linux identity cannot cover multiple logical targets. The observer requires
+one explicit entry-point binding for every Plan obligation and evaluates the
+whole required-process snapshot in one pass, rather than separately evaluating
+roles and accidentally resetting the identity-uniqueness check.
+
+Only scheduler resolution/dispatch events carry the host-produced controller
+instance. A loader-only invocation therefore reports no controller binding,
+even when its caller supplied an expected controller value. Plan and launch
+binding still apply, but they are not relabeled as controller attribution.
+
+The snapshot proves only the selected invocation obligation. In particular it
+does not rename a target ACK into service readiness, workload completion,
+fault application, or shutdown evidence. Those formal-run lifecycle facts
+still require independently owned probes or actuator receipts before a first
+cell may be complete. The verified adapter registry therefore remains empty.

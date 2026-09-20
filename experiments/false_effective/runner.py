@@ -778,6 +778,7 @@ class ECPAAdapter(FormalArmAdapter):
             or event_root.resolve(strict=True) != event_root
         ):
             raise ValueError("host event directory is not canonical")
+        event_metadata = event_root.stat()
         frozen_path, frozen_artifact = _freeze_plan_snapshot(event_root, artifact)
         plan = str(frozen_path)
         argv = [
@@ -808,6 +809,10 @@ class ECPAAdapter(FormalArmAdapter):
             "activation_contract": self.activation_contract,
             "controller_instance": controller_instance,
             "host_event_dir": str(event_root),
+            "host_event_directory": {
+                "device": event_metadata.st_dev,
+                "inode": event_metadata.st_ino,
+            },
             "launch_id": launch_id,
             "plan_id": artifact.plan_id,
             "plan_path": plan,
