@@ -29,6 +29,7 @@ CONTROLLED_ENVIRONMENT = {
     "ECPA_CONTROLLER_INSTANCE",
     "ECPA_ACTIVATION_CONTRACT",
 }
+TARGET_TERMINATION_GRACE_S = 0.5
 
 
 class _ManagedTermination(Exception):
@@ -42,7 +43,7 @@ def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGTERM)
     try:
-        process.wait(timeout=1)
+        process.wait(timeout=TARGET_TERMINATION_GRACE_S)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)

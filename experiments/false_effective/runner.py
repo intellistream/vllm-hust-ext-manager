@@ -67,6 +67,7 @@ FORMAL_HOST_OBSERVABLES = {
     "plugin-invoked",
     "coverage",
 }
+CHILD_TERMINATION_GRACE_S = 2.0
 
 
 def command_references_fixture(values: list[str]) -> bool:
@@ -883,7 +884,7 @@ def _terminate_process(child: subprocess.Popen[Any] | None) -> None:
     with contextlib.suppress(ProcessLookupError):
         child.terminate()
     with contextlib.suppress(subprocess.TimeoutExpired):
-        child.wait(timeout=1)
+        child.wait(timeout=CHILD_TERMINATION_GRACE_S)
     if child.poll() is None:
         child.kill()
         child.wait()

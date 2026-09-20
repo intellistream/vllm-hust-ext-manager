@@ -667,6 +667,48 @@ def test_ecpa_manager_rejects_target_symlink_retarget(tmp_path):
     assert "GOOD" not in completed.stdout
 
 
+def test_runner_allows_manager_to_reap_signal_ignoring_target(tmp_path):
+    plan_path = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    target_pid_path = tmp_path / "target.pid"
+    target = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(target_pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
+    argv, env, _ = ECPAAdapter().managed_launch(
+        manager_executable=manager,
+        plan_path=plan_path,
+        launch_id="launch:combined-cleanup",
+        controller_instance="controller:combined-cleanup",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", target],
+        env=dict(os.environ),
+    )
+    manager_prefix = runner_module.executable_launch_prefix(manager)
+    fingerprint = command_fingerprint(manager_prefix[0], manager_prefix[1:])
+    process = runner_module.popen_pinned(argv, fingerprint, env=env)
+    try:
+        for _ in range(200):
+            if target_pid_path.is_file():
+                break
+            if process.poll() is not None:
+                pytest.fail(f"manager exited early with {process.returncode}")
+            time.sleep(0.01)
+        else:
+            pytest.fail("target did not start")
+        target_pid = int(target_pid_path.read_text())
+        runner_module._terminate_process(process)
+        assert process.returncode == 128 + 15
+        with pytest.raises(ProcessLookupError):
+            os.kill(target_pid, 0)
+    finally:
+        runner_module._terminate_process(process)
+
+
 def test_ecpa_managed_launch_snapshots_plan_before_original_is_replaced(tmp_path):
     original = _write_formal_execution_plan(tmp_path)
     event_dir = (tmp_path / "events").resolve()
