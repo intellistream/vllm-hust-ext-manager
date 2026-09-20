@@ -3,6 +3,7 @@
   "classification": "modeled-static-contract-corpus",
   "host": {"runtime": "vllm-hust", "version": "0.1"},
   "source_corpus": "docs/corpus/plugins.json",
+  "source_snapshots": "docs/corpus/source-snapshots.json",
   "taxonomy": "spec/0.1/contract-taxonomy.json",
   "contracts": [
     {"id": "plugin.bidkv", "source_plugin": "bidkv", "model_kind": "evidence-backed-abstraction", "provides": [{"name": "org.vllm-hust.scheduler.preemption-policy", "version": "1.0"}], "requires": [], "resources": [{"name": "org.vllm-hust.scheduler.preemption-slot", "mode": "exclusive"}], "role": "scheduler", "evidence": ["docs/corpus/plugins.json#bidkv"]},

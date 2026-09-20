@@ -19,14 +19,23 @@ The [L2 contract-planner corpus](../../experiments/contract_planner/README.md)
 maps these 11 registered entries to minimal modeled contract abstractions and
 freezes a canonical resource/alias taxonomy. Its separately stored labels are
 independently reviewed oracle judgments bound to the cases, taxonomy, and
-source-corpus digests; they are not compiler outputs or precision/recall
-results. The five adaptation candidates remain
+source-corpus and source-snapshot digests; they are not compiler outputs or
+precision/recall results. The five adaptation candidates remain
 excluded rather than being assigned fabricated manifests.
 
 Corpus paths were verified against shallow read-only clones on 2026-09-17.
 Unavailable or unverified fields use the literal `unknown`. Ownership is copied
 only from the authoritative llm-optimizations ledger; an empty/unknown owner is
 not inferred from commit authorship.
+
+`source-snapshots.json` freezes the requested and GitHub-resolved repository
+identity, numeric repository identity, default branch, exact commit/tree, and
+every corpus evidence object's Git object ID. The snapshot is source identity
+evidence only: it prevents a later branch move or repository redirect from
+silently changing the modeled inputs, but it does not establish that a plugin
+was invoked, affected a runtime decision, or remained effective. A corpus path
+must resolve inside its repository's frozen tree; line suffixes are annotations
+on a pinned blob rather than independent identities.
 
 Audit limitation: the read-only shallow clones for
 `Qixin-Gaoke/kvdelta-plugin` and `Qixin-Gaoke/adaptive-selector-plugin` did not

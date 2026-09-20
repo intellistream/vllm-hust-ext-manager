@@ -2,6 +2,7 @@
   "schema": "ecpa-plugin-corpus/v1",
   "generated_at": "2026-09-17",
   "authority": "evidence paths plus llm-optimizations portfolio ledger 2026-09-15",
+  "source_snapshots": "docs/corpus/source-snapshots.json",
   "counts": {"registered_extensions": 11, "adaptation_candidates": 5},
   "taxonomy": {
     "policy": "scheduler, admission, budget, quality, or placement decision hook",
@@ -18,7 +19,7 @@
       "capabilities": ["scheduler-local victim selection"], "resources": ["scheduler.preemption-policy"], "process_topology": "scheduler process; exact worker scope unknown",
       "external_dependencies": [], "lifecycle_support": ["discover", "enable", "disable", "restart rollback"], "runtime_effectiveness_evidence": "repository evidence records policy invocation; formal ECPA process evidence not migrated",
       "version_constraints": "manifest-backed; exact supported range is evidence-cell specific", "conflict_potential": ["another preemption-policy owner"], "maturity": "registered-bundle; adaptation-required-for-ECPA-0.1", "paper_case": true,
-      "evidence": ["pyproject.toml:76", "README.md:27-46", "README.md:125-137", "bidkv/manifests/vllm-hust-extension-v0.2.json"]
+      "evidence": ["pyproject.toml:76", "README.md:27-46", "README.md:125-137", "src/bidkv/manifests/vllm-hust-extension-v0.2.json"]
     },
     {
       "id": "mooncake-provider", "repository": "intellistream/vllm-hust-ext-manager", "owners": ["ShuhaoZhangTony"],

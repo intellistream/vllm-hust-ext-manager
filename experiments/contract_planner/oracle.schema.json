@@ -2,12 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://vllm-hust.example/experiments/contract-planner/oracle.schema.json",
   "type": "object",
-  "required": ["schema", "cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "status", "labeling_policy", "counts", "labels"],
+  "required": ["schema", "cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "source_snapshots_sha256", "status", "labeling_policy", "counts", "labels"],
   "properties": {
     "schema": {"const": "ecpa-contract-planner-oracle/0.1"},
     "cases_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "taxonomy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source_corpus_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_snapshots_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "status": {"enum": ["candidate-awaiting-independent-review", "independently-reviewed"]},
     "labeling_policy": {"type": "string", "minLength": 1},
     "counts": {
@@ -18,13 +19,14 @@
     },
     "review": {
       "type": "object",
-      "required": ["reviewer", "reviewed_commit", "cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "verdict"],
+      "required": ["reviewer", "reviewed_commit", "cases_sha256", "taxonomy_sha256", "source_corpus_sha256", "source_snapshots_sha256", "verdict"],
       "properties": {
         "reviewer": {"type": "string", "minLength": 1},
         "reviewed_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "cases_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "taxonomy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_corpus_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_snapshots_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "verdict": {"const": "MERGE"},
         "notes": {"type": "string"}
       },

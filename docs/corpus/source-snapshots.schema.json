@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/docs/corpus/source-snapshots.schema.json",
+  "type": "object",
+  "required": ["schema", "observed_at", "authority", "sources"],
+  "properties": {
+    "schema": {"const": "ecpa-corpus-source-snapshots/0.1"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "authority": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["requested_repository", "resolved_repository", "repository_id", "node_id", "visibility", "default_branch", "commit_sha", "tree_sha", "evidence_objects"],
+        "properties": {
+          "requested_repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+          "resolved_repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+          "repository_id": {"type": "integer", "minimum": 1},
+          "node_id": {"type": "string", "minLength": 1},
+          "visibility": {"enum": ["public", "private", "internal"]},
+          "default_branch": {"type": "string", "minLength": 1},
+          "commit_sha": {"$ref": "#/definitions/git_sha"},
+          "tree_sha": {"$ref": "#/definitions/git_sha"},
+          "evidence_objects": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["path", "type", "git_object_sha"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+[^/]$"},
+                "type": {"enum": ["blob", "tree"]},
+                "git_object_sha": {"$ref": "#/definitions/git_sha"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "definitions": {
+    "git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  },
+  "additionalProperties": false
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import jsonschema
@@ -13,6 +14,10 @@ SPEC = ROOT / "spec" / "0.1"
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _evidence_path(value: str) -> str:
+    return re.sub(r":[0-9]+(?:-[0-9]+)?$", "", value).rstrip("/")
 
 
 def test_frozen_contract_planner_artifacts_validate() -> None:
@@ -62,6 +67,46 @@ def test_evidence_backed_contracts_cover_registered_corpus_only() -> None:
     assert excluded == {candidate["repository"] for candidate in corpus["candidates"]}
 
 
+def test_source_snapshots_bind_every_corpus_evidence_object() -> None:
+    corpus = _load(ROOT / "docs" / "corpus" / "plugins.json")
+    snapshots_path = ROOT / corpus["source_snapshots"]
+    snapshots_schema = _load(ROOT / "docs" / "corpus" / "source-snapshots.schema.json")
+    snapshots = _load(snapshots_path)
+    jsonschema.Draft7Validator.check_schema(snapshots_schema)
+    jsonschema.Draft7Validator(snapshots_schema).validate(snapshots)
+
+    by_repository = {
+        item["requested_repository"]: item for item in snapshots["sources"]
+    }
+    assert len(by_repository) == len(snapshots["sources"])
+    records = [*corpus["plugins"], *corpus["candidates"]]
+    assert set(by_repository) == {item["repository"] for item in records}
+
+    expected_paths_by_repository: dict[str, set[str]] = {}
+    for record in records:
+        source = by_repository[record["repository"]]
+        object_paths = [item["path"] for item in source["evidence_objects"]]
+        assert len(object_paths) == len(set(object_paths))
+        evidence_paths = {_evidence_path(item) for item in record["evidence"]}
+        expected_paths_by_repository.setdefault(record["repository"], set()).update(
+            evidence_paths
+        )
+        assert evidence_paths <= set(object_paths)
+    for repository, paths in expected_paths_by_repository.items():
+        assert paths == {
+            item["path"] for item in by_repository[repository]["evidence_objects"]
+        }
+
+    profiler = by_repository["intellistream/vllm-request-lifecycle-profiler-plugin"]
+    assert profiler["resolved_repository"] == (
+        "vLLM-HUST/vllm-hust-request-lifecycle-profiler"
+    )
+    bidkv = by_repository["vLLM-HUST/vllm-hust-bidkv"]
+    assert "src/bidkv/manifests/vllm-hust-extension-v0.2.json" in {
+        item["path"] for item in bidkv["evidence_objects"]
+    }
+
+
 def test_contracts_use_only_frozen_taxonomy() -> None:
     taxonomy = _load(SPEC / "contract-taxonomy.json")
     cases = _load(EXPERIMENT / "cases.json")
@@ -105,8 +150,19 @@ def test_cases_and_candidate_oracle_are_complete_and_bound() -> None:
             (ROOT / "docs" / "corpus" / "plugins.json").read_bytes()
         ).hexdigest()
     )
+    assert (
+        oracle["source_snapshots_sha256"]
+        == hashlib.sha256(
+            (ROOT / "docs" / "corpus" / "source-snapshots.json").read_bytes()
+        ).hexdigest()
+    )
     assert oracle["review"]["verdict"] == "MERGE"
-    for name in ("cases_sha256", "taxonomy_sha256", "source_corpus_sha256"):
+    for name in (
+        "cases_sha256",
+        "taxonomy_sha256",
+        "source_corpus_sha256",
+        "source_snapshots_sha256",
+    ):
         assert oracle["review"][name] == oracle[name]
     assert oracle["counts"] == {
         "admit": sum(label["decision"] == "admit" for label in labels.values()),

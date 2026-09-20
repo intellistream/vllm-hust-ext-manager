@@ -13,6 +13,7 @@ from experiments.contract_planner.evaluate import (
     DEFAULT_CASES,
     DEFAULT_CORPUS,
     DEFAULT_ORACLE,
+    DEFAULT_SOURCE_SNAPSHOTS,
     DEFAULT_TAXONOMY,
     REVIEWED_ORACLE_ARTIFACT_COMMIT,
     REVIEWED_ORACLE_CONTENT_COMMIT,
@@ -48,6 +49,10 @@ def test_evaluator_matches_independent_oracle_and_preserves_raw_decisions() -> N
         ).hexdigest(),
     }
     assert metrics["inputs"]["oracle_sha256"] == REVIEWED_ORACLE_SHA256
+    assert (
+        metrics["inputs"]["source_snapshots_sha256"]
+        == hashlib.sha256(DEFAULT_SOURCE_SNAPSHOTS.read_bytes()).hexdigest()
+    )
     assert metrics["oracle"] == {
         "sha256": REVIEWED_ORACLE_SHA256,
         "content_review_commit": REVIEWED_ORACLE_CONTENT_COMMIT,
@@ -106,6 +111,25 @@ def test_evaluator_rejects_oracle_with_unbound_input(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="reviewed artifact"):
         evaluate(DEFAULT_CASES, tampered, DEFAULT_TAXONOMY, DEFAULT_CORPUS)
+
+
+def test_evaluator_rejects_unbound_source_snapshot(tmp_path: Path) -> None:
+    snapshots = _load(DEFAULT_SOURCE_SNAPSHOTS)
+    snapshots["sources"][0]["commit_sha"] = "0" * 40
+    tampered = tmp_path / "source-snapshots.json"
+    tampered.write_text(json.dumps(snapshots))
+
+    with pytest.raises(
+        ValueError,
+        match="oracle source_snapshots_sha256 does not bind the evaluated input",
+    ):
+        evaluate(
+            DEFAULT_CASES,
+            DEFAULT_ORACLE,
+            DEFAULT_TAXONOMY,
+            DEFAULT_CORPUS,
+            tampered,
+        )
 
 
 def test_evaluator_does_not_invent_capabilities_for_resource_only_controls() -> None:

@@ -1,19 +1,21 @@
 {
   "schema": "ecpa-contract-planner-oracle/0.1",
-  "cases_sha256": "4660fb83ff42aaf3bdfc2fae0f3306c275fc1028c87eff390319e77ec253537a",
+  "cases_sha256": "cd1f853cccc9d4c9b74d505d4c5d304fa7817520067ad1fb716774fc568b3f49",
   "taxonomy_sha256": "4ce872bb430365de198a1c74129da981e826601f58750dd15497b637cc3321b9",
-  "source_corpus_sha256": "764f462052264333abdefeba09ef28e7afcfbcbb377c7c4c221def862e85c077",
+  "source_corpus_sha256": "41dd4504a166d594ccd3e07b3aac9561ab1878a76a1d51aceca56f7eb2e17550",
+  "source_snapshots_sha256": "72166123ce677cf10d7bab7a38b0e20df8c5c58ee6f09f504f1802951a0dfbbb",
   "status": "independently-reviewed",
-  "labeling_policy": "Labels are manually derived from the digest-bound canonical resource taxonomy, source corpus, capability cardinality, and mediation authority rules before any corpus evaluator is implemented. Checks follow taxonomy decision_precedence; inconsistent mediator names therefore produce RESOURCE_CONFLICT before mediator-presence authority is tested. An independent reviewer signed all three input digests before evaluator implementation.",
+  "labeling_policy": "Labels are manually derived from the digest-bound canonical resource taxonomy, source corpus, source snapshots, capability cardinality, and mediation authority rules. Checks follow taxonomy decision_precedence; inconsistent mediator names therefore produce RESOURCE_CONFLICT before mediator-presence authority is tested. An independent reviewer verified all 15 source repositories, all 41 evidence objects, and reconstructed all 31 decisions and error codes before evaluator artifacts were regenerated.",
   "counts": {"admit": 21, "reject": 10},
   "review": {
-    "reviewer": "Codex independent Agent ecpa_real_sources_review",
-    "reviewed_commit": "4a87f99d47b7e0bf87a58417ba1bfb372344c22a",
-    "cases_sha256": "4660fb83ff42aaf3bdfc2fae0f3306c275fc1028c87eff390319e77ec253537a",
+    "reviewer": "Codex independent Agent ecpa_source_binding_review",
+    "reviewed_commit": "c373c1506018974502012cd0114fc35e33fe66f9",
+    "cases_sha256": "cd1f853cccc9d4c9b74d505d4c5d304fa7817520067ad1fb716774fc568b3f49",
     "taxonomy_sha256": "4ce872bb430365de198a1c74129da981e826601f58750dd15497b637cc3321b9",
-    "source_corpus_sha256": "764f462052264333abdefeba09ef28e7afcfbcbb377c7c4c221def862e85c077",
+    "source_corpus_sha256": "41dd4504a166d594ccd3e07b3aac9561ab1878a76a1d51aceca56f7eb2e17550",
+    "source_snapshots_sha256": "72166123ce677cf10d7bab7a38b0e20df8c5c58ee6f09f504f1802951a0dfbbb",
     "verdict": "MERGE",
-    "notes": "Independent reconstruction matched all 31 decisions and expected errors after the exact-head P1 fixes."
+    "notes": "Independent live GitHub verification matched 15/15 repository identities and pinned trees, 41/41 evidence objects, and 31/31 decisions and expected errors; no P0/P1/P2 findings."
   },
   "labels": [
     {"case_id": "case.single-bidkv", "decision": "admit", "expected_error": null, "conflict_class": null, "reason": "A single known exclusive owner has no competing claimant."},

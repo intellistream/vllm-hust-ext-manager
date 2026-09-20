@@ -1,8 +1,8 @@
 # L2 contract-planner corpus
 
-This directory freezes the modeled inputs and candidate oracle for the ECPA
-L2 conflict study before the evaluator is implemented. It does **not** contain
-a planner run, precision/recall result, runtime result, or formal-real result.
+This directory freezes the modeled inputs, independently reviewed oracle,
+reference evaluator, and reproducible static results for the ECPA L2 conflict
+study. It does **not** contain a runtime result or formal-real result.
 
 `cases.json` maps all 11 registered entries in `docs/corpus/plugins.json` to
 minimal, evidence-backed contract abstractions. That mapping is evidence of an
@@ -25,17 +25,18 @@ violates more than one rule.
 
 `oracle.json` is manually labeled from that taxonomy and the specification's
 provider-cardinality and mediation rules. An independent Agent reconstructed
-all 31 decisions and expected errors for the recorded content commit and three
-raw-byte SHA-256 digests, then returned `MERGE`. The future evaluator must
-consume this reviewed artifact; it must not generate or rewrite expected
-labels.
+all 31 decisions and expected errors for the recorded content commit and four
+raw-byte SHA-256 input digests, then returned `MERGE`. The evaluator consumes
+this reviewed artifact and refuses inputs that do not match those digests; it
+does not generate or rewrite expected labels.
 
-The source corpus points to repository paths rather than immutable external
-repository trees, so the modeled resource mapping remains a study assumption,
-not independently reproduced source behavior. In particular, the real
-lifecycle-profiler abstraction is conservatively exclusive because its
-multi-subscriber safety is unverified; shared-read compatibility is tested only
-with synthetic controls.
+`docs/corpus/source-snapshots.json` freezes the external repository identities,
+redirect resolution, commits, root trees, and Git object IDs for every cited
+evidence path. This makes the source inputs reproducible; it does not turn the
+modeled resource mapping into independently reproduced source behavior. In
+particular, the real lifecycle-profiler abstraction is conservatively exclusive
+because its multi-subscriber safety is unverified; shared-read compatibility is
+tested only with synthetic controls.
 
 The five adaptation candidates remain excluded because the evidence corpus has
 no verified registration surface for them. This study does not fabricate
@@ -47,9 +48,10 @@ conforming manifests from repository names or policy code.
 L2 contract object with no invented lifecycle capability or L3 evidence
 obligation, invokes the reference compiler with the frozen taxonomy, and writes
 canonical per-case decisions plus aggregate and per-dimension confusion
-matrices. The checked-in `results/` artifacts bind the three reviewed inputs,
+matrices. The checked-in `results/` artifacts bind the four reviewed inputs,
 the exact reviewed oracle bytes and review commits, the evaluator source, the
-compiler source, and the raw-decision digest. The evaluator contains the
+compiler source, the exact repository/tree/evidence-object source snapshot,
+and the raw-decision digest. The evaluator contains the
 reviewed oracle digest as a code-reviewed constant, so editing status/verdict
 or regenerating labels from compiler output fails before scoring.
 
@@ -71,3 +73,7 @@ external validity. Every conflicting composition includes a synthetic boundary
 control, and the evidence-backed descriptors remain study abstractions rather
 than source-shipped ECPA manifests. Real manifest migration and runtime cells
 remain separate work.
+
+The source snapshot binds repository identity, redirect resolution, commits,
+trees, and evidence-object Git IDs. It does not turn a modeled descriptor into
+a source-shipped ECPA manifest and does not prove runtime effectiveness.

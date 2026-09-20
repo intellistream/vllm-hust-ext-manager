@@ -30,12 +30,13 @@ DEFAULT_CASES = ROOT / "experiments/contract_planner/cases.json"
 DEFAULT_ORACLE = ROOT / "experiments/contract_planner/oracle.json"
 DEFAULT_TAXONOMY = ROOT / "spec/0.1/contract-taxonomy.json"
 DEFAULT_CORPUS = ROOT / "docs/corpus/plugins.json"
+DEFAULT_SOURCE_SNAPSHOTS = ROOT / "docs/corpus/source-snapshots.json"
 DEFAULT_OUTPUT = ROOT / "experiments/contract_planner/results"
 REVIEWED_ORACLE_SHA256 = (
-    "06de27ae23c99db674d0d145d86ec1aff846c4b00c46b86227e412b4ac2ad99e"
+    "918f9e2daf88b049f573650ef0f7e86ef56238f7ffaa305d5778c6aa7f195c67"
 )
-REVIEWED_ORACLE_CONTENT_COMMIT = "4a87f99d47b7e0bf87a58417ba1bfb372344c22a"
-REVIEWED_ORACLE_ARTIFACT_COMMIT = "ed248e12df24695bb0ddf2bb90acebf529e937f8"
+REVIEWED_ORACLE_CONTENT_COMMIT = "c373c1506018974502012cd0114fc35e33fe66f9"
+REVIEWED_ORACLE_ARTIFACT_COMMIT = "a60624f76590b1d1ebaba0395918ee28f6731fa8"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -121,6 +122,7 @@ def evaluate(
     oracle_path: Path,
     taxonomy_path: Path,
     corpus_path: Path,
+    source_snapshots_path: Path = DEFAULT_SOURCE_SNAPSHOTS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cases = _load(cases_path)
     oracle = _load(oracle_path)
@@ -139,6 +141,7 @@ def evaluate(
         "cases_sha256": _digest(cases_path),
         "taxonomy_sha256": _digest(taxonomy_path),
         "source_corpus_sha256": _digest(corpus_path),
+        "source_snapshots_sha256": _digest(source_snapshots_path),
     }
     for field, digest in input_digests.items():
         if oracle[field] != digest or oracle["review"][field] != digest:
@@ -256,9 +259,18 @@ def main() -> int:
     parser.add_argument("--oracle", type=Path, default=DEFAULT_ORACLE)
     parser.add_argument("--taxonomy", type=Path, default=DEFAULT_TAXONOMY)
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
+    parser.add_argument(
+        "--source-snapshots", type=Path, default=DEFAULT_SOURCE_SNAPSHOTS
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
-    records, metrics = evaluate(args.cases, args.oracle, args.taxonomy, args.corpus)
+    records, metrics = evaluate(
+        args.cases,
+        args.oracle,
+        args.taxonomy,
+        args.corpus,
+        args.source_snapshots,
+    )
     serialized_decisions = decision_bytes(records)
     _atomic_write(args.output_dir / "decisions.jsonl", serialized_decisions)
     _atomic_write(args.output_dir / "metrics.json", canonical_bytes(metrics) + b"\n")
