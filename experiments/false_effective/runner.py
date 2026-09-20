@@ -487,14 +487,22 @@ def run_lifecycle_fact_source(
         )
         process.stdin.flush()
         process.stdin.close()
-        while active:
+        while active or process.poll() is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
-            readable, _, _ = select.select(list(active), [], [], remaining)
+            readable, _, _ = select.select([*active, receiver], [], [], remaining)
             if not readable:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
             for stream in readable:
+                if stream is receiver:
+                    receiver.recvmsg(
+                        1024 * 1024,
+                        socket.CMSG_SPACE(struct.calcsize("3i")),
+                    )
+                    raise ValueError(
+                        f"lifecycle fact source emitted duplicate receipts: {phase}"
+                    )
                 captured = sum(len(value) for value in streams.values())
                 try:
                     chunk = os.read(
@@ -515,6 +523,18 @@ def run_lifecycle_fact_source(
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as exc:
             raise ValueError(f"lifecycle fact source timed out: {phase}") from exc
+        receiver.setblocking(False)
+        try:
+            receiver.recvmsg(
+                1024 * 1024,
+                socket.CMSG_SPACE(struct.calcsize("3i")),
+            )
+        except BlockingIOError:
+            pass
+        else:
+            raise ValueError(
+                f"lifecycle fact source emitted duplicate receipts: {phase}"
+            )
         stdout = bytes(streams[process.stdout])
         stderr = bytes(streams[process.stderr])
     finally:

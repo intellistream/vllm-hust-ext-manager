@@ -1930,6 +1930,30 @@ sys.stdin.readline()
         )
 
 
+def test_lifecycle_fact_source_rejects_duplicate_datagrams(tmp_path):
+    source = tmp_path / "duplicate_lifecycle_source.py"
+    source.write_text(
+        """import os, socket, sys
+sys.stdin.readline()
+channel = socket.socket(fileno=int(os.environ['ECPA_LIFECYCLE_FACT_FD']))
+channel.send(b'{}')
+channel.send(b'{}')
+sys.stdin.readline()
+"""
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source)])
+
+    with pytest.raises(ValueError, match="duplicate receipts"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request={"schema": "test", "challenge": "challenge"},
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=2,
+        )
+
+
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):
     observer = tmp_path / "inconsistent_observer.py"
     observer.write_text(
