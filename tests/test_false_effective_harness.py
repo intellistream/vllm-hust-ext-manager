@@ -79,7 +79,7 @@ def activation_probe(adapter, arguments):
 def lifecycle_registry_fields(tmp_path):
     source = tmp_path / "lifecycle_fact_source.py"
     source.write_text(
-        """import json, os, sys, time
+        """import json, os, socket, sys, time
 from pathlib import Path
 request = json.loads(sys.stdin.readline())
 assert request['fact'] == sys.argv[1]
@@ -111,7 +111,8 @@ payload = {
     'value': request['scenario'] if request['fact'] == 'fault-injected' else True,
     'sut_process_identity': identity,
 }
-print(json.dumps(payload, sort_keys=True, separators=(',', ':')), flush=True)
+channel = socket.socket(fileno=int(os.environ['ECPA_LIFECYCLE_FACT_FD']))
+channel.send(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode())
 commit = json.loads(sys.stdin.readline())
 assert commit == {
     'command': 'commit',
@@ -155,6 +156,11 @@ def lifecycle_process_records(fingerprints):
                 "inode": metadata.st_ino,
             },
             "command_digest": fingerprint["digest"],
+            "channel_credentials": {
+                "pid": 9000 + index,
+                "uid": os.geteuid(),
+                "gid": os.getegid(),
+            },
             "exit_code": 0,
         }
         for index, (phase, fingerprint) in enumerate(sorted(fingerprints.items()))
@@ -1836,7 +1842,12 @@ def test_lifecycle_fact_source_rejects_exec_after_initial_identity(tmp_path):
     source.write_text(
         """import os, sys
 sys.stdin.readline()
-code = "import json,sys; print(json.dumps({}), flush=True); sys.stdin.readline()"
+code = (
+    "import os,socket,sys; "
+    "fd=int(os.environ['ECPA_LIFECYCLE_FACT_FD']); "
+    "socket.socket(fileno=fd).send(b'{}'); "
+    "sys.stdin.readline()"
+)
 os.execv(sys.executable, [sys.executable, '-c', code])
 """
     )
@@ -1868,7 +1879,7 @@ Path(sys.argv[1]).write_text(str(child.pid))
         sys.executable, [str(source), str(descendant_pid_path)]
     )
 
-    with pytest.raises(ValueError, match="timed out"):
+    with pytest.raises(ValueError, match="timed out|truncated"):
         runner_module.run_lifecycle_fact_source(
             "service-ready",
             fingerprint,
@@ -1890,6 +1901,32 @@ Path(sys.argv[1]).write_text(str(child.pid))
         time.sleep(0.01)
     else:
         pytest.fail(f"lifecycle source descendant {descendant_pid} survived cleanup")
+
+
+def test_lifecycle_fact_source_rejects_forked_sender(tmp_path):
+    source = tmp_path / "forked_sender_lifecycle_source.py"
+    source.write_text(
+        """import os, socket, sys, time
+sys.stdin.readline()
+pid = os.fork()
+if pid == 0:
+    channel = socket.socket(fileno=int(os.environ['ECPA_LIFECYCLE_FACT_FD']))
+    channel.send(b'{}')
+    time.sleep(60)
+sys.stdin.readline()
+"""
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source)])
+
+    with pytest.raises(ValueError, match="sender identity mismatch"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request={"schema": "test", "challenge": "challenge"},
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=2,
+        )
 
 
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):
@@ -2190,6 +2227,11 @@ def _formal_process_record(tmp_path):
             lifecycle_processes[event["event"]] = {
                 "linux_identity": source_identity,
                 "command_digest": source_digest,
+                "channel_credentials": {
+                    "pid": source_identity["pid"],
+                    "uid": os.geteuid(),
+                    "gid": os.getegid(),
+                },
                 "monotonic_start_ns": event["monotonic_ns"] - 1,
                 "monotonic_end_ns": event["monotonic_ns"] + 1,
             }
@@ -2212,6 +2254,9 @@ def _formal_process_record(tmp_path):
                 "source_kind": source_kind,
                 "source_process_identity": copy.deepcopy(source_identity),
                 "source_command_digest": source_digest,
+                "source_channel_credentials": copy.deepcopy(
+                    lifecycle_processes[event["event"]]["channel_credentials"]
+                ),
                 "raw_base64": base64.b64encode(raw).decode(),
                 "raw_sha256": harness_module.digest_bytes(raw),
             }
@@ -2228,6 +2273,7 @@ def _formal_process_record(tmp_path):
         ("source", "binding mismatch"),
         ("source-process", "binding mismatch"),
         ("source-command", "binding mismatch"),
+        ("source-channel", "binding mismatch"),
         ("payload", "binding mismatch"),
         ("noncanonical", "not canonical"),
         ("nonfinite", "not canonical"),
@@ -2252,6 +2298,8 @@ def test_formal_oracle_rejects_invalid_lifecycle_fact_receipt(
         receipt["source_process_identity"]["start_ticks"] += 1
     elif mutation == "source-command":
         receipt["source_command_digest"] = "sha256:" + "0" * 64
+    elif mutation == "source-channel":
+        receipt["source_channel_credentials"]["pid"] += 1
     else:
         if mutation == "nonfinite":
             raw = b'{"value":NaN}'

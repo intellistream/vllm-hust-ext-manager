@@ -479,6 +479,7 @@ def validate_formal_adapter_verification(
         fingerprint = fact_commands[phase]
         linux_identity = process.get("linux_identity", {})
         actual = process.get("executable_identity", {})
+        channel_credentials = process.get("channel_credentials", {})
         identity_key = (linux_identity.get("pid"), linux_identity.get("start_ticks"))
         expected_start = (
             f"pid:{process.get('pid')}@ticks:{linux_identity.get('start_ticks')}"
@@ -493,6 +494,9 @@ def validate_formal_adapter_verification(
             or actual.get("device") != fingerprint.get("executable_device")
             or actual.get("inode") != fingerprint.get("executable_inode")
             or process.get("exit_code") != 0
+            or channel_credentials.get("pid") != process.get("pid")
+            or not isinstance(channel_credentials.get("uid"), int)
+            or not isinstance(channel_credentials.get("gid"), int)
             or identity_key in occupied_identities
             or identity_key in fact_identities
         ):
@@ -773,6 +777,7 @@ def validate_formal_lifecycle_receipt(
         "source_kind",
         "source_process_identity",
         "source_command_digest",
+        "source_channel_credentials",
         "raw_base64",
         "raw_sha256",
     }:
@@ -820,6 +825,10 @@ def validate_formal_lifecycle_receipt(
         or receipt.get("source_process_identity")
         != source_process.get("linux_identity")
         or receipt.get("source_command_digest") != source_process.get("command_digest")
+        or receipt.get("source_channel_credentials")
+        != source_process.get("channel_credentials")
+        or receipt.get("source_channel_credentials", {}).get("pid")
+        != source_process.get("linux_identity", {}).get("pid")
         or receipt.get("source_kind") != expected_source
         or payload != expected
         or not isinstance(source_process.get("monotonic_start_ns"), int)

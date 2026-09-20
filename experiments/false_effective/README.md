@@ -55,18 +55,21 @@ Readiness, workload completion, fault application, effect capture, and shutdown
 instead carry exact canonical receipt bytes from their declared probe, driver,
 actuator, host observer, or process monitor. Those bytes and their digest bind
 the challenge, sequence, invocation, Plan/launch/controller, value, timestamp,
-and observed process identity. The runner launches each source through its own
-dedicated stdin/stdout channel and records its Linux PID/start-ticks/argv plus
-the registry-pinned executable fingerprint. A source must remain alive after
-flushing exactly one receipt: the runner re-reads PID/start-ticks/argv/executable
+and observed process identity. The runner launches each source with a dedicated
+control pipe and `SO_PASSCRED` Unix datagram channel. The kernel credential on
+the receipt must identify the registered source PID, rejecting an inherited
+channel used by a forked child. The runner records PID/UID/GID together with
+Linux PID/start-ticks/argv and the registry-pinned executable fingerprint;
+source stdout is diagnostic-only and must stay empty. A source must remain
+alive after sending exactly one receipt: the runner re-reads PID/start-ticks/argv/executable
 before sending a challenge-bound commit message, so an intervening `exec` fails
 closed. The entire source process group is terminated on every success or
 failure path. The generic observer receives no phase message in formal-real
 runs. Duplicate, missing, reordered, inconsistent, unregistered, or
 source-process-mismatched bindings fail closed. The canonical
 receipt payload is machine-checked by `formal-lifecycle-fact.schema.json`; the
-enclosing observation retains the exact payload bytes as base64 and a SHA-256
-digest. Registry review remains responsible for establishing that each source
+enclosing observation retains the exact datagram payload bytes as base64 and a
+SHA-256 digest. Registry review remains responsible for establishing that each source
 command measures or actuates its named fact rather than echoing the request.
 
 `formal-real` is fail closed behind the canonical `verified-adapters.json`

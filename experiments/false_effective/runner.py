@@ -12,7 +12,9 @@ import secrets
 import select
 import shlex
 import signal
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -359,17 +361,28 @@ def run_lifecycle_fact_source(
     """Collect one fact over a dedicated, registry-pinned process channel."""
     argv = [fingerprint["executable"], *fingerprint["arguments"]]
     started = time.monotonic_ns()
-    process = popen_pinned(
-        argv,
-        fingerprint,
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        close_fds=True,
-        start_new_session=True,
-    )
+    receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    source_env = dict(env)
+    source_env["ECPA_LIFECYCLE_FACT_FD"] = str(sender.fileno())
+    try:
+        process = popen_pinned(
+            argv,
+            fingerprint,
+            cwd=cwd,
+            env=source_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(sender.fileno(),),
+            start_new_session=True,
+        )
+    except BaseException:
+        receiver.close()
+        sender.close()
+        raise
+    sender.close()
     try:
         initial_identity = wait_for_linux_process_identity(
             process, argv, timeout_s, fingerprint
@@ -391,14 +404,52 @@ def run_lifecycle_fact_source(
             os.set_blocking(stream.fileno(), False)
         deadline = time.monotonic() + timeout_s
         receipt_complete = False
-        while active and not receipt_complete:
+        raw = b""
+        channel_credentials: dict[str, int] | None = None
+        while not receipt_complete:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
-            readable, _, _ = select.select(list(active), [], [], remaining)
+            readable, _, _ = select.select([*active, receiver], [], [], remaining)
             if not readable:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
             for stream in readable:
+                if stream is receiver:
+                    raw, ancillary, flags, _ = receiver.recvmsg(
+                        1024 * 1024,
+                        socket.CMSG_SPACE(struct.calcsize("3i")),
+                    )
+                    if flags & socket.MSG_TRUNC or not raw:
+                        raise ValueError(
+                            f"lifecycle fact source receipt is truncated: {phase}"
+                        )
+                    credentials = [
+                        data
+                        for level, kind, data in ancillary
+                        if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS
+                    ]
+                    if len(credentials) != 1:
+                        raise ValueError(
+                            f"lifecycle fact source credentials are missing: {phase}"
+                        )
+                    sender_pid, sender_uid, sender_gid = struct.unpack(
+                        "3i", credentials[0][: struct.calcsize("3i")]
+                    )
+                    channel_credentials = {
+                        "pid": sender_pid,
+                        "uid": sender_uid,
+                        "gid": sender_gid,
+                    }
+                    if (
+                        sender_pid != process.pid
+                        or sender_uid != os.geteuid()
+                        or sender_gid != os.getegid()
+                    ):
+                        raise ValueError(
+                            f"lifecycle fact source sender identity mismatch: {phase}"
+                        )
+                    receipt_complete = True
+                    continue
                 captured = sum(len(value) for value in streams.values())
                 try:
                     chunk = os.read(
@@ -415,13 +466,6 @@ def run_lifecycle_fact_source(
                     raise ValueError(
                         f"lifecycle fact source output exceeds the limit: {phase}"
                     )
-                if stream is process.stdout and b"\n" in streams[stream]:
-                    receipt_complete = True
-        if not receipt_complete:
-            raise ValueError(f"lifecycle fact source exited before receipt: {phase}")
-        stdout_prefix = bytes(streams[process.stdout])
-        if stdout_prefix.count(b"\n") != 1 or not stdout_prefix.endswith(b"\n"):
-            raise ValueError(f"lifecycle fact source output is not one record: {phase}")
         try:
             final_identity = linux_process_identity(process.pid)
         except (FileNotFoundError, ProcessLookupError, RuntimeError) as exc:
@@ -480,12 +524,10 @@ def run_lifecycle_fact_source(
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
+        receiver.close()
     ended = time.monotonic_ns()
-    if process.returncode != 0 or len(stdout) + len(stderr) > 1024 * 1024:
+    if process.returncode != 0 or stdout or len(raw) + len(stderr) > 1024 * 1024:
         raise ValueError(f"lifecycle fact source failed: {phase}")
-    if not stdout.endswith(b"\n") or stdout.count(b"\n") != 1:
-        raise ValueError(f"lifecycle fact source output is not one record: {phase}")
-    raw = stdout[:-1]
     try:
         payload = json.loads(raw)
     except (UnicodeDecodeError, ValueError) as exc:
@@ -515,6 +557,7 @@ def run_lifecycle_fact_source(
             "source_kind": FORMAL_LIFECYCLE_FACT_SOURCES[phase],
             "source_process_identity": identity,
             "source_command_digest": fingerprint["digest"],
+            "source_channel_credentials": channel_credentials,
             "raw_base64": base64.b64encode(raw).decode(),
             "raw_sha256": digest_bytes(raw),
         },
@@ -526,6 +569,7 @@ def run_lifecycle_fact_source(
         "linux_identity": identity,
         "executable_identity": executable_identity,
         "command_digest": fingerprint["digest"],
+        "channel_credentials": channel_credentials,
         "exit_code": process.returncode,
         "monotonic_start_ns": started,
         "monotonic_end_ns": ended,
