@@ -34,6 +34,14 @@ from harness import (
     validate_required_process_snapshot,
 )
 
+from vllm_hust_ext.manager_controller import (
+    ACTIVATION_CONTRACT as MANAGED_ACTIVATION_CONTRACT,
+)
+from vllm_hust_ext.manager_controller import (
+    CONTROLLED_ENVIRONMENT,
+)
+from vllm_hust_ext.plan_artifact import read_plan_artifact
+
 HERE = Path(__file__).resolve().parent
 VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
 FORMAL_ACTIVATION_PROBE_OPTION = "--ecpa-formal-activation-probe"
@@ -365,9 +373,86 @@ class ECPAAdapter(FormalArmAdapter):
     def __init__(self):
         super().__init__(
             "ecpa",
-            "manager-controlled-activation",
+            MANAGED_ACTIVATION_CONTRACT,
             ("--enable-ecpa-manager", "--disable-entrypoints"),
         )
+
+    def managed_launch(
+        self,
+        *,
+        manager_executable: str,
+        manager_arguments: list[str],
+        plan_path: str | Path,
+        launch_id: str,
+        controller_instance: str,
+        host_event_dir: str | Path,
+        target_argv: list[str],
+        env: dict[str, str],
+        dry_run: bool = False,
+    ) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+        """Build the real manager-owned formal-run path without spoofable flags."""
+        if not target_argv or any(not item for item in target_argv):
+            raise ValueError("managed ECPA launch requires a non-empty target argv")
+        conflicts = CONTROLLED_ENVIRONMENT.intersection(env)
+        if conflicts:
+            raise ValueError(
+                "runner environment conflicts with manager-owned values: "
+                + ", ".join(sorted(conflicts))
+            )
+        artifact = read_plan_artifact(plan_path)
+        if (
+            artifact.plan.host.runtime != "vllm-hust"
+            or artifact.plan.host.provider != "vllm"
+        ):
+            raise ValueError("managed ECPA launch requires a vLLM-HUST plan")
+        for value, prefix, name in (
+            (launch_id, "launch:", "launch id"),
+            (controller_instance, "controller:", "controller instance"),
+        ):
+            if (
+                not value.startswith(prefix)
+                or value == prefix
+                or value.strip() != value
+                or any(character.isspace() for character in value)
+            ):
+                raise ValueError(f"{name} is not canonical")
+        event_root = Path(host_event_dir)
+        if (
+            not event_root.is_absolute()
+            or event_root.is_symlink()
+            or not event_root.is_dir()
+            or event_root.resolve(strict=True) != event_root
+        ):
+            raise ValueError("host event directory is not canonical")
+        plan = str(artifact.path)
+        argv = [
+            manager_executable,
+            *manager_arguments,
+            "formal-run",
+            "--plan",
+            plan,
+            "--launch-id",
+            launch_id,
+            "--controller-instance",
+            controller_instance,
+            "--host-event-dir",
+            str(event_root),
+        ]
+        if dry_run:
+            argv.append("--dry-run")
+        argv.extend(("--", *target_argv))
+        launched = dict(env)
+        launched["ECPA_EVALUATION_ARM"] = self.arm
+        binding = {
+            "activation_contract": self.activation_contract,
+            "controller_instance": controller_instance,
+            "host_event_dir": str(event_root),
+            "launch_id": launch_id,
+            "plan_id": artifact.plan_id,
+            "plan_path": plan,
+            "target_argv": list(target_argv),
+        }
+        return argv, launched, binding
 
 
 def _git_measurement() -> tuple[str, bool]:
