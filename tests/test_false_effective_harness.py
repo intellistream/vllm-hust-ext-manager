@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -490,7 +491,6 @@ def test_ecpa_managed_launch_uses_real_formal_run_and_manager_owned_identity(tmp
     manager = str(Path(sys.executable).with_name("vllm-hust-ext"))
     argv, env, binding = adapter.managed_launch(
         manager_executable=manager,
-        manager_arguments=[],
         plan_path=plan_path,
         launch_id="launch:test",
         controller_instance="controller:test",
@@ -520,7 +520,6 @@ def test_ecpa_managed_launch_rejects_runner_owned_host_identity(tmp_path):
     with pytest.raises(ValueError, match="manager-owned"):
         ECPAAdapter().managed_launch(
             manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
-            manager_arguments=[],
             plan_path=plan_path,
             launch_id="launch:test",
             controller_instance="controller:test",
@@ -542,7 +541,6 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
     )
     argv, env, binding = ECPAAdapter().managed_launch(
         manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
-        manager_arguments=[],
         plan_path=plan_path,
         launch_id="launch:real-path-test",
         controller_instance="controller:real-path-test",
@@ -561,6 +559,50 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
         "VLLM_ECPA_LAUNCH_ID": "launch:real-path-test",
         "VLLM_ECPA_PLAN_ID": binding["plan_id"],
     }
+
+
+def test_ecpa_managed_launch_snapshots_plan_before_original_is_replaced(tmp_path):
+    original = _write_formal_execution_plan(tmp_path)
+    event_dir = (tmp_path / "events").resolve()
+    event_dir.mkdir(mode=0o700)
+    argv, env, binding = ECPAAdapter().managed_launch(
+        manager_executable=str(Path(sys.executable).with_name("vllm-hust-ext")),
+        plan_path=original,
+        launch_id="launch:snapshot-test",
+        controller_instance="controller:snapshot-test",
+        host_event_dir=event_dir,
+        target_argv=[sys.executable, "-c", "raise SystemExit(99)"],
+        env=dict(os.environ),
+        dry_run=True,
+    )
+    replacement = replace(
+        Plan(
+            (PluginIdentity("org.vllm-hust", "formal", "0.1.0", "a" * 64),),
+            HostCompatibility("vllm-hust", "0.11.0", "vllm", "1"),
+            (),
+            (EvidenceObligation("worker-load", "worker", "resolved", (0,)),),
+            PredecessorSnapshot(0, None, {}),
+            True,
+        ),
+        plugins=(PluginIdentity("org.vllm-hust", "replacement", "0.1.0", "b" * 64),),
+    )
+    original.write_bytes(plan_artifact_bytes(replacement))
+    original.chmod(0o600)
+
+    snapshot = Path(binding["plan_path"])
+    assert snapshot != original
+    assert snapshot.read_bytes() != original.read_bytes()
+    assert snapshot.stat().st_mode & 0o777 == 0o400
+    assert snapshot.parent.stat().st_mode & 0o777 == 0o500
+    completed = subprocess.run(argv, env=env, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    receipt = json.loads(completed.stdout)
+    assert receipt["plan_id"] == binding["plan_id"]
+    assert receipt["plan_id"] != replacement.plan_id
+
+
+def test_ecpa_managed_launch_has_no_injectable_manager_argument_prefix():
+    assert "manager_arguments" not in ECPAAdapter.managed_launch.__annotations__
 
 
 def _minimal_formal_identity() -> dict:

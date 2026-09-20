@@ -381,7 +381,6 @@ class ECPAAdapter(FormalArmAdapter):
         self,
         *,
         manager_executable: str,
-        manager_arguments: list[str],
         plan_path: str | Path,
         launch_id: str,
         controller_instance: str,
@@ -391,7 +390,11 @@ class ECPAAdapter(FormalArmAdapter):
         dry_run: bool = False,
     ) -> tuple[list[str], dict[str, str], dict[str, Any]]:
         """Build the real manager-owned formal-run path without spoofable flags."""
-        if not target_argv or any(not item for item in target_argv):
+        if not isinstance(manager_executable, str) or not manager_executable:
+            raise ValueError("managed ECPA launch requires a manager executable")
+        if not target_argv or any(
+            not isinstance(item, str) or not item for item in target_argv
+        ):
             raise ValueError("managed ECPA launch requires a non-empty target argv")
         conflicts = CONTROLLED_ENVIRONMENT.intersection(env)
         if conflicts:
@@ -410,7 +413,8 @@ class ECPAAdapter(FormalArmAdapter):
             (controller_instance, "controller:", "controller instance"),
         ):
             if (
-                not value.startswith(prefix)
+                not isinstance(value, str)
+                or not value.startswith(prefix)
                 or value == prefix
                 or value.strip() != value
                 or any(character.isspace() for character in value)
@@ -424,10 +428,81 @@ class ECPAAdapter(FormalArmAdapter):
             or event_root.resolve(strict=True) != event_root
         ):
             raise ValueError("host event directory is not canonical")
-        plan = str(artifact.path)
+        event_metadata = event_root.stat()
+        if (
+            event_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(event_metadata.st_mode) & 0o022
+        ):
+            raise ValueError("host event directory must be private and owned")
+        event_fd = os.open(
+            event_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        opened_event_metadata = os.fstat(event_fd)
+        if (
+            (opened_event_metadata.st_dev, opened_event_metadata.st_ino)
+            != (event_metadata.st_dev, event_metadata.st_ino)
+            or opened_event_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_event_metadata.st_mode) & 0o022
+        ):
+            os.close(event_fd)
+            raise ValueError("host event directory changed while opening")
+        snapshot_name = f".ecpa-plan-{secrets.token_hex(16)}"
+        snapshot_fd = -1
+        plan_fd = -1
+        created = False
+        try:
+            os.mkdir(snapshot_name, mode=0o700, dir_fd=event_fd)
+            created = True
+            snapshot_fd = os.open(
+                snapshot_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=event_fd,
+            )
+            plan_fd = os.open(
+                "plan.json",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o400,
+                dir_fd=snapshot_fd,
+            )
+            remaining = memoryview(artifact.raw)
+            while remaining:
+                written = os.write(plan_fd, remaining)
+                if written <= 0:
+                    raise OSError("execution-plan snapshot write made no progress")
+                remaining = remaining[written:]
+            os.fsync(plan_fd)
+            os.close(plan_fd)
+            plan_fd = -1
+            os.fchmod(snapshot_fd, 0o500)
+            os.fsync(snapshot_fd)
+            os.fsync(event_fd)
+        except BaseException:
+            if plan_fd >= 0:
+                os.close(plan_fd)
+                plan_fd = -1
+            if snapshot_fd >= 0:
+                os.fchmod(snapshot_fd, 0o700)
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink("plan.json", dir_fd=snapshot_fd)
+            if created:
+                with contextlib.suppress(FileNotFoundError):
+                    os.rmdir(snapshot_name, dir_fd=event_fd)
+            raise
+        finally:
+            if plan_fd >= 0:
+                os.close(plan_fd)
+            if snapshot_fd >= 0:
+                os.close(snapshot_fd)
+            os.close(event_fd)
+        plan = str(event_root / snapshot_name / "plan.json")
+        frozen_artifact = read_plan_artifact(plan)
+        if (
+            frozen_artifact.raw != artifact.raw
+            or frozen_artifact.plan_id != artifact.plan_id
+        ):
+            raise ValueError("execution-plan snapshot differs from validated input")
         argv = [
             manager_executable,
-            *manager_arguments,
             "formal-run",
             "--plan",
             plan,

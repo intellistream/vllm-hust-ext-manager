@@ -40,7 +40,9 @@ fails before evidence is appended or consumed.
 
 The false-effective runner now has a fail-closed managed-launch constructor for
 this exact entry point. It reads and recomputes the canonical Plan artifact,
-rejects caller-supplied host-owned identity variables, and constructs
+copies those validated bytes into a runner-created private read-only snapshot,
+rejects caller-supplied host-owned identity variables or injectable manager
+prefix arguments, and constructs
 `formal-run --plan ... --launch-id ... --controller-instance ...
 --host-event-dir ... -- <target>` without the fixture-only
 `--enable-ecpa-manager`/`--disable-entrypoints` flags. A dry-run regression test
