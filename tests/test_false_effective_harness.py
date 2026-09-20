@@ -49,6 +49,7 @@ from runner import (  # noqa: E402
     planned_records,
     run_formal_start,
     run_reference_start,
+    wait_for_linux_process_identity,
     write_formal_manifest,
 )
 
@@ -468,6 +469,26 @@ def test_arm_launch_contracts_are_distinct_and_auditable():
     }
 
 
+def test_process_identity_rejects_executable_symlink_retarget(tmp_path):
+    executable = tmp_path / "tool"
+    executable.symlink_to(Path(sys.executable).absolute())
+    fingerprint = command_fingerprint(str(executable), [])
+    executable.unlink()
+    executable.symlink_to("/bin/sleep")
+    process = subprocess.Popen([str(executable), "5"])
+    try:
+        with pytest.raises(RuntimeError, match="executable differs"):
+            wait_for_linux_process_identity(
+                process,
+                [str(executable), "5"],
+                2,
+                fingerprint,
+            )
+    finally:
+        process.terminate()
+        process.wait(timeout=2)
+
+
 def _write_formal_execution_plan(tmp_path: Path) -> Path:
     plan = Plan(
         (PluginIdentity("org.vllm-hust", "formal", "0.1.0", "a" * 64),),
@@ -552,7 +573,6 @@ def test_ecpa_managed_launch_propagates_host_owned_binding_to_target(tmp_path):
         target_argv=[sys.executable, "-c", target],
         env=dict(os.environ),
     )
-
     completed = subprocess.run(argv, env=env, text=True, capture_output=True)
     assert completed.returncode == 0, completed.stderr
     received = json.loads(completed.stdout)
@@ -1143,8 +1163,20 @@ if args.ecpa_formal_activation_probe:
     }
     command = {
         "argv": [sys.executable, *sut_arguments],
-        "sut_process": {"argv": [sys.executable, *sut_arguments]},
-        "observer_process": {"argv": [sys.executable, *observer_arguments]},
+        "sut_process": {
+            "argv": [sys.executable, *sut_arguments],
+            "executable_identity": {
+                "device": sut_fingerprint["executable_device"],
+                "inode": sut_fingerprint["executable_inode"],
+            },
+        },
+        "observer_process": {
+            "argv": [sys.executable, *observer_arguments],
+            "executable_identity": {
+                "device": observer_fingerprint["executable_device"],
+                "inode": observer_fingerprint["executable_inode"],
+            },
+        },
     }
     harness_module.validate_formal_adapter_verification(record, command)
 
@@ -1296,7 +1328,11 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
             "argv": [
                 verification["observer_command"]["executable"],
                 *verification["observer_command"]["arguments"],
-            ]
+            ],
+            "executable_identity": {
+                "device": observer_fingerprint["executable_device"],
+                "inode": observer_fingerprint["executable_inode"],
+            },
         },
         "execution_identity": {
             "plan_id": binding["plan_id"],
@@ -1304,6 +1340,10 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
             "controller_instance": controller,
         },
         "managed_binding": binding,
+    }
+    command["sut_process"]["executable_identity"] = {
+        "device": manager_fingerprint["executable_device"],
+        "inode": manager_fingerprint["executable_inode"],
     }
     harness_module.validate_formal_adapter_verification(record, command)
 
@@ -1345,6 +1385,7 @@ def test_managed_ecpa_record_validates_without_spoofing_target_contract(
         target_argv=[sys.executable, sut],
         env=dict(os.environ),
     )
+    manager_prefix = runner_module.executable_launch_prefix(manager)
     assert "ECPA_ACTIVATION_CONTRACT" not in env
     identity = runner_module.measured_identity(
         _minimal_formal_identity(),
@@ -1373,6 +1414,12 @@ def test_managed_ecpa_record_validates_without_spoofing_target_contract(
         },
         activation_contract=adapter.activation_contract,
         managed_binding=binding,
+        sut_executable_fingerprint=command_fingerprint(
+            manager_prefix[0], manager_prefix[1:]
+        ),
+        observer_executable_fingerprint=command_fingerprint(
+            sys.executable, [str(observer)]
+        ),
     )
     assert record["status"] == "complete"
     validate_record(

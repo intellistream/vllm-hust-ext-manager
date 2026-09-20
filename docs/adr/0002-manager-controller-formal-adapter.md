@@ -75,6 +75,15 @@ the target-only activation contract by design; offline validation instead binds
 that contract through the manager-owned launch record and rejects a caller that
 tries to preseed it.
 
+Executable fingerprints also seal the resolved device and inode. Before the
+phase protocol starts, the runner reads the actual image through
+`/proc/<pid>/exe` and rejects a process whose device/inode differs; that identity
+is stored separately from the PID/start-ticks/argv identity and rechecked
+offline. Retargeting an executable symlink after registry verification therefore
+cannot yield an accepted record, even if the link is restored before offline
+validation. This is a provenance fail-closed check, not a sandbox against code
+that already runs with the experiment user's privileges.
+
 ## Remaining gate
 
 The remaining gate is to independently associate host-assigned

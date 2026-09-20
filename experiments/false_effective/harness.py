@@ -252,6 +252,9 @@ def validate_formal_adapter_verification(
             not executable.is_file()
             or str(executable.resolve()) != fingerprint.get("executable_resolved")
             or digest_file(executable) != fingerprint.get("executable_sha256")
+            or executable.resolve().stat().st_dev
+            != fingerprint.get("executable_device")
+            or executable.resolve().stat().st_ino != fingerprint.get("executable_inode")
         ):
             raise ValueError(f"{role} executable no longer matches its fingerprint")
         for artifact in fingerprint.get("argument_files", []):
@@ -375,6 +378,20 @@ def validate_formal_adapter_verification(
         or observer_argv[1:] != observer_fingerprint["arguments"]
     ):
         raise ValueError("executed observer argv differs from the registered command")
+    sut_fingerprint = (
+        verification["manager_command"]
+        if record["arm"] == "ecpa"
+        else verification["sut_command"]
+    )
+    for role, process, fingerprint in (
+        ("SUT", command.get("sut_process", {}), sut_fingerprint),
+        ("observer", command.get("observer_process", {}), observer_fingerprint),
+    ):
+        actual = process.get("executable_identity", {})
+        if actual.get("device") != fingerprint.get("executable_device") or actual.get(
+            "inode"
+        ) != fingerprint.get("executable_inode"):
+            raise ValueError(f"{role} executable identity differs from its fingerprint")
 
 
 def canonical_record_core(record: dict[str, Any]) -> dict[str, Any]:

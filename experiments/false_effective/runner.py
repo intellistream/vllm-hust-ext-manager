@@ -115,11 +115,22 @@ def linux_process_identity(pid: int) -> dict[str, Any]:
     argv = [
         part.decode(errors="surrogateescape") for part in argv_raw.split(b"\0") if part
     ]
-    return {"pid": pid, "start_ticks": start_ticks, "argv": argv}
+    executable = Path(f"/proc/{pid}/exe")
+    executable_metadata = executable.stat()
+    return {
+        "pid": pid,
+        "start_ticks": start_ticks,
+        "argv": argv,
+        "executable_device": executable_metadata.st_dev,
+        "executable_inode": executable_metadata.st_ino,
+    }
 
 
 def wait_for_linux_process_identity(
-    process: subprocess.Popen[Any], expected_argv: list[str], timeout_s: float
+    process: subprocess.Popen[Any],
+    expected_argv: list[str],
+    timeout_s: float,
+    expected_executable: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wait until exec has installed the exact argv before recording identity."""
     deadline = time.monotonic() + timeout_s
@@ -132,6 +143,15 @@ def wait_for_linux_process_identity(
         except (FileNotFoundError, ProcessLookupError, RuntimeError):
             last_identity = None
         if last_identity is not None and last_identity["argv"] == expected_argv:
+            if expected_executable is not None and (
+                last_identity["executable_device"]
+                != expected_executable.get("executable_device")
+                or last_identity["executable_inode"]
+                != expected_executable.get("executable_inode")
+            ):
+                raise RuntimeError(
+                    "process executable differs from the registered fingerprint"
+                )
             return last_identity
         time.sleep(0.001)
     observed = last_identity["argv"] if last_identity is not None else None
@@ -145,6 +165,7 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
     """Bind the launched executable and every file-backed argv component."""
     executable_path = Path(executable).absolute()
     executable_resolved = executable_path.resolve(strict=True)
+    executable_metadata = executable_resolved.stat()
     argument_files = []
     normalized_arguments = []
     for index, value in enumerate(arguments):
@@ -163,6 +184,8 @@ def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]
     fingerprint = {
         "executable": str(executable_path),
         "executable_resolved": str(executable_resolved),
+        "executable_device": executable_metadata.st_dev,
+        "executable_inode": executable_metadata.st_ino,
         "executable_sha256": digest_file(executable_resolved),
         "arguments": normalized_arguments,
         "argument_files": argument_files,
@@ -814,6 +837,8 @@ def _run_start(
     execution_identity: dict[str, str] | None = None,
     activation_contract: str | None = None,
     managed_binding: dict[str, Any] | None = None,
+    sut_executable_fingerprint: dict[str, Any] | None = None,
+    observer_executable_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
@@ -846,7 +871,13 @@ def _run_start(
             text=True,
             close_fds=True,
         )
-        sut_identity = wait_for_linux_process_identity(sut, argv, timeout_s)
+        sut_identity = wait_for_linux_process_identity(
+            sut, argv, timeout_s, sut_executable_fingerprint
+        )
+        sut_executable_identity = {
+            "device": sut_identity.pop("executable_device"),
+            "inode": sut_identity.pop("executable_inode"),
+        }
         read_fd, write_fd = os.pipe()
         observer_env = dict(env)
         observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
@@ -876,8 +907,15 @@ def _run_start(
             pass_fds=(write_fd,),
         )
         observer_identity = wait_for_linux_process_identity(
-            observer, observer_argv, timeout_s
+            observer,
+            observer_argv,
+            timeout_s,
+            observer_executable_fingerprint,
         )
+        observer_executable_identity = {
+            "device": observer_identity.pop("executable_device"),
+            "inode": observer_identity.pop("executable_inode"),
+        }
         os.close(write_fd)
         phase_bounds: dict[str, list[int]] = {}
         phase_invocations: list[dict[str, Any]] = []
@@ -1031,6 +1069,7 @@ def _run_start(
                 "pid": sut.pid,
                 "start_identity": f"pid:{sut.pid}@ticks:{sut_identity['start_ticks']}",
                 "linux_identity": sut_identity,
+                "executable_identity": sut_executable_identity,
             },
             "observer_process": {
                 "argv": observer_identity["argv"],
@@ -1042,6 +1081,7 @@ def _run_start(
                 "monotonic_start_ns": observer_start,
                 "monotonic_end_ns": observer_end,
                 "linux_identity": observer_identity,
+                "executable_identity": observer_executable_identity,
             },
             "phase_bounds": phase_bounds,
             "phase_invocations": phase_invocations,
@@ -1448,6 +1488,14 @@ def run_formal_start(
         activation_contract=adapter.activation_contract,
         managed_binding=(
             binding if not fixture_mode and isinstance(adapter, ECPAAdapter) else None
+        ),
+        sut_executable_fingerprint=(
+            verification.get("manager_command") or verification.get("sut_command")
+            if verification is not None
+            else None
+        ),
+        observer_executable_fingerprint=(
+            verification.get("observer_command") if verification is not None else None
         ),
     )
 
