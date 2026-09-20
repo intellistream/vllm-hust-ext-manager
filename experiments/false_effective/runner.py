@@ -216,6 +216,14 @@ def executable_launch_prefix(executable: str) -> list[str]:
     return [interpreter, *shebang[1:], str(path)]
 
 
+def command_fingerprint_for_launch(
+    executable: str, arguments: list[str]
+) -> dict[str, Any]:
+    """Fingerprint the actual exec image and argv for binaries or scripts."""
+    prefix = executable_launch_prefix(executable)
+    return command_fingerprint(prefix[0], [*prefix[1:], *arguments])
+
+
 def run_bounded_command(
     argv: list[str],
     timeout_s: int,
@@ -334,7 +342,7 @@ def run_activation_probe(
     ]
     if command_references_fixture([executable, *probe_arguments]):
         raise ValueError("fixture-referencing activation probe is forbidden")
-    fingerprint = command_fingerprint(executable, probe_arguments)
+    fingerprint = command_fingerprint_for_launch(executable, probe_arguments)
     if fingerprint["digest"] != probe.get("command_digest"):
         raise ValueError("activation probe command differs from the registry")
     try:
@@ -476,8 +484,10 @@ def verified_adapter_contract(
     launch_paths = [executable, observer_executable, *arguments, *observer_arguments]
     if command_references_fixture(launch_paths):
         raise ValueError("fixture-referencing command is forbidden for formal-real")
-    sut = command_fingerprint(executable, [*arguments, *adapter.activation_arguments])
-    observer = command_fingerprint(observer_executable, observer_arguments)
+    sut = command_fingerprint_for_launch(
+        executable, [*arguments, *adapter.activation_arguments]
+    )
+    observer = command_fingerprint_for_launch(observer_executable, observer_arguments)
     if sut["digest"] != entry.get("sut_command_digest"):
         raise ValueError("SUT command differs from the verified adapter artifact")
     if observer["digest"] != entry.get("observer_command_digest"):
@@ -545,8 +555,8 @@ def verified_ecpa_adapter_contract(
         raise ValueError("fixture-referencing command is forbidden for formal-real")
     manager_prefix = executable_launch_prefix(manager_executable)
     manager = command_fingerprint(manager_prefix[0], manager_prefix[1:])
-    target = command_fingerprint(target_executable, target_arguments)
-    observer = command_fingerprint(observer_executable, observer_arguments)
+    target = command_fingerprint_for_launch(target_executable, target_arguments)
+    observer = command_fingerprint_for_launch(observer_executable, observer_arguments)
     if manager["digest"] != entry.get("manager_command_digest"):
         raise ValueError("manager command differs from the verified adapter artifact")
     if target["digest"] != entry.get("target_command_digest"):
