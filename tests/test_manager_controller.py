@@ -98,6 +98,51 @@ def test_schema_and_parser_both_reject_whitespace_strings(invalid_name) -> None:
         parse_plan_artifact(raw)
 
 
+@pytest.mark.parametrize(
+    "invalid_uri",
+    [
+        "urn:ecpa:resource:",
+        "urn:ecpa:resource:bad/path",
+        "urn:ecpa:resource:bad!x",
+        "urn:ecpa:resource:é",
+        "urn:ecpa:resource:bad\n",
+    ],
+)
+def test_schema_and_parser_both_reject_out_of_profile_resource_uri(
+    invalid_uri,
+) -> None:
+    schema_path = Path(__file__).parents[1] / "spec/0.1/execution-plan.schema.json"
+    schema = json.loads(schema_path.read_text())
+    original = plan()
+    invalid_claim = replace(original.claims[0], uri=invalid_uri)
+    invalid = replace(original, claims=(invalid_claim,))
+    raw = plan_artifact_bytes(invalid)
+
+    assert list(Draft7Validator(schema).iter_errors(json.loads(raw)))
+    with pytest.raises(ValueError, match="claim URI|UNKNOWN_RESOURCE"):
+        parse_plan_artifact(raw)
+
+
+def test_schema_and_parser_reject_digest_and_plan_id_with_trailing_newline() -> None:
+    schema_path = Path(__file__).parents[1] / "spec/0.1/execution-plan.schema.json"
+    schema = json.loads(schema_path.read_text())
+    original = plan()
+    invalid_plugin = replace(
+        original.plugins[0], artifact_sha256=original.plugins[0].artifact_sha256 + "\n"
+    )
+    invalid_raw = plan_artifact_bytes(replace(original, plugins=(invalid_plugin,)))
+    assert list(Draft7Validator(schema).iter_errors(json.loads(invalid_raw)))
+    with pytest.raises(PlanArtifactError, match="SHA-256|without whitespace"):
+        parse_plan_artifact(invalid_raw)
+
+    value = json.loads(plan_artifact_bytes(original))
+    value["plan_id"] += "\n"
+    invalid_raw = canonical_bytes(value) + b"\n"
+    assert list(Draft7Validator(schema).iter_errors(json.loads(invalid_raw)))
+    with pytest.raises(PlanArtifactError, match="does not match"):
+        parse_plan_artifact(invalid_raw)
+
+
 @pytest.mark.parametrize("mutation", ["identity", "unknown", "noncanonical"])
 def test_plan_artifact_rejects_tampering_and_ambiguous_bytes(
     tmp_path, mutation

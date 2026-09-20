@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -146,6 +147,8 @@ def parse_plan_artifact(raw: bytes) -> Plan:
         claim = _exact_fields(item, {"uri", "owner", "mode"}, f"claim {index}")
         uri = _string(claim["uri"], "claim URI")
         canonical_uri(uri, "resource")
+        if re.fullmatch(r"urn:ecpa:resource:[a-z0-9._-]+", uri) is None:
+            raise PlanArtifactError("claim URI does not match the resource profile")
         mode = _string(claim["mode"], "claim mode")
         if mode not in {"exclusive", "shared-read"}:
             raise PlanArtifactError("claim mode is unsupported")

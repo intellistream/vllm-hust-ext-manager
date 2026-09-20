@@ -14,7 +14,7 @@
         "namespace": {"$ref": "#/definitions/nonempty"},
         "name": {"$ref": "#/definitions/nonempty"},
         "version": {"$ref": "#/definitions/nonempty"},
-        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"}
       },
       "additionalProperties": false
     },
@@ -33,7 +33,7 @@
       "type": "object",
       "required": ["uri", "owner", "mode"],
       "properties": {
-        "uri": {"type": "string", "pattern": "^urn:ecpa:resource:[a-z0-9._-]+$"},
+        "uri": {"type": "string", "pattern": "^urn:ecpa:resource:[a-z0-9._-]+(?![\\s\\S])"},
         "owner": {"$ref": "#/definitions/nonempty"},
         "mode": {"enum": ["exclusive", "shared-read"]}
       },
@@ -75,7 +75,7 @@
   "required": ["schema", "plan_id", "plan"],
   "properties": {
     "schema": {"const": "ecpa-execution-plan/v1"},
-    "plan_id": {"type": "string", "pattern": "^plan:sha256:[0-9a-f]{64}$"},
+    "plan_id": {"type": "string", "pattern": "^plan:sha256:[0-9a-f]{64}(?![\\s\\S])"},
     "plan": {
       "type": "object",
       "required": ["plugins", "host", "claims", "obligations", "predecessor", "fallback_proven"],
