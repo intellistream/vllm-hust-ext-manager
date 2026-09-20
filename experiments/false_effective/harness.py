@@ -13,6 +13,10 @@ from typing import Any
 
 from jsonschema import Draft7Validator
 
+from vllm_hust_ext.formal_adapter_admission import (
+    FORMAL_ADAPTER_REGISTRY_SCHEMA,
+    validate_formal_adapter_admission,
+)
 from vllm_hust_ext.plan_artifact import read_plan_artifact
 
 ARMS = ("vanilla-vllm-entry-points", "manual-integration", "ecpa")
@@ -179,7 +183,7 @@ def validate_formal_adapter_verification(
     registry = json.loads(registry_bytes)
     if (
         registry_bytes != canonical(registry) + b"\n"
-        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+        or registry.get("schema") != FORMAL_ADAPTER_REGISTRY_SCHEMA
     ):
         raise ValueError("verified adapter registry is not canonical")
     rows = registry.get("adapters", [])
@@ -190,6 +194,7 @@ def validate_formal_adapter_verification(
     entry = entries.get(verification.get("verification_id"))
     if entry is None:
         raise ValueError("formal adapter is absent from the trusted registry")
+    admission = validate_formal_adapter_admission(entry.get("admission"))
     expected_contract = {
         "vanilla-vllm-entry-points": "entry-points-unmanaged",
         "manual-integration": "explicit-manual-hooks",
@@ -236,6 +241,7 @@ def validate_formal_adapter_verification(
         "registry_schema": registry["schema"],
         "verification_id": entry["id"],
         "registry_digest": digest_bytes(registry_bytes),
+        "admission": admission,
         "observer_command": verification.get("observer_command"),
         "lifecycle_fact_commands": verification.get("lifecycle_fact_commands"),
         "scenario_binding": expected_scenario_binding,

@@ -45,6 +45,10 @@ from harness import (
 )
 from jsonschema import Draft7Validator
 
+from vllm_hust_ext.formal_adapter_admission import (
+    FORMAL_ADAPTER_REGISTRY_SCHEMA,
+    validate_formal_adapter_admission,
+)
 from vllm_hust_ext.manager_controller import (
     ACTIVATION_CONTRACT as MANAGED_ACTIVATION_CONTRACT,
 )
@@ -1066,7 +1070,7 @@ def verified_adapter_contract(
     registry = json.loads(registry_bytes)
     if (
         registry_bytes != canonical(registry) + b"\n"
-        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+        or registry.get("schema") != FORMAL_ADAPTER_REGISTRY_SCHEMA
     ):
         raise ValueError("verified adapter registry must be canonical")
     rows = registry.get("adapters", [])
@@ -1076,6 +1080,7 @@ def verified_adapter_contract(
     entry = entries.get(verification_id)
     if entry is None:
         raise ValueError("adapter verification id is not in the trusted registry")
+    admission = validate_formal_adapter_admission(entry.get("admission"))
     if (
         entry.get("arm") != adapter.arm
         or entry.get("activation_contract") != adapter.activation_contract
@@ -1116,6 +1121,7 @@ def verified_adapter_contract(
         "registry_schema": registry.get("schema"),
         "verification_id": verification_id,
         "registry_digest": digest_bytes(registry_bytes),
+        "admission": admission,
         "sut_command": sut,
         "observer_command": observer,
         "lifecycle_fact_commands": fact_commands,
@@ -1150,7 +1156,7 @@ def verified_ecpa_adapter_contract(
     registry = json.loads(registry_bytes)
     if (
         registry_bytes != canonical(registry) + b"\n"
-        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+        or registry.get("schema") != FORMAL_ADAPTER_REGISTRY_SCHEMA
     ):
         raise ValueError("verified adapter registry must be canonical")
     rows = registry.get("adapters", [])
@@ -1160,6 +1166,7 @@ def verified_ecpa_adapter_contract(
     entry = entries.get(verification_id)
     if entry is None:
         raise ValueError("adapter verification id is not in the trusted registry")
+    admission = validate_formal_adapter_admission(entry.get("admission"))
     if (
         entry.get("arm") != adapter.arm
         or entry.get("activation_contract") != adapter.activation_contract
@@ -1212,6 +1219,7 @@ def verified_ecpa_adapter_contract(
         "registry_schema": registry.get("schema"),
         "verification_id": verification_id,
         "registry_digest": digest_bytes(registry_bytes),
+        "admission": admission,
         "manager_command": manager,
         "target_command": target,
         "observer_command": observer,

@@ -96,6 +96,15 @@ processes and close all descriptors before the start fails.
 
 ## Remaining gate
 
+The formal adapter registry uses schema v2. Every future entry must contain a
+producer-admission receipt binding the exact host repository identity, PR,
+reviewed head/tree/base, merge commit, and the completed human line, command,
+activation-path, and observer-independence reviews. Runtime admission checks
+this receipt before it fingerprints or probes commands, and offline validation
+rechecks the same receipt. This receipt is a code-review trust boundary, not a
+live GitHub oracle or proof that a runtime effect occurred. The registry stays
+empty while the producer is open.
+
 The remaining gate is to independently associate host-assigned
 EngineCore/worker identities with this same Plan/launch/controller tuple under
 a real workload and fault driver, without treating controller ACKs as effect

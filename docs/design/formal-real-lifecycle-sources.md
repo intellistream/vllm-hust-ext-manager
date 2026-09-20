@@ -123,7 +123,14 @@ prerequisite for running the full matrix through one adapter registration.
 Registration requires the merged vLLM-HUST host producer, exact
 manager/target/observer/source fingerprints, a deployment-owned quarantine,
 one frozen Plan and fault descriptor, and an independent review of every
-command and configuration artifact. Durable post-crash reconciliation now has
+command and configuration artifact. The registry-v2 producer-admission receipt
+must bind the exact repository, numeric and node identities, default branch,
+PR, reviewed head/tree/base, merge commit, observation time, human line review,
+command review, activation-path review, and observer-independence review. The
+receipt is repository-owned review evidence rather than an online GitHub oracle
+or runtime-effect result. vLLM-HUST PR #27 is currently open without the
+repository-required human line review, so it is not admission-eligible and no
+receipt may be registered for it. Durable post-crash reconciliation now has
 an implementation candidate and local kill/collision tests, but remains part of
 the registration review rather than a claimed experiment result. Until then:
 
