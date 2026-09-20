@@ -1,7 +1,7 @@
 # Host plugin lifecycle evidence 0.1
 
-Status: Phase A synthetic contract. It does not claim a real BidKV or
-two-plugin end-to-end result.
+Status: host wire contract and deployment-owned journal adapter. It does not
+claim a real BidKV, serving, or two-plugin end-to-end result.
 
 The runtime loader observes the existing entry-point path. General Python
 plugins are trusted code in the same process and can call or alter Python
@@ -14,14 +14,20 @@ loading; `VLLM_ECPA_EVIDENCE_STRICT=1` is an explicit fail-closed opt-in.
 ## Event and identity contract
 
 `discovered`, `resolved`, `invoked`, `failed`, and `skipped` describe distinct
-host observations. Only `invoked`, emitted after the general-plugin callable
-returns, may satisfy an invocation obligation. Events are deduplicated by
+host observations. `observation_kind` distinguishes loader lifecycle,
+scheduler resolution, and scheduler dispatch. Only a bound `invoked` event,
+emitted after a general-plugin callable returns or from the native scheduler
+dispatch boundary, may satisfy an invocation obligation. Scheduler dispatch
+events bind a controller instance, positive invocation sequence, occurrence
+ID, and host-recomputed dispatch digest. Events are deduplicated by
 the full process identity, full entry-point tuple, event, and failure detail.
 An event becomes delivered only after the sink returns successfully. Failed
 compatibility-mode deliveries remain retryable; strict failures are sticky and
 repeat deterministically. `delivery_attempt` counts attempted sink writes in
 one process, while the internal delivered count increases only on acceptance.
 Fork detection clears inherited delivery and sink state.
+Receivers also recompute `event_id` from the exact host field ordering used by
+vLLM-HUST, rather than treating an arbitrary identifier as causal provenance.
 
 The host supplies hostname, role, ordinal, PID, Linux process start identity,
 integer process epoch, and wall-clock observation time from `time.time_ns()`.
@@ -33,8 +39,31 @@ cannot establish either value and must not fabricate them.
 The wire schema is
 [`spec/0.1/host-plugin-evidence.schema.json`](../../spec/0.1/host-plugin-evidence.schema.json).
 Receivers reject unknown or missing fields, duplicate JSON keys, non-integer
-epochs, invented plugin identity/digests, non-`invoked` evidence, and any Plan,
-launch, epoch, or entry-point mismatch.
+epochs, invented plugin identity/digests, inconsistent bound/unbound state,
+malformed scheduler causality, non-`invoked` evidence, and any Plan, launch,
+epoch, or entry-point mismatch.
+
+## Deployment-owned journal adapter
+
+`vllm_hust_ext.host_event_sink:append_event` is the first real vLLM-HUST sink
+adapter. A trusted launcher pre-creates an absolute canonical directory, sets
+`ECPA_HOST_EVENT_DIR`, and configures vLLM-HUST with:
+
+```text
+VLLM_ECPA_EVIDENCE_SINK=vllm_hust_ext.host_event_sink:append_event
+```
+
+The sink validates the current strict wire contract, canonicalizes the event,
+and appends it to a process-specific mode-0600 JSONL journal. It refuses
+symlink destinations and non-owned/non-regular files. To avoid silently adding
+a synchronous scheduler-hot-path durability cost, fsync is off by default and
+must be explicitly enabled with `ECPA_HOST_EVENT_FSYNC=1` when the experiment
+requires crash-durable local evidence; that choice belongs in the environment
+manifest and overhead results.
+`read_events` independently opens journals without following symlinks,
+preserves each exact line, rejects partial records and duplicate event IDs, and
+returns both the raw bytes and parsed event. The journal is an observer input,
+not by itself a signed receipt or proof of complete worker coverage.
 
 ## Trust boundary
 
@@ -55,8 +84,8 @@ Thus these are separate facts:
 
 No earlier fact implies a later one.
 
-The sink must be configured through a deployment-controlled module and
-authenticated channel before its output is security evidence. Phase A does
-not implement a trusted launcher for environment injection, authenticated
-transport, durable outbox, production key custody, or malicious-plugin
-isolation. Those are frozen follow-up architecture/real-experiment boundaries.
+The journal sink must be configured by a deployment-controlled launcher before
+its output is useful evidence. This adapter does not itself implement trusted
+environment injection, authenticated transport, a multi-host durable outbox,
+production key custody, or malicious-plugin isolation. Those remain frozen
+follow-up architecture and real-experiment boundaries.

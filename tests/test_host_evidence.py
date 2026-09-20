@@ -30,6 +30,12 @@ from vllm_hust_ext.ecpa_model import (
     PredecessorSnapshot,
     ProcessIdentity,
 )
+from vllm_hust_ext.host_event_sink import (
+    HostEventSinkError,
+    append_event,
+    canonical_event,
+    read_events,
+)
 from vllm_hust_ext.host_evidence import (
     EntryPointBinding,
     HostReceipt,
@@ -55,11 +61,41 @@ BINDING = EntryPointBinding(
 )
 
 
+def computed_event_id(value):
+    process = value["process"]
+    entry = value["entry_point"]
+    material = json.dumps(
+        [
+            process["host"],
+            process["pid"],
+            process["start_identity"],
+            process["process_epoch"],
+            process["role"],
+            process["ordinal"],
+            entry["group"],
+            entry["name"],
+            entry["value"],
+            value["event"],
+            value["detail"],
+            value["occurrence_id"],
+            value["plan_id"],
+            value["launch_id"],
+            value["observation_kind"],
+            value["controller_instance_id"],
+            value["delivery_attempt"],
+            value["observed_at_ns"],
+        ],
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(material).hexdigest()
+
+
 def raw_event(**changes):
     value = {
         "schema": "vllm-hust-plugin-evidence/0.1",
         "event_id": "event-1",
         "event": "invoked",
+        "observation_kind": "loader_lifecycle",
         "entry_point": {
             "group": BINDING.group,
             "name": BINDING.name,
@@ -77,12 +113,19 @@ def raw_event(**changes):
         "delivery_attempt": 1,
         "plan_id": PLAN.plan_id,
         "launch_id": "launch-1",
+        "binding_status": "bound",
+        "occurrence_id": None,
+        "controller_instance_id": None,
+        "invocation_seq": None,
+        "dispatch_id": None,
         "plugin_id": None,
         "artifact_digest": None,
-        "identity_status": "absent; bind from the ECPA Plan at trusted ingestion",
+        "identity_status": "launch-bound",
         "detail": None,
     }
     value.update(changes)
+    if "event_id" not in changes:
+        value["event_id"] = computed_event_id(value)
     return json.dumps(value, separators=(",", ":")).encode()
 
 
@@ -101,6 +144,41 @@ def translate(raw):
     )
 
 
+def scheduler_event(**changes):
+    value = json.loads(raw_event())
+    value.update(
+        {
+            "observation_kind": "scheduler_dispatch",
+            "entry_point": {
+                "group": "vllm.preemption_policy",
+                "name": BINDING.name,
+                "value": BINDING.value,
+            },
+            "occurrence_id": 1,
+            "controller_instance_id": "controller-1",
+            "invocation_seq": 1,
+            "detail": "engine-core.scheduler:selected",
+        }
+    )
+    material = json.dumps(
+        [
+            value["process"]["host"],
+            value["process"]["start_identity"],
+            value["process"]["process_epoch"],
+            value["plan_id"],
+            value["launch_id"],
+            value["controller_instance_id"],
+            value["occurrence_id"],
+        ],
+        separators=(",", ":"),
+    ).encode()
+    value["dispatch_id"] = hashlib.sha256(material).hexdigest()
+    value.update(changes)
+    if "event_id" not in changes:
+        value["event_id"] = computed_event_id(value)
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
 def test_exact_raw_bytes_are_preserved_and_bound_to_plan():
     raw = raw_event()
     receipt = translate(raw)
@@ -111,6 +189,49 @@ def test_exact_raw_bytes_are_preserved_and_bound_to_plan():
     assert receipt.statement.evidence_digest == (
         "sha256:" + hashlib.sha256(raw).hexdigest()
     )
+
+
+def test_current_vllm_scheduler_dispatch_is_causally_validated():
+    raw = scheduler_event()
+    event = parse_host_event(raw)
+    assert event["observation_kind"] == "scheduler_dispatch"
+    scheduler_binding = replace(BINDING, group="vllm.preemption_policy")
+    receipt = translate_invocation(
+        raw,
+        plan=PLAN,
+        launch_id="launch-1",
+        process_epoch=7,
+        binding=scheduler_binding,
+        issuer="urn:ecpa:issuer:host-a",
+        kid="host-key-1",
+        challenge_nonce="nonce-1",
+        issued_at=1_800_000_001,
+        expires_at=1_800_000_060,
+    )
+    assert receipt.statement.event == "invoked"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event_id", "0" * 64),
+        ("dispatch_id", "0" * 64),
+        ("invocation_seq", 2),
+        ("occurrence_id", 2),
+        ("binding_status", "unbound"),
+    ],
+)
+def test_scheduler_dispatch_causal_mutations_are_rejected(field, value):
+    with pytest.raises(AttestationError):
+        parse_host_event(scheduler_event(**{field: value}))
+
+
+def test_unbound_event_cannot_translate_to_invocation_evidence():
+    value = json.loads(raw_event())
+    value.update({"plan_id": None, "launch_id": None, "binding_status": "unbound"})
+    value["event_id"] = computed_event_id(value)
+    with pytest.raises(AttestationError, match="unbound"):
+        translate(json.dumps(value, separators=(",", ":")).encode())
 
 
 @pytest.mark.parametrize(
@@ -180,8 +301,9 @@ def test_raw_event_is_not_a_signed_or_logical_attestation():
 @pytest.mark.parametrize(
     ("mutation", "valid"),
     [
-        ({"plan_id": None}, True),
-        ({"launch_id": None}, True),
+        ({"plan_id": None}, False),
+        ({"launch_id": None}, False),
+        ({"plan_id": None, "launch_id": None, "binding_status": "unbound"}, True),
         ({"detail": "load failure"}, True),
         ({"detail": None}, True),
         ({"detail": "有效"}, True),
@@ -190,12 +312,20 @@ def test_raw_event_is_not_a_signed_or_logical_attestation():
         ({"detail": {}}, False),
         ({"delivery_attempt": True}, False),
         ({"delivery_attempt": 0}, False),
+        ({"observation_kind": "unknown"}, False),
+        ({"binding_status": "unbound"}, False),
+        ({"occurrence_id": 1}, False),
+        ({"controller_instance_id": "controller"}, False),
+        ({"invocation_seq": 1}, False),
+        ({"dispatch_id": "0" * 64}, False),
         ({"extra": "field"}, False),
     ],
 )
 def test_schema_and_manual_parser_have_matching_boundary_semantics(mutation, valid):
     value = json.loads(raw_event())
     value.update(mutation)
+    if "event_id" not in mutation:
+        value["event_id"] = computed_event_id(value)
     schema = json.loads(
         open("spec/0.1/host-plugin-evidence.schema.json").read()  # noqa: SIM115
     )
@@ -239,6 +369,7 @@ def test_unavailable_or_pid_mismatched_start_identity_is_rejected():
 def test_each_entry_point_binding_field_is_enforced(field):
     value = json.loads(raw_event())
     value["entry_point"][field] += "-tampered"
+    value["event_id"] = computed_event_id(value)
     with pytest.raises(AttestationError) as caught:
         translate(json.dumps(value, separators=(",", ":")).encode())
     assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
@@ -338,3 +469,53 @@ def test_raw_byte_tamper_changes_digest_and_breaks_signed_binding():
     with pytest.raises(AttestationError) as caught:
         verifier.verify(logical, 1_800_000_001, PLAN)
     assert caught.value.code is AttestationErrorCode.BINDING_MISMATCH
+
+
+def test_deployment_sink_preserves_canonical_exact_bytes(tmp_path, monkeypatch):
+    journal = tmp_path.resolve()
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    first = json.loads(raw_event())
+    second = json.loads(
+        raw_event(delivery_attempt=2, observed_at_ns=1_800_000_000_000_000_001)
+    )
+    append_event(first)
+    append_event(second)
+    records = read_events(journal)
+    assert [record.raw for record in records] == [
+        canonical_event(first),
+        canonical_event(second),
+    ]
+    assert len({record.journal for record in records}) == 1
+    assert [record.line_number for record in records] == [1, 2]
+
+
+def test_deployment_sink_and_reader_reject_symlink_or_partial_journal(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path.resolve()
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    event = json.loads(raw_event())
+    append_event(event)
+    path = next(journal.glob("*.jsonl"))
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(outside)
+    with pytest.raises(HostEventSinkError, match="open"):
+        append_event(event)
+    with pytest.raises(HostEventSinkError, match="open"):
+        read_events(journal)
+    path.unlink()
+    path.write_bytes(canonical_event(event))
+    with pytest.raises(HostEventSinkError, match="partial"):
+        read_events(journal)
+
+
+def test_sink_rejects_invalid_durability_mode_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(tmp_path.resolve()))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "sometimes")
+    with pytest.raises(HostEventSinkError, match="must be 0 or 1"):
+        append_event(json.loads(raw_event()))
+    assert not list(tmp_path.glob("*.jsonl"))

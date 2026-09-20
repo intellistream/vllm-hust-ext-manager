@@ -1,0 +1,32 @@
+{
+  "schema": "vllm-hust-plugin-evidence/0.1",
+  "event_id": "de33436fbbb3c35413a8f64a0a8ea86ee1a662095226df255a59e9c1abead201",
+  "event": "invoked",
+  "observation_kind": "scheduler_dispatch",
+  "entry_point": {
+    "group": "vllm.preemption_policy",
+    "name": "demo.plugin.Policy",
+    "value": "demo.plugin.Policy"
+  },
+  "process": {
+    "host": "host-a",
+    "role": "engine-core-scheduler",
+    "ordinal": 0,
+    "pid": 4242,
+    "start_identity": "pid:4242:start_ticks:9001",
+    "process_epoch": 7
+  },
+  "observed_at_ns": 1800000000000000000,
+  "delivery_attempt": 2,
+  "plan_id": "plan:sha256:replace-at-ingestion-test",
+  "launch_id": "launch-1",
+  "binding_status": "bound",
+  "occurrence_id": 1,
+  "controller_instance_id": "controller-1",
+  "invocation_seq": 1,
+  "dispatch_id": "e6af7b98fcc0e43c5f7d231a131efabf088c10ba95b17dd430da20b544eb1177",
+  "plugin_id": null,
+  "artifact_digest": null,
+  "identity_status": "launch-bound",
+  "detail": "engine-core.scheduler:selected"
+}
