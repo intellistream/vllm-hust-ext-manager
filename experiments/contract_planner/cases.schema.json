@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/experiments/contract-planner/cases.schema.json",
+  "type": "object",
+  "required": ["schema", "classification", "host", "source_corpus", "taxonomy", "contracts", "cases", "excluded_candidates"],
+  "properties": {
+    "schema": {"const": "ecpa-contract-planner-cases/0.1"},
+    "classification": {"const": "modeled-static-contract-corpus"},
+    "host": {
+      "type": "object",
+      "required": ["runtime", "version"],
+      "properties": {"runtime": {"const": "vllm-hust"}, "version": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "source_corpus": {"const": "docs/corpus/plugins.json"},
+    "taxonomy": {"const": "spec/0.1/contract-taxonomy.json"},
+    "contracts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "source_plugin", "model_kind", "provides", "requires", "resources", "role", "evidence"],
+        "properties": {
+          "id": {"$ref": "#/definitions/identifier"},
+          "source_plugin": {"type": ["string", "null"]},
+          "model_kind": {"enum": ["evidence-backed-abstraction", "synthetic-control"]},
+          "provides": {"type": "array", "items": {"$ref": "#/definitions/capability"}},
+          "requires": {"type": "array", "items": {"$ref": "#/definitions/capability"}},
+          "resources": {"type": "array", "items": {"$ref": "#/definitions/resource"}},
+          "role": {"type": "string", "minLength": 1},
+          "evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "members", "shape", "dimension", "rationale"],
+        "properties": {
+          "id": {"$ref": "#/definitions/identifier"},
+          "members": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/identifier"}},
+          "shape": {"enum": ["single", "pair", "triple"]},
+          "dimension": {"enum": ["baseline", "distinct-resource", "alias-conflict", "mode-conflict", "mediation", "shared-read", "shared-provider", "provider-ambiguity", "missing-capability", "unknown-resource"]},
+          "rationale": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "excluded_candidates": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  },
+  "definitions": {
+    "identifier": {"type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"},
+    "capability": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {"name": {"$ref": "#/definitions/identifier"}, "version": {"type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "required": ["name", "mode"],
+      "properties": {"name": {"$ref": "#/definitions/identifier"}, "mode": {"enum": ["exclusive", "shared-read", "mediated"]}, "mediator": {"type": "string"}},
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,94 @@
+{
+  "schema": "ecpa-contract-taxonomy/0.1-draft",
+  "scope": "vLLM-HUST-static-contract-study",
+  "decision_precedence": [
+    "unknown-resource",
+    "invalid-mode",
+    "capability-cardinality",
+    "resource-mode",
+    "mediator-consistency",
+    "mediator-presence"
+  ],
+  "capabilities": [
+    {"name": "org.vllm-hust.scheduler.preemption-policy", "description": "Selects scheduler preemption victims."},
+    {"name": "org.vllm-hust.kv.transfer-connector", "description": "Plans KV transfer through a connector."},
+    {"name": "org.vllm-hust.deployment.renderer", "description": "Renders deployment configuration."},
+    {"name": "org.vllm-hust.scheduler.admission-policy", "description": "Admits requests under KV pressure."},
+    {"name": "org.vllm-hust.runtime.lifecycle-observer", "description": "Observes request and process lifecycle events."},
+    {"name": "org.vllm-hust.kv.prefix-sharing", "description": "Coordinates prefix publication and attachment."},
+    {"name": "org.vllm-hust.kv.tiering-policy", "description": "Selects KV-cache storage tiers."},
+    {"name": "org.vllm-hust.platform.backend-selector", "description": "Selects a platform backend."},
+    {"name": "org.vllm-hust.scheduler.state-policy", "description": "Makes state-aware scheduling decisions."},
+    {"name": "org.vllm-hust.request.token-budget", "description": "Constrains request token budgets."},
+    {"name": "org.vllm-hust.request.quality-policy", "description": "Applies quality-bounded request policy."},
+    {"name": "org.vllm-hust.synthetic.shared-provider", "description": "Synthetic capability used only to test provider selection."}
+  ],
+  "resources": [
+    {
+      "canonical": "org.vllm-hust.scheduler.preemption-slot",
+      "aliases": ["org.vllm.scheduler.preemption-policy", "org.vllm.scheduler.victim-selector"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "The single scheduler decision point that selects preemption victims."
+    },
+    {
+      "canonical": "org.vllm-hust.kv.transfer-config",
+      "aliases": ["org.vllm.kv-transfer-config", "org.vllm.kv.connector-config"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "The host KV-transfer connector configuration."
+    },
+    {
+      "canonical": "org.vllm-hust.deployment.replicas",
+      "aliases": ["org.vllm.deployment.replica-count"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "Desired deployment replica ownership."
+    },
+    {
+      "canonical": "org.vllm-hust.scheduler.admission-slot",
+      "aliases": ["org.vllm.scheduler.admission-policy"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "Request admission decision point."
+    },
+    {
+      "canonical": "org.vllm-hust.runtime.lifecycle-events",
+      "aliases": ["org.vllm.runtime.lifecycle-observation"],
+      "allowed_modes": ["shared-read", "exclusive"],
+      "description": "Read-oriented lifecycle event stream."
+    },
+    {
+      "canonical": "org.vllm-hust.kv.prefix-sharing-slot",
+      "aliases": ["org.vllm.kv.prefix-sharing"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "Prefix sharing policy decision point."
+    },
+    {
+      "canonical": "org.vllm-hust.kv.tiering-slot",
+      "aliases": ["org.vllm.kv.cache-tiering"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "KV tier placement decision point."
+    },
+    {
+      "canonical": "org.vllm-hust.platform.backend-slot",
+      "aliases": ["org.vllm.platform.backend-selection"],
+      "allowed_modes": ["exclusive"],
+      "description": "Platform backend selection point."
+    },
+    {
+      "canonical": "org.vllm-hust.scheduler.state-policy-slot",
+      "aliases": ["org.vllm.scheduler.state-policy"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "State-aware scheduler policy decision point."
+    },
+    {
+      "canonical": "org.vllm-hust.request.token-budget-slot",
+      "aliases": ["org.vllm.request.token-budget"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "Request token-budget decision point."
+    },
+    {
+      "canonical": "org.vllm-hust.request.quality-policy-slot",
+      "aliases": ["org.vllm.request.quality-policy"],
+      "allowed_modes": ["exclusive", "mediated"],
+      "description": "Request quality policy decision point."
+    }
+  ]
+}
