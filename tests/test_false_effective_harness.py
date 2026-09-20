@@ -474,6 +474,14 @@ def _minimal_formal_identity() -> dict:
         "gpu": "not-applicable",
         "npu": "not-applicable",
         "driver": "test",
+        "required_processes": [
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 0,
+                "process_epoch": 7,
+            }
+        ],
     }
 
 
@@ -500,15 +508,103 @@ def test_real_formal_rejects_caller_assertion_and_empty_registry(tmp_path):
         run_formal_start(identity=asserted, **kwargs)
 
 
-def test_real_formal_requires_target_process_snapshot_before_launch(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "snapshot,error",
+    [
+        (None, "target process snapshot is missing"),
+        ([], "target process snapshot is missing"),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": False,
+                    "process_epoch": 7,
+                }
+            ],
+            "target process snapshot is malformed",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                    "unexpected": True,
+                }
+            ],
+            "target process snapshot is malformed",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+            ],
+            "target process snapshot contains duplicates",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 8,
+                },
+            ],
+            "target process snapshot contains duplicates",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 1,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+            ],
+            "target process snapshot is not canonical",
+        ),
+    ],
+)
+def test_real_formal_rejects_invalid_target_snapshot_before_adapter_probe(
+    tmp_path, monkeypatch, snapshot, error
 ):
     monkeypatch.setattr(
         runner_module,
         "verified_adapter_contract",
-        lambda *args, **kwargs: {"verification_id": "reviewed"},
+        lambda *args, **kwargs: pytest.fail(
+            "adapter probe ran before target validation"
+        ),
     )
-    with pytest.raises(ValueError, match="target process snapshot"):
+    identity = _minimal_formal_identity()
+    if snapshot is None:
+        identity.pop("required_processes")
+    else:
+        identity["required_processes"] = snapshot
+    with pytest.raises(ValueError, match=error):
         run_formal_start(
             tmp_path,
             scenarios()[0],
@@ -520,10 +616,74 @@ def test_real_formal_requires_target_process_snapshot_before_launch(
             arguments=["unused"],
             observer_executable=sys.executable,
             observer_arguments=["unused-observer"],
-            identity=_minimal_formal_identity(),
+            identity=identity,
             timeout_s=1,
             adapter_verification_id="reviewed",
         )
+
+
+def test_adapter_probe_cannot_mutate_runner_owned_identity_or_plan(
+    tmp_path, monkeypatch
+):
+    protocol = json.loads((ROOT / "protocol.json").read_text())
+    scenario = scenarios()[0]
+    adapter = ECPAAdapter()
+    caller_identity = _minimal_formal_identity()
+    declared_before_probe = copy.deepcopy(caller_identity)
+    verification = {"verification_id": "reviewed"}
+
+    def mutate_caller_during_probe(*args, **kwargs):
+        caller_identity["required_processes"].append(
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 0,
+                "process_epoch": 8,
+            }
+        )
+        caller_identity["software"]["runtime"] = "mutated-during-probe"
+        return verification
+
+    monkeypatch.setattr(
+        runner_module, "verified_adapter_contract", mutate_caller_during_probe
+    )
+    monkeypatch.setattr(runner_module, "_run_start", lambda *args, **kwargs: kwargs)
+    captured = run_formal_start(
+        tmp_path,
+        scenario,
+        protocol,
+        adapter,
+        1,
+        3,
+        executable=sys.executable,
+        arguments=["unused"],
+        observer_executable=sys.executable,
+        observer_arguments=["unused-observer"],
+        identity=caller_identity,
+        timeout_s=1,
+        adapter_verification_id="reviewed",
+    )
+
+    assert len(caller_identity["required_processes"]) == 2
+    assert (
+        captured["identity"]["required_processes"]
+        == declared_before_probe["required_processes"]
+    )
+    assert captured["identity"]["software"] == declared_before_probe["software"]
+    frozen_declared = declared_before_probe | {
+        "fixture_only": False,
+        "adapter_verification": verification,
+    }
+    expected_plan = {
+        "protocol_digest": harness_module.digest_bytes(canonical(protocol)),
+        "scenario_digest": harness_module.digest_bytes(canonical(scenario)),
+        "arm": adapter.arm,
+        "activation_contract": adapter.activation_contract,
+        "declared_identity": frozen_declared,
+    }
+    assert captured["execution_identity"]["plan_id"] == harness_module.digest_bytes(
+        canonical(expected_plan)
+    )
 
 
 def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(

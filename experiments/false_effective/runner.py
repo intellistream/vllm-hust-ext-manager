@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import json
 import os
 import platform
@@ -30,6 +31,7 @@ from harness import (
     run_command,
     safe_path,
     validate_record,
+    validate_required_process_snapshot,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -893,6 +895,7 @@ def run_formal_start(
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
+    identity = copy.deepcopy(identity)
     required = {
         "model",
         "dataset",
@@ -915,13 +918,24 @@ def run_formal_start(
         raise ValueError("formal declared identity is incomplete")
     if "adapter_contract_verified" in identity:
         raise ValueError("caller-declared adapter verification is not accepted")
-    identity = dict(identity)
     identity["fixture_only"] = fixture_mode
     if fixture_mode:
         verification = None
         evidence_class = "interface-fixture"
         measurement_source = "controlled-interface-observer"
     else:
+        frozen_targets = validate_required_process_snapshot(
+            identity.get("required_processes")
+        )
+        identity["required_processes"] = [
+            {
+                "host": host,
+                "role": role,
+                "ordinal": ordinal,
+                "process_epoch": process_epoch,
+            }
+            for host, role, ordinal, process_epoch in frozen_targets
+        ]
         verification = verified_adapter_contract(
             adapter_verification_id,
             adapter,
@@ -930,13 +944,6 @@ def run_formal_start(
             observer_executable,
             observer_arguments,
         )
-        if (
-            not isinstance(identity.get("required_processes"), list)
-            or not identity["required_processes"]
-        ):
-            raise ValueError(
-                "formal-real execution requires a non-empty target process snapshot"
-            )
         evidence_class = "formal-real"
         measurement_source = "registry-pinned-host-evidence-observer"
     identity["adapter_verification"] = verification

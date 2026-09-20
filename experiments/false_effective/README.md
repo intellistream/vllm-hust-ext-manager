@@ -66,7 +66,10 @@ exact `/proc/PID/cmdline` argv. The runner reads start ticks both before and
 after argv to reject PID-reuse races, and the observer independently records
 the SUT identity it saw. A formal run must additionally freeze a non-empty
 `required_processes` target snapshot (host, role, ordinal, and process epoch)
-in the runner-bound identity. `plugin-invoked` carries the distinct
+in the runner-bound identity. The runner validates exact fields, values, and
+uniqueness before it executes the registered activation probe or starts the
+SUT, so an invalid target set cannot launch and be rejected only after the
+experiment. `plugin-invoked` carries the distinct
 host-assigned process identities observed at the real effect boundary. The
 oracle derives coverage from those identities and rejects caller- or
 observer-reported coverage that does not match; a controller ACK therefore

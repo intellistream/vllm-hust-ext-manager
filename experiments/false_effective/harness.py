@@ -367,6 +367,44 @@ def run_command(
     return {**command, "command_sha256": digest_file(command_path)}
 
 
+def validate_required_process_snapshot(
+    required: Any,
+) -> tuple[tuple[str, str, int, int], ...]:
+    """Validate and freeze the logical target identity before a formal launch."""
+    required_fields = {"host", "role", "ordinal", "process_epoch"}
+    if not isinstance(required, list) or not required:
+        raise ValueError("formal target process snapshot is missing")
+
+    required_keys: list[tuple[str, str, int, int]] = []
+    for item in required:
+        if not isinstance(item, dict) or set(item) != required_fields:
+            raise ValueError("formal target process snapshot is malformed")
+        host, role = item.get("host"), item.get("role")
+        ordinal, epoch = item.get("ordinal"), item.get("process_epoch")
+        if (
+            not isinstance(host, str)
+            or not host
+            or host.strip() != host
+            or not isinstance(role, str)
+            or not role
+            or role.strip() != role
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 0
+            or isinstance(epoch, bool)
+            or not isinstance(epoch, int)
+            or epoch < 0
+        ):
+            raise ValueError("formal target process snapshot is malformed")
+        required_keys.append((host, role, ordinal, epoch))
+    logical_slots = [(host, role, ordinal) for host, role, ordinal, _ in required_keys]
+    if len(logical_slots) != len(set(logical_slots)):
+        raise ValueError("formal target process snapshot contains duplicates")
+    if required_keys != sorted(required_keys):
+        raise ValueError("formal target process snapshot is not canonical")
+    return tuple(required_keys)
+
+
 def formal_process_coverage(
     record: dict[str, Any],
     invoked_event: dict[str, Any] | None,
@@ -379,36 +417,12 @@ def formal_process_coverage(
     phase protocol. Runtime-effect coverage is instead derived from distinct
     host-assigned process identities observed at the hook boundary.
     """
-    required = record.get("identity", {}).get("required_processes")
-    required_fields = {"host", "role", "ordinal", "process_epoch"}
-    if not isinstance(required, list) or not required:
-        reasons.append("formal target process snapshot is missing")
-        return None
-
-    required_keys: list[tuple[str, str, int, int]] = []
-    for item in required:
-        if not isinstance(item, dict) or set(item) != required_fields:
-            reasons.append("formal target process snapshot is malformed")
-            return None
-        host, role = item.get("host"), item.get("role")
-        ordinal, epoch = item.get("ordinal"), item.get("process_epoch")
-        if (
-            not isinstance(host, str)
-            or not host
-            or not isinstance(role, str)
-            or not role
-            or isinstance(ordinal, bool)
-            or not isinstance(ordinal, int)
-            or ordinal < 0
-            or isinstance(epoch, bool)
-            or not isinstance(epoch, int)
-            or epoch < 0
-        ):
-            reasons.append("formal target process snapshot is malformed")
-            return None
-        required_keys.append((host, role, ordinal, epoch))
-    if len(required_keys) != len(set(required_keys)):
-        reasons.append("formal target process snapshot contains duplicates")
+    try:
+        required_keys = validate_required_process_snapshot(
+            record.get("identity", {}).get("required_processes")
+        )
+    except ValueError as exc:
+        reasons.append(str(exc))
         return None
 
     observed = (
@@ -448,8 +462,10 @@ def formal_process_coverage(
         if (
             not isinstance(host, str)
             or not host
+            or host.strip() != host
             or not isinstance(role, str)
             or not role
+            or role.strip() != role
             or isinstance(ordinal, bool)
             or not isinstance(ordinal, int)
             or ordinal < 0
