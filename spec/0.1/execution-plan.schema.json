@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vllm-hust.example/spec/ecpa/0.1/execution-plan.schema.json",
+  "definitions": {
+    "nonempty": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "plugin": {
+      "type": "object",
+      "required": ["namespace", "name", "version", "artifact_sha256"],
+      "properties": {
+        "namespace": {"$ref": "#/definitions/nonempty"},
+        "name": {"$ref": "#/definitions/nonempty"},
+        "version": {"$ref": "#/definitions/nonempty"},
+        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "host": {
+      "type": "object",
+      "required": ["runtime", "version", "provider", "abi"],
+      "properties": {
+        "runtime": {"$ref": "#/definitions/nonempty"},
+        "version": {"$ref": "#/definitions/nonempty"},
+        "provider": {"$ref": "#/definitions/nonempty"},
+        "abi": {"$ref": "#/definitions/nonempty"}
+      },
+      "additionalProperties": false
+    },
+    "claim": {
+      "type": "object",
+      "required": ["uri", "owner", "mode"],
+      "properties": {
+        "uri": {"type": "string", "pattern": "^urn:ecpa:resource:[a-z0-9._-]+$"},
+        "owner": {"$ref": "#/definitions/nonempty"},
+        "mode": {"enum": ["exclusive", "shared-read"]}
+      },
+      "additionalProperties": false
+    },
+    "obligation": {
+      "type": "object",
+      "required": ["obligation_id", "role", "event", "required_ordinals"],
+      "properties": {
+        "obligation_id": {"$ref": "#/definitions/nonempty"},
+        "role": {"$ref": "#/definitions/nonempty"},
+        "event": {"$ref": "#/definitions/nonempty"},
+        "required_ordinals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0}
+        }
+      },
+      "additionalProperties": false
+    },
+    "predecessor": {
+      "type": "object",
+      "required": ["generation", "plan_id", "rendered_inputs"],
+      "properties": {
+        "generation": {"type": "integer", "minimum": 0},
+        "plan_id": {
+          "anyOf": [
+            {"$ref": "#/definitions/nonempty"},
+            {"type": "null"}
+          ]
+        },
+        "rendered_inputs": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["schema", "plan_id", "plan"],
+  "properties": {
+    "schema": {"const": "ecpa-execution-plan/v1"},
+    "plan_id": {"type": "string", "pattern": "^plan:sha256:[0-9a-f]{64}$"},
+    "plan": {
+      "type": "object",
+      "required": ["plugins", "host", "claims", "obligations", "predecessor", "fallback_proven"],
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/plugin"}
+        },
+        "host": {"$ref": "#/definitions/host"},
+        "claims": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/claim"}
+        },
+        "obligations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/obligation"}
+        },
+        "predecessor": {"$ref": "#/definitions/predecessor"},
+        "fallback_proven": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
