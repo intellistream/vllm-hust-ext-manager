@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import platform
 import secrets
 import select
+import signal
 import stat
 import subprocess
 import sys
@@ -148,7 +150,12 @@ def run_bounded_command(
     argv: list[str], timeout_s: int, output_limit: int
 ) -> tuple[int, bytes, bytes]:
     """Capture a child incrementally and terminate before output exceeds the limit."""
-    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     if process.stdout is None or process.stderr is None:
         raise RuntimeError("bounded command pipes were not created")
     buffers = {process.stdout: bytearray(), process.stderr: bytearray()}
@@ -188,8 +195,9 @@ def run_bounded_command(
             bytes(buffers[process.stderr]),
         )
     finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         if process.poll() is None:
-            process.kill()
             process.wait()
         process.stdout.close()
         process.stderr.close()

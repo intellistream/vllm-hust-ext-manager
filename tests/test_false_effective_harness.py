@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -611,6 +612,50 @@ sys.stderr.write('points\",\"--enable-ecpa-manager\"]}')
                 sys.executable,
                 [str(observer)],
             )
+    descendant_pid_file = tmp_path / "probe-descendant.pid"
+    sut.write_text(
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)'])\n"
+        f"Path({str(descendant_pid_file)!r}).write_text(str(child.pid))\n"
+    )
+    descendant_probe = copy.deepcopy(registry)
+    descendant_sut = command_fingerprint(
+        sys.executable, [str(sut), *adapter.activation_arguments]
+    )
+    descendant_arguments = [
+        str(sut),
+        *adapter.activation_arguments,
+        "--ecpa-formal-activation-probe",
+    ]
+    descendant_probe["adapters"][0]["sut_command_digest"] = descendant_sut["digest"]
+    descendant_probe["adapters"][0]["activation_probe"]["command_digest"] = (
+        command_fingerprint(sys.executable, descendant_arguments)["digest"]
+    )
+    registry_path.write_bytes(canonical(descendant_probe) + b"\n")
+    with pytest.raises(ValueError, match="did not complete"):
+        runner_module.verified_adapter_contract(
+            "test-host-v1",
+            adapter,
+            sys.executable,
+            [str(sut)],
+            sys.executable,
+            [str(observer)],
+        )
+    descendant_pid = int(descendant_pid_file.read_text())
+    descendant_stat = Path(f"/proc/{descendant_pid}/stat")
+    for _ in range(200):
+        try:
+            stat_text = descendant_stat.read_text()
+        except FileNotFoundError:
+            break
+        state = stat_text.rsplit(")", 1)[1].split()[0]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"activation probe descendant {descendant_pid} survived cleanup")
     sut.write_text(sut_source)
     registry_path.write_bytes(canonical(registry) + b"\n")
     observer.write_text("print('changed')\n")
