@@ -71,8 +71,9 @@ receipt payload is machine-checked by `formal-lifecycle-fact.schema.json`; the
 enclosing observation retains the exact datagram payload bytes as base64 and a
 SHA-256 digest. Registry review remains responsible for establishing that each source
 command measures or actuates its named fact rather than echoing the request.
-The production-oriented `ecpa-formal-source` candidate and its intentionally
-unimplemented fault-source gate are specified in
+The production-oriented `ecpa-formal-source` candidate, including its bounded
+`partial-worker-coverage` evidence-quarantine actuator and remaining
+deployment-registration gate, is specified in
 [`docs/design/formal-real-lifecycle-sources.md`](../../docs/design/formal-real-lifecycle-sources.md).
 
 `formal-real` is fail closed behind the canonical `verified-adapters.json`

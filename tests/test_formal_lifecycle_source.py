@@ -35,7 +35,69 @@ def request_for(fact: str, *, pid: int | None = None) -> dict[str, object]:
             "start_ticks": 1,
             "argv": ["sut"],
         },
+        "required_processes": [
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 0,
+                "process_epoch": 7,
+            },
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 1,
+                "process_epoch": 7,
+            },
+        ],
     }
+
+
+def partial_coverage_request() -> dict[str, object]:
+    request = request_for("fault-injected")
+    request["scenario"] = "partial-worker-coverage"
+    return request
+
+
+def write_fault_descriptor(tmp_path, request):
+    descriptor = {
+        "schema": "ecpa-evidence-quarantine-fault/v1",
+        "scenario": request["scenario"],
+        "target": {
+            "host": "host-a",
+            "role": "worker",
+            "ordinal": 0,
+            "process_epoch": 7,
+        },
+        "entry_point": {
+            "group": "vllm.general_plugins",
+            "name": "demo",
+            "value": "demo.plugin:register",
+        },
+    }
+    raw = canonical_bytes(descriptor) + b"\n"
+    path = tmp_path / "fault.json"
+    path.write_bytes(raw)
+    return path, raw, descriptor
+
+
+def lifecycle_event(descriptor, request, *, ordinal, journal):
+    event = {
+        "plan_id": request["plan_id"],
+        "launch_id": request["launch_id"],
+        "binding_status": "bound",
+        "event": "invoked",
+        "observation_kind": "loader_lifecycle",
+        "controller_instance_id": None,
+        "process": {
+            "assignment_source": "host",
+            "host": "host-a",
+            "role": "worker",
+            "ordinal": ordinal,
+            "process_epoch": 7,
+        },
+        "entry_point": descriptor["entry_point"],
+    }
+    return SimpleNamespace(event=event, raw=b"event", journal=journal, line_number=1)
 
 
 def run_source(arguments: list[str], request: dict[str, object]):
@@ -267,6 +329,181 @@ def test_journal_capture_requires_bound_dispatch_for_controller(monkeypatch, tmp
             SimpleNamespace(event_dir=str(tmp_path), device=1, inode=2),
             request_for("observer-captured"),
         )
+
+
+def test_partial_coverage_fault_quarantines_one_worker_journal(monkeypatch, tmp_path):
+    request = partial_coverage_request()
+    descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    target = lifecycle_event(descriptor, request, ordinal=0, journal="target.jsonl")
+    peer = lifecycle_event(descriptor, request, ordinal=1, journal="peer.jsonl")
+    reads = iter(([target, peer], [peer]))
+    monkeypatch.setattr(source, "read_events", lambda *args, **kwargs: next(reads))
+    quarantined = SimpleNamespace(
+        journal="target.jsonl",
+        raw=b"event\n",
+        device=11,
+        inode=12,
+    )
+    quarantine_call = {}
+
+    def quarantine(*args, **kwargs):
+        quarantine_call.update(args=args, kwargs=kwargs)
+        return quarantined
+
+    monkeypatch.setattr(source, "quarantine_journal", quarantine)
+    audit = {}
+    monkeypatch.setattr(
+        source,
+        "_audit",
+        lambda kind, **values: audit.update(kind=kind, **values),
+    )
+    args = SimpleNamespace(
+        event_dir=str(tmp_path / "events"),
+        device=1,
+        inode=2,
+        quarantine_dir=str(tmp_path / "quarantine"),
+        quarantine_device=3,
+        quarantine_inode=4,
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    prepared = source._partial_coverage_fault(args, request)
+    assert prepared.value == request["scenario"]
+    assert not quarantine_call
+    prepared.commit()
+    assert quarantine_call["args"][2] == "target.jsonl"
+    assert quarantine_call["kwargs"]["expected_root_identity"] == (1, 2)
+    assert quarantine_call["kwargs"]["expected_quarantine_identity"] == (3, 4)
+    assert audit["kind"] == "partial-worker-evidence-quarantine"
+    assert base64.b64decode(audit["descriptor_base64"]) == descriptor_raw
+    assert base64.b64decode(audit["quarantined_base64"]) == quarantined.raw
+    assert audit["peer_slots"] == [
+        {"host": "host-a", "role": "worker", "ordinal": 1, "process_epoch": 7}
+    ]
+    assert audit["target_records"] == [
+        {
+            "journal": "target.jsonl",
+            "line_number": 1,
+            "event_id": None,
+            "process": target.event["process"],
+        }
+    ]
+    assert base64.b64decode(audit["peer_records"][0]["raw_base64"]) == peer.raw
+
+
+def test_partial_coverage_fault_rejects_missing_peer(monkeypatch, tmp_path):
+    request = partial_coverage_request()
+    descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    target = lifecycle_event(descriptor, request, ordinal=0, journal="target.jsonl")
+    monkeypatch.setattr(source, "read_events", lambda *args, **kwargs: [target])
+    args = SimpleNamespace(
+        event_dir=str(tmp_path / "events"),
+        device=1,
+        inode=2,
+        quarantine_dir=str(tmp_path / "quarantine"),
+        quarantine_device=3,
+        quarantine_inode=4,
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    with pytest.raises(source.LifecycleSourceError, match="another observed worker"):
+        source._partial_coverage_fault(args, request)
+
+
+def test_partial_coverage_fault_rejects_replacement_epoch_as_peer(
+    monkeypatch, tmp_path
+):
+    request = partial_coverage_request()
+    request["required_processes"][1]["ordinal"] = 0
+    request["required_processes"][1]["process_epoch"] = 8
+    descriptor_path, descriptor_raw, _descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    monkeypatch.setattr(source, "read_events", lambda *args, **kwargs: [])
+    args = SimpleNamespace(
+        event_dir=str(tmp_path / "events"),
+        device=1,
+        inode=2,
+        quarantine_dir=str(tmp_path / "quarantine"),
+        quarantine_device=3,
+        quarantine_inode=4,
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    with pytest.raises(source.LifecycleSourceError, match="frozen snapshot"):
+        source._partial_coverage_fault(args, request)
+
+
+def test_partial_coverage_fault_rejects_target_reappearance(monkeypatch, tmp_path):
+    request = partial_coverage_request()
+    descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    target = lifecycle_event(descriptor, request, ordinal=0, journal="target.jsonl")
+    peer = lifecycle_event(descriptor, request, ordinal=1, journal="peer.jsonl")
+    reads = iter(([target, peer], [target, peer]))
+    monkeypatch.setattr(source, "read_events", lambda *args, **kwargs: next(reads))
+    monkeypatch.setattr(
+        source,
+        "quarantine_journal",
+        lambda *args, **kwargs: SimpleNamespace(
+            journal="target.jsonl", raw=b"event\n", device=11, inode=12
+        ),
+    )
+    args = SimpleNamespace(
+        event_dir=str(tmp_path / "events"),
+        device=1,
+        inode=2,
+        quarantine_dir=str(tmp_path / "quarantine"),
+        quarantine_device=3,
+        quarantine_inode=4,
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    restored = []
+    monkeypatch.setattr(
+        source,
+        "restore_quarantined_journal",
+        lambda *args, **kwargs: restored.append((args, kwargs)),
+    )
+    prepared = source._partial_coverage_fault(args, request)
+    with pytest.raises(source.LifecycleSourceError, match="reappeared"):
+        prepared.commit()
+    assert len(restored) == 1
+
+
+def test_partial_coverage_fault_rejects_mixed_target_journal(monkeypatch, tmp_path):
+    request = partial_coverage_request()
+    descriptor_path, descriptor_raw, descriptor = write_fault_descriptor(
+        tmp_path, request
+    )
+    target = lifecycle_event(descriptor, request, ordinal=0, journal="target.jsonl")
+    mixed = lifecycle_event(descriptor, request, ordinal=1, journal="target.jsonl")
+    peer = lifecycle_event(descriptor, request, ordinal=1, journal="peer.jsonl")
+    monkeypatch.setattr(
+        source, "read_events", lambda *args, **kwargs: [target, mixed, peer]
+    )
+    args = SimpleNamespace(
+        event_dir=str(tmp_path / "events"),
+        device=1,
+        inode=2,
+        quarantine_dir=str(tmp_path / "quarantine"),
+        quarantine_device=3,
+        quarantine_inode=4,
+        descriptor=str(descriptor_path),
+        descriptor_sha256="sha256:" + hashlib.sha256(descriptor_raw).hexdigest(),
+    )
+
+    with pytest.raises(source.LifecycleSourceError, match="another launch or process"):
+        source._partial_coverage_fault(args, request)
 
 
 def test_journal_capture_bounds_bytes_before_parsing(tmp_path):

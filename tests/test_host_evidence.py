@@ -10,6 +10,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from jsonschema import Draft7Validator
 
+import vllm_hust_ext.host_event_sink as sink
 from vllm_hust_ext.attestation import (
     AttestationError,
     AttestationErrorCode,
@@ -40,7 +41,9 @@ from vllm_hust_ext.host_event_sink import (
     HostEventSinkError,
     append_event,
     canonical_event,
+    quarantine_journal,
     read_events,
+    restore_quarantined_journal,
 )
 from vllm_hust_ext.host_evidence import (
     EntryPointBinding,
@@ -539,6 +542,186 @@ def test_deployment_sink_preserves_canonical_exact_bytes(tmp_path, monkeypatch):
     ]
     assert len({record.journal for record in records}) == 1
     assert [record.line_number for record in records] == [1, 2]
+
+
+def test_quarantine_atomically_retains_exact_journal(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    event = json.loads(raw_event())
+    append_event(event)
+    path = next(journal.glob("*.jsonl"))
+    raw = path.read_bytes()
+    source_identity = (journal.stat().st_dev, journal.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+
+    retained = quarantine_journal(
+        journal,
+        quarantine,
+        path.name,
+        expected_root_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=len(raw),
+    )
+
+    assert not path.exists()
+    quarantined_path = quarantine / path.name
+    assert quarantined_path.read_bytes() == raw == retained.raw
+    assert (retained.device, retained.inode) == (
+        quarantined_path.stat().st_dev,
+        quarantined_path.stat().st_ino,
+    )
+    assert read_events(quarantine, quarantine_identity)[0].event == event
+
+
+def test_quarantine_collision_fails_without_moving_source(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    append_event(json.loads(raw_event()))
+    path = next(journal.glob("*.jsonl"))
+    raw = path.read_bytes()
+    (quarantine / path.name).write_bytes(b"do-not-overwrite\n")
+
+    with pytest.raises(HostEventSinkError, match="already exists"):
+        quarantine_journal(
+            journal,
+            quarantine,
+            path.name,
+            expected_root_identity=(journal.stat().st_dev, journal.stat().st_ino),
+            expected_quarantine_identity=(
+                quarantine.stat().st_dev,
+                quarantine.stat().st_ino,
+            ),
+            max_bytes=len(raw),
+        )
+
+    assert path.read_bytes() == raw
+    assert (quarantine / path.name).read_bytes() == b"do-not-overwrite\n"
+
+
+def test_quarantine_raced_collision_cannot_overwrite(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    append_event(json.loads(raw_event()))
+    path = next(journal.glob("*.jsonl"))
+    raw = path.read_bytes()
+    original_rename = sink._rename_noreplace
+
+    def race_destination(source_directory, source, destination_directory, destination):
+        descriptor = os.open(
+            destination,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+            dir_fd=destination_directory,
+        )
+        try:
+            os.write(descriptor, b"raced-destination\n")
+        finally:
+            os.close(descriptor)
+        original_rename(
+            source_directory,
+            source,
+            destination_directory,
+            destination,
+        )
+
+    monkeypatch.setattr(sink, "_rename_noreplace", race_destination)
+    with pytest.raises(HostEventSinkError, match="atomically quarantine"):
+        quarantine_journal(
+            journal,
+            quarantine,
+            path.name,
+            expected_root_identity=(journal.stat().st_dev, journal.stat().st_ino),
+            expected_quarantine_identity=(
+                quarantine.stat().st_dev,
+                quarantine.stat().st_ino,
+            ),
+            max_bytes=len(raw),
+        )
+
+    assert path.read_bytes() == raw
+    assert (quarantine / path.name).read_bytes() == b"raced-destination\n"
+
+
+def test_quarantine_receipt_restores_exact_journal(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    append_event(json.loads(raw_event()))
+    path = next(journal.glob("*.jsonl"))
+    raw = path.read_bytes()
+    source_identity = (journal.stat().st_dev, journal.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    retained = quarantine_journal(
+        journal,
+        quarantine,
+        path.name,
+        expected_root_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=len(raw),
+    )
+
+    restore_quarantined_journal(
+        journal,
+        quarantine,
+        retained,
+        expected_root_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=len(raw),
+    )
+
+    assert path.read_bytes() == raw
+    assert not (quarantine / path.name).exists()
+
+
+def test_restore_rejects_changed_quarantine_before_move(tmp_path, monkeypatch):
+    journal = (tmp_path / "events").resolve()
+    quarantine = (tmp_path / "quarantine").resolve()
+    journal.mkdir(mode=0o700)
+    quarantine.mkdir(mode=0o700)
+    monkeypatch.setenv("ECPA_HOST_EVENT_DIR", str(journal))
+    monkeypatch.setenv("ECPA_HOST_EVENT_FSYNC", "0")
+    append_event(json.loads(raw_event()))
+    path = next(journal.glob("*.jsonl"))
+    source_identity = (journal.stat().st_dev, journal.stat().st_ino)
+    quarantine_identity = (quarantine.stat().st_dev, quarantine.stat().st_ino)
+    retained = quarantine_journal(
+        journal,
+        quarantine,
+        path.name,
+        expected_root_identity=source_identity,
+        expected_quarantine_identity=quarantine_identity,
+        max_bytes=4096,
+    )
+    quarantined_path = quarantine / path.name
+    quarantined_path.write_bytes(retained.raw + b"changed\n")
+
+    with pytest.raises(HostEventSinkError, match="expected receipt"):
+        restore_quarantined_journal(
+            journal,
+            quarantine,
+            retained,
+            expected_root_identity=source_identity,
+            expected_quarantine_identity=quarantine_identity,
+            max_bytes=4096,
+        )
+
+    assert not path.exists()
+    assert quarantined_path.read_bytes() == retained.raw + b"changed\n"
 
 
 def test_deployment_sink_and_reader_reject_symlink_or_partial_journal(

@@ -2023,6 +2023,65 @@ time.sleep(0.1)
     assert process["exit_code"] == 0
 
 
+def test_lifecycle_fact_source_rejects_false_value_before_commit(tmp_path):
+    commit_marker = tmp_path / "commit-received"
+    source = tmp_path / "false_lifecycle_source.py"
+    source.write_text(
+        """import json, os, socket, sys, time
+from pathlib import Path
+request = json.loads(sys.stdin.readline())
+payload = {
+    'schema': 'ecpa-formal-lifecycle-fact/v1',
+    'fact': request['fact'],
+    'source_kind': request['source_kind'],
+    'plan_id': request['plan_id'],
+    'launch_id': request['launch_id'],
+    'controller_instance': request['controller_instance'],
+    'invocation_id': request['invocation_id'],
+    'sequence': request['sequence'],
+    'challenge': request['challenge'],
+    'monotonic_ns': time.monotonic_ns(),
+    'value': False,
+    'sut_process_identity': request['sut_process_identity'],
+}
+channel = socket.socket(fileno=int(os.environ['ECPA_LIFECYCLE_FACT_FD']))
+channel.send(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode())
+if sys.stdin.readline():
+    Path(sys.argv[1]).write_text('commit')
+"""
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source), str(commit_marker)])
+    request = {
+        "schema": "ecpa-lifecycle-fact-request/v1",
+        "fact": "service-ready",
+        "source_kind": "readiness-probe",
+        "plan_id": "plan",
+        "launch_id": "launch",
+        "controller_instance": "controller",
+        "invocation_id": "invocation",
+        "sequence": 1,
+        "challenge": "challenge",
+        "scenario": "partial-worker-coverage",
+        "sut_process_identity": {
+            "pid": os.getpid(),
+            "start_ticks": 1,
+            "argv": ["test"],
+        },
+    }
+
+    with pytest.raises(ValueError, match="binding is invalid before commit"):
+        runner_module.run_lifecycle_fact_source(
+            "service-ready",
+            fingerprint,
+            request=request,
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout_s=1,
+        )
+
+    assert not commit_marker.exists()
+
+
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):
     observer = tmp_path / "inconsistent_observer.py"
     observer.write_text(

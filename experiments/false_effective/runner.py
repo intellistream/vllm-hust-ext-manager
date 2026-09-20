@@ -26,6 +26,7 @@ from typing import Any
 from harness import (
     ARMS,
     FORMAL_HOST_OBSERVABLES,
+    FORMAL_LIFECYCLE_FACT_SCHEMA,
     FORMAL_LIFECYCLE_FACT_SCHEMA_PATH,
     FORMAL_LIFECYCLE_FACT_SOURCES,
     FORMAL_LIFECYCLE_FACT_TRANSPORT,
@@ -41,6 +42,7 @@ from harness import (
     validate_record,
     validate_required_process_snapshot,
 )
+from jsonschema import Draft7Validator
 
 from vllm_hust_ext.manager_controller import (
     ACTIVATION_CONTRACT as MANAGED_ACTIVATION_CONTRACT,
@@ -536,6 +538,55 @@ def run_lifecycle_fact_source(
             ) from exc
         if final_identity != initial_identity:
             raise ValueError(f"lifecycle fact source changed exec identity: {phase}")
+        receiver.setblocking(False)
+        try:
+            receiver.recvmsg(
+                1024 * 1024,
+                socket.CMSG_SPACE(struct.calcsize("3i")),
+            )
+        except BlockingIOError:
+            pass
+        else:
+            raise ValueError(
+                f"lifecycle fact source emitted duplicate receipts: {phase}"
+            )
+        finally:
+            receiver.setblocking(True)
+        try:
+            pending = json.loads(raw)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"lifecycle fact source JSON is invalid: {phase}") from exc
+        if (
+            not isinstance(pending, dict)
+            or raw != canonical(pending)
+            or list(Draft7Validator(FORMAL_LIFECYCLE_FACT_SCHEMA).iter_errors(pending))
+        ):
+            raise ValueError(
+                f"lifecycle fact source receipt is invalid before commit: {phase}"
+            )
+        expected_pending = {
+            "schema": "ecpa-formal-lifecycle-fact/v1",
+            "fact": phase,
+            "source_kind": FORMAL_LIFECYCLE_FACT_SOURCES[phase],
+            "plan_id": request["plan_id"],
+            "launch_id": request["launch_id"],
+            "controller_instance": request["controller_instance"],
+            "invocation_id": request["invocation_id"],
+            "sequence": request["sequence"],
+            "challenge": request["challenge"],
+            "monotonic_ns": pending["monotonic_ns"],
+            "value": pending["value"],
+            "sut_process_identity": request["sut_process_identity"],
+        }
+        if (
+            pending != expected_pending
+            or not started <= pending["monotonic_ns"] <= time.monotonic_ns()
+            or pending["value"]
+            != (request["scenario"] if phase == "fault-injected" else True)
+        ):
+            raise ValueError(
+                f"lifecycle fact source binding is invalid before commit: {phase}"
+            )
         process.stdin.write(
             canonical(
                 {
@@ -1509,6 +1560,7 @@ def _run_start_impl(
                                 "scenario": scenario["id"],
                                 "sut_pid": sut.pid,
                                 "sut_process_identity": sut_identity,
+                                "required_processes": identity["required_processes"],
                             },
                             cwd=run_dir,
                             env=sut_env,
