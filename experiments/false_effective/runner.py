@@ -28,6 +28,7 @@ from harness import (
     FORMAL_HOST_OBSERVABLES,
     FORMAL_LIFECYCLE_FACT_SCHEMA_PATH,
     FORMAL_LIFECYCLE_FACT_SOURCES,
+    FORMAL_LIFECYCLE_FACT_TRANSPORT,
     SEMANTIC_ENV,
     canonical,
     canonical_record_core,
@@ -750,6 +751,7 @@ def verified_adapter_contract(
         or entry.get("lifecycle_fact_schema_digest")
         != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
         or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
+        or entry.get("lifecycle_fact_transport") != FORMAL_LIFECYCLE_FACT_TRANSPORT
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -786,6 +788,7 @@ def verified_adapter_contract(
         "lifecycle_fact_schema": entry["lifecycle_fact_schema"],
         "lifecycle_fact_schema_digest": entry["lifecycle_fact_schema_digest"],
         "lifecycle_fact_sources": entry["lifecycle_fact_sources"],
+        "lifecycle_fact_transport": entry["lifecycle_fact_transport"],
         "required_observables": sorted(entry["required_observables"]),
     }
 
@@ -827,6 +830,7 @@ def verified_ecpa_adapter_contract(
         or entry.get("lifecycle_fact_schema_digest")
         != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
         or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
+        or entry.get("lifecycle_fact_transport") != FORMAL_LIFECYCLE_FACT_TRANSPORT
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -876,6 +880,7 @@ def verified_ecpa_adapter_contract(
         "lifecycle_fact_schema": entry["lifecycle_fact_schema"],
         "lifecycle_fact_schema_digest": entry["lifecycle_fact_schema_digest"],
         "lifecycle_fact_sources": entry["lifecycle_fact_sources"],
+        "lifecycle_fact_transport": entry["lifecycle_fact_transport"],
         "required_observables": sorted(entry["required_observables"]),
     }
 

@@ -131,6 +131,7 @@ assert commit == {
             runner_module.FORMAL_LIFECYCLE_FACT_SCHEMA_PATH
         ),
         "lifecycle_fact_sources": runner_module.FORMAL_LIFECYCLE_FACT_SOURCES,
+        "lifecycle_fact_transport": (runner_module.FORMAL_LIFECYCLE_FACT_TRANSPORT),
         "lifecycle_fact_command_digests": {
             phase: command_fingerprint(executable, arguments)["digest"]
             for phase, (executable, arguments) in commands.items()

@@ -49,6 +49,7 @@ FORMAL_LIFECYCLE_FACT_SCHEMA_PATH = Path(__file__).with_name(
     "formal-lifecycle-fact.schema.json"
 )
 FORMAL_LIFECYCLE_FACT_SCHEMA = json.loads(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH.read_text())
+FORMAL_LIFECYCLE_FACT_TRANSPORT = "unix-dgram-scm-credentials/v1"
 FORMAL_HOST_OBSERVABLES = {
     "service-ready",
     "workload-complete",
@@ -124,6 +125,7 @@ def validate_formal_adapter_verification(
         or entry.get("lifecycle_fact_schema_digest")
         != digest_file(FORMAL_LIFECYCLE_FACT_SCHEMA_PATH)
         or entry.get("lifecycle_fact_sources") != FORMAL_LIFECYCLE_FACT_SOURCES
+        or entry.get("lifecycle_fact_transport") != FORMAL_LIFECYCLE_FACT_TRANSPORT
         or not FORMAL_HOST_OBSERVABLES.issubset(
             set(entry.get("required_observables", []))
         )
@@ -142,6 +144,7 @@ def validate_formal_adapter_verification(
         "lifecycle_fact_schema": entry.get("lifecycle_fact_schema"),
         "lifecycle_fact_schema_digest": entry.get("lifecycle_fact_schema_digest"),
         "lifecycle_fact_sources": entry.get("lifecycle_fact_sources"),
+        "lifecycle_fact_transport": entry.get("lifecycle_fact_transport"),
         "required_observables": sorted(entry.get("required_observables", [])),
     }
     if record["arm"] == "ecpa":
