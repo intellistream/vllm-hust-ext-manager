@@ -30,6 +30,7 @@ from harness import (
     run_command,
     safe_path,
     validate_record,
+    validate_required_process_snapshot,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -922,6 +923,7 @@ def run_formal_start(
         evidence_class = "interface-fixture"
         measurement_source = "controlled-interface-observer"
     else:
+        validate_required_process_snapshot(identity.get("required_processes"))
         verification = verified_adapter_contract(
             adapter_verification_id,
             adapter,
@@ -930,13 +932,6 @@ def run_formal_start(
             observer_executable,
             observer_arguments,
         )
-        if (
-            not isinstance(identity.get("required_processes"), list)
-            or not identity["required_processes"]
-        ):
-            raise ValueError(
-                "formal-real execution requires a non-empty target process snapshot"
-            )
         evidence_class = "formal-real"
         measurement_source = "registry-pinned-host-evidence-observer"
     identity["adapter_verification"] = verification

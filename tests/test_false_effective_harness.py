@@ -474,6 +474,14 @@ def _minimal_formal_identity() -> dict:
         "gpu": "not-applicable",
         "npu": "not-applicable",
         "driver": "test",
+        "required_processes": [
+            {
+                "host": "host-a",
+                "role": "worker",
+                "ordinal": 0,
+                "process_epoch": 7,
+            }
+        ],
     }
 
 
@@ -500,15 +508,103 @@ def test_real_formal_rejects_caller_assertion_and_empty_registry(tmp_path):
         run_formal_start(identity=asserted, **kwargs)
 
 
-def test_real_formal_requires_target_process_snapshot_before_launch(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "snapshot,error",
+    [
+        (None, "target process snapshot is missing"),
+        ([], "target process snapshot is missing"),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": False,
+                    "process_epoch": 7,
+                }
+            ],
+            "target process snapshot is malformed",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                    "unexpected": True,
+                }
+            ],
+            "target process snapshot is malformed",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+            ],
+            "target process snapshot contains duplicates",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 8,
+                },
+            ],
+            "target process snapshot contains duplicates",
+        ),
+        (
+            [
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 1,
+                    "process_epoch": 7,
+                },
+                {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+            ],
+            "target process snapshot is not canonical",
+        ),
+    ],
+)
+def test_real_formal_rejects_invalid_target_snapshot_before_adapter_probe(
+    tmp_path, monkeypatch, snapshot, error
 ):
     monkeypatch.setattr(
         runner_module,
         "verified_adapter_contract",
-        lambda *args, **kwargs: {"verification_id": "reviewed"},
+        lambda *args, **kwargs: pytest.fail(
+            "adapter probe ran before target validation"
+        ),
     )
-    with pytest.raises(ValueError, match="target process snapshot"):
+    identity = _minimal_formal_identity()
+    if snapshot is None:
+        identity.pop("required_processes")
+    else:
+        identity["required_processes"] = snapshot
+    with pytest.raises(ValueError, match=error):
         run_formal_start(
             tmp_path,
             scenarios()[0],
@@ -520,7 +616,7 @@ def test_real_formal_requires_target_process_snapshot_before_launch(
             arguments=["unused"],
             observer_executable=sys.executable,
             observer_arguments=["unused-observer"],
-            identity=_minimal_formal_identity(),
+            identity=identity,
             timeout_s=1,
             adapter_verification_id="reviewed",
         )
