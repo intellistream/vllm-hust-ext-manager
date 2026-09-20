@@ -1,7 +1,8 @@
 {
   "schema": "vllm-hust-plugin-evidence/0.1",
-  "event_id": "4b566fdefbab4f9b8bbc9c0cf34b4a804b566fdefbab4f9b8bbc9c0cf34b4a80",
+  "event_id": "ca6ac437514343a010bfc8c2160635ed514d51dbe983c7cdf204967a6f56605f",
   "event": "invoked",
+  "observation_kind": "loader_lifecycle",
   "entry_point": {
     "group": "vllm.general_plugins",
     "name": "demo",
@@ -19,8 +20,13 @@
   "delivery_attempt": 1,
   "plan_id": "plan:sha256:replace-at-ingestion-test",
   "launch_id": "launch-1",
+  "binding_status": "bound",
+  "occurrence_id": null,
+  "controller_instance_id": null,
+  "invocation_seq": null,
+  "dispatch_id": null,
   "plugin_id": null,
   "artifact_digest": null,
-  "identity_status": "absent; bind from the ECPA Plan at trusted ingestion",
+  "identity_status": "launch-bound",
   "detail": null
 }

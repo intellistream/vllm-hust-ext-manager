@@ -2,21 +2,33 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://vllm-hust.example/spec/ecpa/0.1/host-plugin-evidence.schema.json",
   "type": "object",
-  "required": ["schema", "event_id", "event", "entry_point", "process", "observed_at_ns", "delivery_attempt", "plan_id", "launch_id", "plugin_id", "artifact_digest", "identity_status", "detail"],
+  "required": ["schema", "event_id", "event", "observation_kind", "entry_point", "process", "observed_at_ns", "delivery_attempt", "plan_id", "launch_id", "binding_status", "occurrence_id", "controller_instance_id", "invocation_seq", "dispatch_id", "plugin_id", "artifact_digest", "identity_status", "detail"],
   "properties": {
     "schema": {"const": "vllm-hust-plugin-evidence/0.1"},
-    "event_id": {"type": "string", "minLength": 1},
+    "event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "event": {"enum": ["discovered", "resolved", "invoked", "failed", "skipped"]},
+    "observation_kind": {"enum": ["loader_lifecycle", "scheduler_resolution", "scheduler_dispatch"]},
     "entry_point": {"type": "object", "required": ["group", "name", "value"], "properties": {"group": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "value": {"type": "string", "minLength": 1}}, "additionalProperties": false},
     "process": {"type": "object", "required": ["host", "role", "ordinal", "pid", "start_identity", "process_epoch"], "properties": {"host": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}, "ordinal": {"type": "integer", "minimum": 0}, "pid": {"type": "integer", "minimum": 0}, "start_identity": {"type": "string", "pattern": "^pid:[0-9]+:start_ticks:[0-9]+$"}, "process_epoch": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
     "observed_at_ns": {"type": "integer", "minimum": 0},
     "delivery_attempt": {"type": "integer", "minimum": 1},
-    "plan_id": {"type": ["string", "null"]},
-    "launch_id": {"type": ["string", "null"]},
+    "plan_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "launch_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "binding_status": {"enum": ["bound", "unbound"]},
+    "occurrence_id": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "string", "minLength": 1}, {"type": "null"}]},
+    "controller_instance_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "invocation_seq": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+    "dispatch_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
     "plugin_id": {"type": "null"},
     "artifact_digest": {"type": "null"},
     "identity_status": {"type": "string", "minLength": 1},
     "detail": {"type": ["string", "null"]}
   },
+  "allOf": [
+    {"if": {"properties": {"binding_status": {"const": "bound"}}}, "then": {"properties": {"plan_id": {"type": "string", "minLength": 1}, "launch_id": {"type": "string", "minLength": 1}}}, "else": {"properties": {"plan_id": {"type": "null"}, "launch_id": {"type": "null"}}}},
+    {"if": {"properties": {"observation_kind": {"const": "loader_lifecycle"}}}, "then": {"properties": {"occurrence_id": {"type": "null"}, "controller_instance_id": {"type": "null"}, "invocation_seq": {"type": "null"}, "dispatch_id": {"type": "null"}}}},
+    {"if": {"properties": {"observation_kind": {"const": "scheduler_resolution"}}}, "then": {"properties": {"event": {"const": "resolved"}, "occurrence_id": {"type": "string", "pattern": "^controller:.+"}, "controller_instance_id": {"type": "string", "minLength": 1}, "invocation_seq": {"type": "null"}, "dispatch_id": {"type": "null"}}}},
+    {"if": {"properties": {"observation_kind": {"const": "scheduler_dispatch"}}}, "then": {"properties": {"event": {"const": "invoked"}, "occurrence_id": {"type": "integer", "minimum": 1}, "controller_instance_id": {"type": "string", "minLength": 1}, "invocation_seq": {"type": "integer", "minimum": 1}, "dispatch_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}}
+  ],
   "additionalProperties": false
 }

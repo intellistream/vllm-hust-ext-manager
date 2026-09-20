@@ -1,7 +1,8 @@
 # ECPA existing plugin-path inventory and next experiments
 
-Snapshot: vLLM-HUST `feature/upstream-sync-20260917`, Phase A branch
-`codex/ecpa-plugin-evidence-phase-a`.
+Snapshot: vLLM-HUST `main`
+`5415fab7bf79384a4e1b60d7fc9f13fdf1c59b91` and extension-manager `main`
+`a1198447ce76b9b5c4b5d743af63e3f31911e81d` before the journal-adapter update.
 
 ## Existing paths and Phase A coverage
 
@@ -37,6 +38,7 @@ effect boundary is separately instrumented.
 | role/ordinal/epoch | trusted launch environment |
 | observation time | host wall clock (`time.time_ns`), not a monotonic clock |
 | Plan/launch ID | trusted launch environment; checked at ingestion |
+| observation kind and scheduler dispatch identity | native vLLM-HUST policy controller and host-side recomputation |
 | plugin ID/artifact digest | absent in raw event; selected Plan only |
 | evidence digest | SHA-256 of exact received raw bytes |
 
@@ -45,6 +47,13 @@ does not prevent an adversarial plugin from importing or modifying observer
 internals. A deployment-controlled sink and signing boundary are required;
 trusted launcher injection, authenticated transport, durable outbox, and
 malicious-plugin isolation are outside Phase A.
+
+The current vLLM-HUST wire includes scheduler-specific observation kind,
+binding status, occurrence, controller, invocation sequence, and dispatch
+identity fields introduced by the native preemption seam. The extension-manager
+receiver and deployment-owned JSONL journal must accept and validate this exact
+current wire before a formal-real cell can run. A legacy Phase A parser that
+rejects these added fields is not a functioning adapter.
 
 ## Frozen real-plugin experiments for Apei
 
