@@ -248,8 +248,10 @@ def validate_formal_adapter_verification(
         ):
             raise ValueError(f"{role} fingerprint differs from the trusted registry")
         executable = Path(fingerprint["executable"])
-        if not executable.is_file() or digest_file(executable) != fingerprint.get(
-            "executable_sha256"
+        if (
+            not executable.is_file()
+            or str(executable.resolve()) != fingerprint.get("executable_resolved")
+            or digest_file(executable) != fingerprint.get("executable_sha256")
         ):
             raise ValueError(f"{role} executable no longer matches its fingerprint")
         for artifact in fingerprint.get("argument_files", []):
@@ -309,18 +311,23 @@ def validate_formal_adapter_verification(
             != execution.get("controller_instance")
         ):
             raise ValueError("managed ECPA Plan binding differs from execution")
-        expected_prefix = [
+        manager_prefix = [
             manager_fingerprint["executable"],
+            *manager_fingerprint["arguments"],
+        ]
+        expected_prefix = [
+            *manager_prefix,
             "formal-run",
             "--plan",
         ]
+        option_start = len(manager_prefix) + 2
         if (
             len(sut_argv) < len(expected_prefix) + 9
-            or Path(sut_argv[0]).resolve() != Path(manager_fingerprint["executable"])
-            or sut_argv[:3] != expected_prefix
-            or sut_argv[3] != binding.get("plan_path")
+            or sut_argv[0] != manager_fingerprint["executable"]
+            or sut_argv[: len(expected_prefix)] != expected_prefix
+            or sut_argv[option_start] != binding.get("plan_path")
             or binding.get("plan_id") != execution.get("plan_id")
-            or sut_argv[4:10]
+            or sut_argv[option_start + 1 : option_start + 7]
             != [
                 "--launch-id",
                 execution.get("launch_id"),
@@ -329,16 +336,17 @@ def validate_formal_adapter_verification(
                 "--host-event-dir",
                 binding.get("host_event_dir"),
             ]
-            or sut_argv[10] != "--"
-            or sut_argv[11:]
+            or sut_argv[option_start + 7] != "--"
+            or sut_argv[option_start + 8 :]
             != [target_fingerprint["executable"], *target_fingerprint["arguments"]]
-            or binding.get("target_argv") != sut_argv[11:]
+            or binding.get("target_argv") != sut_argv[option_start + 8 :]
             or command.get("argv") != sut_argv
         ):
             raise ValueError("executed managed ECPA argv differs from the registry")
         if probe_fingerprint.get("executable") != manager_fingerprint.get(
             "executable"
         ) or probe_fingerprint.get("arguments") != [
+            *manager_fingerprint.get("arguments", []),
             "formal-run",
             "--ecpa-formal-activation-probe",
         ]:
@@ -356,14 +364,14 @@ def validate_formal_adapter_verification(
             )
         if (
             not sut_argv
-            or Path(sut_argv[0]).resolve() != Path(sut_fingerprint["executable"])
+            or sut_argv[0] != sut_fingerprint["executable"]
             or sut_argv[1:] != sut_fingerprint["arguments"]
             or command.get("argv") != sut_argv
         ):
             raise ValueError("executed SUT argv differs from the registered command")
     if (
         not observer_argv
-        or Path(observer_argv[0]).resolve() != Path(observer_fingerprint["executable"])
+        or observer_argv[0] != observer_fingerprint["executable"]
         or observer_argv[1:] != observer_fingerprint["arguments"]
     ):
         raise ValueError("executed observer argv differs from the registered command")
@@ -973,9 +981,20 @@ def validate_record(
                 "manual-integration": "explicit-manual-hooks",
                 "ecpa": "manager-controlled-activation",
             }[record["arm"]]
+            managed_binding = command.get("managed_binding")
+            if isinstance(managed_binding, dict):
+                manifest_contract_matches = (
+                    record["arm"] == "ecpa"
+                    and "ECPA_ACTIVATION_CONTRACT" not in manifest
+                    and managed_binding.get("activation_contract") == expected_contract
+                )
+            else:
+                manifest_contract_matches = (
+                    manifest.get("ECPA_ACTIVATION_CONTRACT") == expected_contract
+                )
             if (
                 manifest.get("ECPA_EVALUATION_ARM") != record["arm"]
-                or manifest.get("ECPA_ACTIVATION_CONTRACT") != expected_contract
+                or not manifest_contract_matches
                 or intake.get("activation_contract") != expected_contract
             ):
                 raise ValueError("adapter contract mismatch")

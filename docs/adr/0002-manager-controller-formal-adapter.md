@@ -66,6 +66,15 @@ verifier rejects ECPA, so there is no fallback path based on appending synthetic
 activation flags to the target. The registry remains empty, so this mechanism
 cannot yet produce a formal-real result.
 
+For Python console entry points, the runner derives and pins the direct
+interpreter-plus-script argv that Linux exposes instead of assuming the wrapper
+path remains `argv[0]`. Existing file-backed relative target and observer
+arguments are made absolute during fingerprinting, and those normalized argv
+values are the ones actually launched. The runner-to-manager environment omits
+the target-only activation contract by design; offline validation instead binds
+that contract through the manager-owned launch record and rejects a caller that
+tries to preseed it.
+
 ## Remaining gate
 
 The remaining gate is to independently associate host-assigned
