@@ -1,3 +1,4 @@
+import base64
 import copy
 import importlib.util
 import json
@@ -49,16 +50,10 @@ def planned():
     return planned_records(scenarios())
 
 
-def activation_probe(adapter):
-    receipt = {
-        "schema": "ecpa-activation-probe/v1",
-        "activation_contract": adapter.activation_contract,
-        "accepted_options": sorted(adapter.activation_arguments),
-    }
-    arguments = ["-c", f"import json; print(json.dumps({receipt!r}))"]
-    fingerprint = command_fingerprint(sys.executable, arguments)
+def activation_probe(adapter, arguments):
+    probe_arguments = [*arguments, *adapter.activation_arguments, "--help"]
+    fingerprint = command_fingerprint(sys.executable, probe_arguments)
     return {
-        "arguments": arguments,
         "required_options": list(adapter.activation_arguments),
         "timeout_s": 2,
         "command_digest": fingerprint["digest"],
@@ -505,7 +500,13 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
 ):
     sut = tmp_path / "sut.py"
     observer = tmp_path / "observer.py"
-    sut.write_text("print('sut')\n")
+    sut_source = """import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.parse_args()
+"""
+    sut.write_text(sut_source)
     observer.write_text("print('observer')\n")
     adapter = ECPAAdapter()
     sut_fingerprint = command_fingerprint(
@@ -525,7 +526,7 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
-                "activation_probe": activation_probe(adapter),
+                "activation_probe": activation_probe(adapter, [str(sut)]),
             }
         ],
     }
@@ -541,17 +542,13 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
         [str(observer)],
     )
     assert verified["sut_command"] == sut_fingerprint
+    sut.write_text("print('no registered options')\n")
     broken_probe = copy.deepcopy(registry)
-    broken_receipt = {
-        "schema": "ecpa-activation-probe/v1",
-        "activation_contract": adapter.activation_contract,
-        "accepted_options": [],
-    }
-    broken_arguments = [
-        "-c",
-        f"import json; print(json.dumps({broken_receipt!r}))",
-    ]
-    broken_probe["adapters"][0]["activation_probe"]["arguments"] = broken_arguments
+    broken_sut = command_fingerprint(
+        sys.executable, [str(sut), *adapter.activation_arguments]
+    )
+    broken_arguments = [str(sut), *adapter.activation_arguments, "--help"]
+    broken_probe["adapters"][0]["sut_command_digest"] = broken_sut["digest"]
     broken_probe["adapters"][0]["activation_probe"]["command_digest"] = (
         command_fingerprint(sys.executable, broken_arguments)["digest"]
     )
@@ -565,6 +562,7 @@ def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
             sys.executable,
             [str(observer)],
         )
+    sut.write_text(sut_source)
     registry_path.write_bytes(canonical(registry) + b"\n")
     observer.write_text("print('changed')\n")
     with pytest.raises(ValueError, match="observer command"):
@@ -595,7 +593,12 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
 ):
     sut = tmp_path / "sut.py"
     observer = tmp_path / "observer.py"
-    sut.write_text("print('sut')\n")
+    sut.write_text("""import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--enable-ecpa-manager', action='store_true')
+parser.add_argument('--disable-entrypoints', action='store_true')
+parser.parse_args()
+""")
     observer.write_text("print('observer')\n")
     adapter = ECPAAdapter()
     sut_arguments = [str(sut), *adapter.activation_arguments]
@@ -615,7 +618,7 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
-                "activation_probe": activation_probe(adapter),
+                "activation_probe": activation_probe(adapter, [str(sut)]),
             }
         ],
     }
@@ -645,6 +648,18 @@ def test_offline_validator_rechecks_registry_and_executed_commands(
     tampered = copy.deepcopy(record)
     tampered["identity"]["adapter_verification"]["registry_digest"] = "sha256:fake"
     with pytest.raises(ValueError, match="metadata differs"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["activation_probe"][
+        "stdout_base64"
+    ] = "not-base64!"
+    with pytest.raises(ValueError, match="probe bytes are invalid"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["activation_probe"][
+        "stdout_base64"
+    ] = base64.b64encode(b"forged --enable-ecpa-manager").decode()
+    with pytest.raises(ValueError, match="metadata differs|does not satisfy"):
         harness_module.validate_formal_adapter_verification(tampered, command)
     changed_command = copy.deepcopy(command)
     changed_command["sut_process"]["argv"][-1] = "--different"
@@ -717,7 +732,7 @@ def test_interpreter_indirection_cannot_hide_fixture_commands(tmp_path, monkeypa
                 "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
                 "sut_command_digest": sut_fingerprint["digest"],
                 "observer_command_digest": observer_fingerprint["digest"],
-                "activation_probe": activation_probe(adapter),
+                "activation_probe": activation_probe(adapter, ["-c", sut_source]),
             }
         ],
     }

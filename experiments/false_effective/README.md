@@ -78,13 +78,14 @@ formal identity were supplied. Ready, workload, fault, observer, and shutdown
 events are mandatory; startup is launch-to-ready.
 
 Admission also executes a registry-pinned, bounded activation probe before the
-service starts. The probe executable and file-backed arguments are fingerprinted,
-must exit successfully, and must emit an exact JSON receipt naming the arm's
-activation contract and every accepted activation option. A reviewed real-host
-probe must obtain that receipt from the target parser; it is admission evidence,
-not runtime-effect truth. A command digest or caller assertion cannot substitute
-for this runtime check. This prevents fixture-only flags from being registered
-against a real executable that silently rejects or ignores them.
+service starts. The runner constructs the probe from the exact registered SUT
+executable and base argv, appends the actual arm activation options and a fixed
+`--help`, then fingerprints that complete command. It must exit successfully and
+its bounded raw stdout/stderr must expose every activation option. Those raw
+bytes are sealed so offline validation can recompute the output digest and
+recheck the options. This is parser-admission evidence, not runtime-effect truth;
+a command digest, separate self-reporting helper, or caller assertion cannot
+substitute for it.
 
 `write_formal_manifest` writes each canonical JSONL/index pair into a new
 generation directory, then atomically swaps one canonical current pointer.
