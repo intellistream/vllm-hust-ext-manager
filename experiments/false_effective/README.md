@@ -42,17 +42,29 @@ bound artifact fails validation.
 
 The external formal runner exposes dedicated vanilla/manual/ECPA adapter
 interfaces with distinct activation contracts. The runner starts the SUT and
-trusted observer as different processes and records both argv/PID/start identities.
-Only the observer inherits a dedicated anonymous pipe write FD. The SUT uses
-`close_fds`, receives no result path/FD or observer-control environment, and its
-stdout cannot directly become formal evidence. The runner drives and confirms
-ready/workload/fault/observe/shutdown against SUT process signals and records
-actual monotonic bounds. Every instruction carries a random challenge and
-sequence number that its ACK must echo. Effectiveness, invocation, and
-activation-path fields are collected by the observer from a dedicated telemetry
-source, not relabeled from SUT stdout. Linux process identity is PID plus
-`/proc/PID/stat` start ticks and exact `/proc/PID/cmdline` argv. It can generate
-raw formal records from supplied commands, but the
+observer as different processes and records both argv/PID/start identities.
+Only the observer inherits a dedicated anonymous result-pipe write FD. The SUT
+uses `close_fds`, receives no result path/FD or observer-control environment,
+and its stdout cannot become formal truth. Each instruction carries a random
+challenge and sequence plus a runner-generated plan ID, launch ID, controller
+instance, and invocation ID. An ACK proves only that this process answered that
+instruction; it is not evidence that the requested workload, fault, hook, or
+policy effect occurred.
+
+`formal-real` is fail closed behind the canonical `verified-adapters.json`
+registry. A registered entry pins the resolved executable, every file-backed
+argv component, observer command, arm contract, and a `vllm-hust-host`-owned
+event channel. The registry is intentionally empty until a real vLLM-HUST
+adapter and host observer are reviewed. The runner gives no SUT-authored
+telemetry path to the observer. Effectiveness, invocation, activation path, and
+lifecycle facts must be emitted by the registry-pinned observer after reading
+host-owned evidence and must carry the same plan/launch/controller/invocation
+identity. Linux process identity is PID plus `/proc/PID/stat` start ticks and
+exact `/proc/PID/cmdline` argv. Controlled services are labeled
+`interface-fixture`, may test protocol mechanics, never create a formal
+manifest, and are rejected from formal aggregation even if copied, renamed, or
+reached through a symlink. The harness can generate raw formal records only
+from registry-approved commands, but the
 checked matrix stays planned because no real vLLM commands or frozen non-null
 formal identity were supplied. Ready, workload, fault, observer, and shutdown
 events are mandatory; startup is launch-to-ready.
@@ -64,7 +76,8 @@ hand-written JSON or JSONL),
 verifies both representations, validates the complete batch in a temporary
 directory, and atomically publishes a new output tree only after success.
 Fixture commands require explicit test mode and are rejected from formal
-aggregation; real runs require a pre-verified adapter contract.
+aggregation. A caller-provided `adapter_contract_verified` boolean is rejected;
+real runs require an exact command fingerprint from the code-reviewed registry.
 
 `raw-record.schema.json` is a start-level provenance extension beside the
 paper's `ecpa-result/v1`: it preserves the arm/status/null conventions while

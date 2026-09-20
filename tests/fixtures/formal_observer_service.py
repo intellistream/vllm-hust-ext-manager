@@ -7,22 +7,26 @@ from pathlib import Path
 
 events = []
 expected = os.environ["ECPA_EXPECTED_CONTRACT"]
+source_role = os.environ["ECPA_OBSERVER_SOURCE_ROLE"]
 target_pid = int(os.environ["ECPA_SUT_PID"])
 target_argv = Path(f"/proc/{target_pid}/cmdline").read_bytes().split(b"\0")
 for raw in sys.stdin:
     message = json.loads(raw)
     phase = message["phase"]
     common = {
-        "source_role": "trusted-observer",
+        "source_role": source_role,
         "clock": "monotonic",
         "monotonic_ns": message["monotonic_ns"],
+        "plan_id": message["plan_id"],
+        "launch_id": message["launch_id"],
+        "controller_instance": message["controller_instance"],
+        "invocation_id": message["invocation_id"],
     }
     valid = message["causal_ack"]
     if valid:
         value = message["scenario"] if phase == "fault-injected" else True
         events.append({"event": phase, "value": value, **common})
     if phase == "observer-captured" and valid:
-        observed = json.loads(Path(os.environ["ECPA_TELEMETRY_SOURCE"]).read_text())
         if expected == "manager-controlled-activation":
             assert b"--enable-ecpa-manager" in target_argv
         elif expected == "explicit-manual-hooks":
@@ -30,9 +34,9 @@ for raw in sys.stdin:
         else:
             assert b"--enable-entrypoints" in target_argv
         values = (
-            ("activation-path", observed["activation_path"]),
-            ("effective-claim", observed["effective_claim"]),
-            ("plugin-invoked", observed["plugin_invoked"]),
+            ("activation-path", expected),
+            ("effective-claim", False),
+            ("plugin-invoked", False),
             ("coverage", 1.0),
             ("conflict-decision", "not-applicable"),
             ("rollback-class", None),

@@ -175,10 +175,18 @@ observer are trusted; the SUT may fail but is not modeled as same-user code
 actively inspecting file descriptors or rewriting artifacts.  Harness records
 are runner-consistent and tamper-evident within this boundary, not
 cryptographically unforgeable evidence against a malicious SUT.
-The runner sends challenge-bound phase commands, captures observer telemetry
-over a dedicated pipe, and binds Linux PID/start-time identities and exact argv.
-Controlled fixture services test this interface but are rejected as formal
-paper evidence; real runs require a separately verified adapter contract.
+The runner sends challenge-bound phase commands carrying plan, launch,
+controller-instance, and invocation identities, and binds Linux PID/start-time
+identities, exact argv, and exact observer-pipe bytes.  An acknowledgement is
+only control-plane progress and is never treated as proof that a workload,
+fault, hook, or policy effect occurred.  Formal facts must come from a
+registry-pinned observer reading a vLLM-HUST-host-owned event channel; the SUT
+is not given a telemetry file whose self-reported contents can be relabeled as
+trusted observation.  Controlled fixture services are explicitly classified
+as interface-only and cannot produce a formal manifest or enter the paper
+aggregate.  The production adapter registry is empty until the real host seam,
+observer, and exact command fingerprints are reviewed, so no formal-real result
+is currently claimed.
 
 \subsection{Invariants and Failure Semantics}
 \system enforces four invariants.  \textbf{I1, evidence monotonicity:} a stronger

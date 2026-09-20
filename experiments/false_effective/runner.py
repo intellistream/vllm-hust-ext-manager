@@ -29,6 +29,17 @@ from harness import (
 )
 
 HERE = Path(__file__).resolve().parent
+VERIFIED_ADAPTER_REGISTRY = HERE / "verified-adapters.json"
+FORMAL_HOST_OBSERVABLES = {
+    "service-ready",
+    "workload-complete",
+    "fault-injected",
+    "observer-captured",
+    "service-shutdown",
+    "activation-path",
+    "effective-claim",
+    "plugin-invoked",
+}
 
 
 def parse_proc_stat_start_ticks(stat: str) -> int:
@@ -50,6 +61,114 @@ def linux_process_identity(pid: int) -> dict[str, Any]:
         part.decode(errors="surrogateescape") for part in argv_raw.split(b"\0") if part
     ]
     return {"pid": pid, "start_ticks": start_ticks, "argv": argv}
+
+
+def wait_for_linux_process_identity(
+    process: subprocess.Popen[Any], expected_argv: list[str], timeout_s: float
+) -> dict[str, Any]:
+    """Wait until exec has installed the exact argv before recording identity."""
+    deadline = time.monotonic() + timeout_s
+    last_identity: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("process exited before its exec identity was observable")
+        try:
+            last_identity = linux_process_identity(process.pid)
+        except (FileNotFoundError, ProcessLookupError):
+            last_identity = None
+        if last_identity is not None and last_identity["argv"] == expected_argv:
+            return last_identity
+        time.sleep(0.001)
+    observed = last_identity["argv"] if last_identity is not None else None
+    raise TimeoutError(
+        f"process exec identity did not stabilize: expected={expected_argv!r}, "
+        f"observed={observed!r}"
+    )
+
+
+def command_fingerprint(executable: str, arguments: list[str]) -> dict[str, Any]:
+    """Bind the launched executable and every file-backed argv component."""
+    executable_path = Path(executable).resolve(strict=True)
+    argument_files = []
+    for index, value in enumerate(arguments):
+        candidate = Path(value)
+        if candidate.is_file():
+            resolved = candidate.resolve(strict=True)
+            argument_files.append(
+                {
+                    "index": index,
+                    "path": str(resolved),
+                    "sha256": digest_file(resolved),
+                }
+            )
+    fingerprint = {
+        "executable": str(executable_path),
+        "executable_sha256": digest_file(executable_path),
+        "arguments": arguments,
+        "argument_files": argument_files,
+    }
+    return {**fingerprint, "digest": digest_bytes(canonical(fingerprint))}
+
+
+def verified_adapter_contract(
+    verification_id: str | None,
+    adapter: FormalArmAdapter,
+    executable: str,
+    arguments: list[str],
+    observer_executable: str,
+    observer_arguments: list[str],
+) -> dict[str, Any]:
+    """Resolve a code-reviewed adapter entry; caller assertions are not authority."""
+    if not verification_id:
+        raise ValueError("real formal execution requires a registry verification id")
+    registry_bytes = VERIFIED_ADAPTER_REGISTRY.read_bytes()
+    registry = json.loads(registry_bytes)
+    if (
+        registry_bytes != canonical(registry) + b"\n"
+        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+    ):
+        raise ValueError("verified adapter registry must be canonical")
+    rows = registry.get("adapters", [])
+    entries = {entry["id"]: entry for entry in rows}
+    if len(entries) != len(rows):
+        raise ValueError("verified adapter registry contains duplicate ids")
+    entry = entries.get(verification_id)
+    if entry is None:
+        raise ValueError("adapter verification id is not in the trusted registry")
+    if (
+        entry.get("arm") != adapter.arm
+        or entry.get("activation_contract") != adapter.activation_contract
+        or entry.get("evidence_owner") != "vllm-hust-host"
+        or entry.get("evidence_channel") != "host-owned-event-stream"
+        or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or not FORMAL_HOST_OBSERVABLES.issubset(
+            set(entry.get("required_observables", []))
+        )
+    ):
+        raise ValueError("verified adapter contract does not match the requested arm")
+    fixture_root = (HERE.parents[1] / "tests" / "fixtures").resolve()
+    launch_paths = [executable, observer_executable, *arguments, *observer_arguments]
+    for value in launch_paths:
+        candidate = Path(value)
+        if candidate.exists() and candidate.resolve().is_relative_to(fixture_root):
+            raise ValueError("fixture-resolved command is forbidden for formal-real")
+    sut = command_fingerprint(executable, [*arguments, *adapter.activation_arguments])
+    observer = command_fingerprint(observer_executable, observer_arguments)
+    if sut["digest"] != entry.get("sut_command_digest"):
+        raise ValueError("SUT command differs from the verified adapter artifact")
+    if observer["digest"] != entry.get("observer_command_digest"):
+        raise ValueError("observer command differs from the verified adapter artifact")
+    return {
+        "registry_schema": registry.get("schema"),
+        "verification_id": verification_id,
+        "registry_digest": digest_bytes(registry_bytes),
+        "sut_command": sut,
+        "observer_command": observer,
+        "evidence_owner": entry["evidence_owner"],
+        "evidence_channel": entry["evidence_channel"],
+        "host_event_schema": entry["host_event_schema"],
+        "required_observables": sorted(entry["required_observables"]),
+    }
 
 
 @dataclass(frozen=True)
@@ -157,6 +276,7 @@ def _run_start(
     identity: dict[str, Any],
     observations_from_stdout: bool,
     observer_argv: list[str] | None = None,
+    execution_identity: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     start_id = f"{scenario['id']}-r{repetition}-{arm}"
     run_dir = root / "starts" / start_id
@@ -166,6 +286,8 @@ def _run_start(
         command = run_command(run_dir, argv, env=dict(env), timeout_s=timeout_s)
         command_digest = command.pop("command_sha256")
     else:
+        if execution_identity is None:
+            raise ValueError("observed execution requires plan and launch identity")
         run_dir.mkdir(parents=True, exist_ok=False)
         manifest = __import__("harness").sanitized_env(env)
         (run_dir / "environment.json").write_bytes(canonical(manifest) + b"\n")
@@ -187,15 +309,20 @@ def _run_start(
             text=True,
             close_fds=True,
         )
-        sut_identity = linux_process_identity(sut.pid)
+        sut_identity = wait_for_linux_process_identity(sut, argv, timeout_s)
         read_fd, write_fd = os.pipe()
         observer_env = dict(env)
         observer_env["ECPA_OBSERVER_FD"] = str(write_fd)
         observer_env["ECPA_EXPECTED_ARM"] = arm
         observer_env["ECPA_EXPECTED_CONTRACT"] = env["ECPA_ACTIVATION_CONTRACT"]
         observer_env["ECPA_SUT_PID"] = str(sut.pid)
-        observer_env["ECPA_TELEMETRY_SOURCE"] = str(
-            (run_dir / "sut-telemetry.json").resolve()
+        observer_env["ECPA_PLAN_ID"] = execution_identity["plan_id"]
+        observer_env["ECPA_LAUNCH_ID"] = execution_identity["launch_id"]
+        observer_env["ECPA_CONTROLLER_INSTANCE"] = execution_identity[
+            "controller_instance"
+        ]
+        observer_env["ECPA_OBSERVER_SOURCE_ROLE"] = (
+            "host-observer" if evidence_class == "formal-real" else "interface-observer"
         )
         observer_start = time.monotonic_ns()
         observer = subprocess.Popen(
@@ -209,14 +336,18 @@ def _run_start(
             close_fds=True,
             pass_fds=(write_fd,),
         )
-        observer_identity = linux_process_identity(observer.pid)
+        observer_identity = wait_for_linux_process_identity(
+            observer, observer_argv, timeout_s
+        )
         os.close(write_fd)
         phase_bounds: dict[str, list[int]] = {}
+        phase_invocations: list[dict[str, Any]] = []
         sut_lines: list[str] = []
 
         def drive(phase: str, instruction: str, sequence: int) -> bool:
             start = time.monotonic_ns()
             challenge = secrets.token_hex(16)
+            invocation_id = f"{execution_identity['launch_id']}:{sequence}:{challenge}"
             if sut.stdin is not None:
                 try:
                     sut.stdin.write(
@@ -226,6 +357,8 @@ def _run_start(
                                 "phase": phase,
                                 "sequence": sequence,
                                 "challenge": challenge,
+                                **execution_identity,
+                                "invocation_id": invocation_id,
                             }
                         )
                         + "\n"
@@ -247,7 +380,21 @@ def _run_start(
                 acknowledgement.get("phase") == phase
                 and acknowledgement.get("sequence") == sequence
                 and acknowledgement.get("challenge") == challenge
+                and acknowledgement.get("plan_id") == execution_identity["plan_id"]
+                and acknowledgement.get("launch_id") == execution_identity["launch_id"]
+                and acknowledgement.get("controller_instance")
+                == execution_identity["controller_instance"]
+                and acknowledgement.get("invocation_id") == invocation_id
                 and acknowledgement.get("ack") is True
+            )
+            phase_invocations.append(
+                {
+                    "phase": phase,
+                    "sequence": sequence,
+                    "challenge": challenge,
+                    "invocation_id": invocation_id,
+                    "acknowledged": causal,
+                }
             )
             if observer.stdin is not None:
                 observer.stdin.write(
@@ -260,6 +407,8 @@ def _run_start(
                             "sequence": sequence,
                             "challenge": challenge,
                             "causal_ack": causal,
+                            **execution_identity,
+                            "invocation_id": invocation_id,
                         }
                     )
                     + "\n"
@@ -292,6 +441,7 @@ def _run_start(
                 f"pid:{observer.pid}@ticks:{observer_identity['start_ticks']}"
             ),
             "argv": observer_identity["argv"],
+            **execution_identity,
         }
         premature_exit = exited_before_shutdown
         if sut.poll() is None:
@@ -355,6 +505,8 @@ def _run_start(
                 "linux_identity": observer_identity,
             },
             "phase_bounds": phase_bounds,
+            "phase_invocations": phase_invocations,
+            "execution_identity": execution_identity,
             "observer_pipe_sha256": pipe_digest,
         }
         (run_dir / "command.json").write_bytes(canonical(command) + b"\n")
@@ -405,6 +557,7 @@ def _run_start(
         "semantic_environment": {
             name: env.get(name, "<unset>") for name in SEMANTIC_ENV
         },
+        "execution_identity": command.get("execution_identity"),
     }
     (run_dir / "intake.json").write_bytes(canonical(intake) + b"\n")
     artifacts = {
@@ -495,6 +648,8 @@ def _run_start(
         "observer_identity": command.get("observer_process", {}).get("linux_identity"),
         "observer_argv": command.get("observer_process", {}).get("argv"),
         "observer_pipe_sha256": command.get("observer_pipe_sha256"),
+        "execution_identity": command.get("execution_identity"),
+        "phase_invocations": command.get("phase_invocations"),
         "excluded_fields": ["artifact_root", "receipt_digest"],
     }
     (run_dir / "runner-receipt.json").write_bytes(canonical(receipt) + b"\n")
@@ -577,6 +732,7 @@ def run_formal_start(
     identity: dict[str, Any],
     timeout_s: float,
     fixture_mode: bool = False,
+    adapter_verification_id: str | None = None,
 ):
     if protocol != json.loads((HERE / "protocol.json").read_text()):
         raise ValueError("formal protocol differs from frozen protocol")
@@ -600,15 +756,39 @@ def run_formal_start(
         identity.get(key) is None for key in required
     ):
         raise ValueError("formal declared identity is incomplete")
-    command_paths = [executable, observer_executable, *arguments, *observer_arguments]
-    fixture_path = any("tests/fixtures" in str(Path(value)) for value in command_paths)
-    if not fixture_mode and fixture_path:
-        raise ValueError("fixture-only command is forbidden for real formal execution")
-    if not fixture_mode and identity.get("adapter_contract_verified") is not True:
-        raise ValueError("real formal execution requires a verified adapter contract")
+    if "adapter_contract_verified" in identity:
+        raise ValueError("caller-declared adapter verification is not accepted")
     identity = dict(identity)
     identity["fixture_only"] = fixture_mode
+    if fixture_mode:
+        verification = None
+        evidence_class = "interface-fixture"
+        measurement_source = "controlled-interface-observer"
+    else:
+        verification = verified_adapter_contract(
+            adapter_verification_id,
+            adapter,
+            executable,
+            arguments,
+            observer_executable,
+            observer_arguments,
+        )
+        evidence_class = "formal-real"
+        measurement_source = "registry-pinned-host-evidence-observer"
+    identity["adapter_verification"] = verification
     argv, env = adapter.launch(executable, arguments, dict(os.environ))
+    plan_material = {
+        "protocol_digest": digest_bytes(canonical(protocol)),
+        "scenario_digest": digest_bytes(canonical(scenario)),
+        "arm": adapter.arm,
+        "activation_contract": adapter.activation_contract,
+        "declared_identity": identity,
+    }
+    execution_identity = {
+        "plan_id": digest_bytes(canonical(plan_material)),
+        "launch_id": "launch:" + secrets.token_hex(16),
+        "controller_instance": "controller:" + secrets.token_hex(16),
+    }
     return _run_start(
         root,
         scenario,
@@ -618,11 +798,12 @@ def run_formal_start(
         argv=argv,
         env=env,
         timeout_s=timeout_s,
-        evidence_class="formal-real",
-        measurement_source="independent-result-file-observer",
+        evidence_class=evidence_class,
+        measurement_source=measurement_source,
         identity=measured_identity(identity, adapter.arm, env),
         observations_from_stdout=False,
         observer_argv=[observer_executable, *observer_arguments],
+        execution_identity=execution_identity,
     )
 
 

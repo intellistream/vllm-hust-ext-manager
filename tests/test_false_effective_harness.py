@@ -11,6 +11,8 @@ from jsonschema import Draft7Validator
 ROOT = Path("experiments/false_effective").resolve()
 sys.path.insert(0, str(ROOT))
 
+import harness as harness_module  # noqa: E402
+import runner as runner_module  # noqa: E402
 from harness import (  # noqa: E402
     aggregate,
     canonical,
@@ -28,6 +30,7 @@ from runner import (  # noqa: E402
     ECPAAdapter,
     ManualIntegrationAdapter,
     VanillaVLLMAdapter,
+    command_fingerprint,
     parse_proc_stat_start_ticks,
     planned_records,
     run_formal_start,
@@ -409,11 +412,12 @@ def test_frozen_registry_is_present_even_for_partial_input(tmp_path):
     assert len(result["cells"]) == len(scenarios()) * 3
 
 
-def test_formal_observer_ignores_plain_stdout_and_captures_lifecycle(tmp_path):
+def test_interface_observer_ignores_plain_stdout_and_captures_lifecycle(tmp_path):
     records = formal_complete_records(tmp_path)
     record = records[0]
     assert record["status"] == "complete"
-    assert record["measurement_source"] == "independent-result-file-observer"
+    assert record["evidence_class"] == "interface-fixture"
+    assert record["measurement_source"] == "controlled-interface-observer"
     events = [item["event"] for item in record["observations"]]
     assert events.index("service-ready") < events.index("workload-complete")
     assert events.index("workload-complete") < events.index("fault-injected")
@@ -434,6 +438,212 @@ def test_arm_launch_contracts_are_distinct_and_auditable():
     assert {env["ECPA_EVALUATION_ARM"] for _, env in launches} == {
         adapter.arm for adapter in adapters
     }
+
+
+def _minimal_formal_identity() -> dict:
+    return {
+        "model": "test",
+        "dataset": "test",
+        "workload": "test",
+        "software": {"runtime": "test"},
+        "observer": "host-event-stream/v1",
+        "plugin_commits": [],
+        "topology": "single",
+        "fault_plan": "test",
+        "fault": "test",
+        "warm_state": "cold",
+        "container_digest": "sha256:test",
+        "gpu": "not-applicable",
+        "npu": "not-applicable",
+        "driver": "test",
+    }
+
+
+def test_real_formal_rejects_caller_assertion_and_empty_registry(tmp_path):
+    kwargs = {
+        "root": tmp_path,
+        "scenario": scenarios()[0],
+        "protocol": json.loads((ROOT / "protocol.json").read_text()),
+        "adapter": ECPAAdapter(),
+        "repetition": 1,
+        "arm_order": 3,
+        "executable": sys.executable,
+        "arguments": [str(Path("tests/fixtures/formal_sut_service.py").resolve())],
+        "observer_executable": sys.executable,
+        "observer_arguments": [
+            str(Path("tests/fixtures/formal_observer_service.py").resolve())
+        ],
+        "timeout_s": 1,
+    }
+    with pytest.raises(ValueError, match="registry verification id"):
+        run_formal_start(identity=_minimal_formal_identity(), **kwargs)
+    asserted = _minimal_formal_identity() | {"adapter_contract_verified": True}
+    with pytest.raises(ValueError, match="caller-declared"):
+        run_formal_start(identity=asserted, **kwargs)
+
+
+def test_verified_adapter_registry_pins_commands_and_rejects_fixture_symlink(
+    tmp_path, monkeypatch
+):
+    sut = tmp_path / "sut.py"
+    observer = tmp_path / "observer.py"
+    sut.write_text("print('sut')\n")
+    observer.write_text("print('observer')\n")
+    adapter = ECPAAdapter()
+    sut_fingerprint = command_fingerprint(
+        sys.executable, [str(sut), *adapter.activation_arguments]
+    )
+    observer_fingerprint = command_fingerprint(sys.executable, [str(observer)])
+    registry = {
+        "schema": "ecpa-formal-adapter-registry/v1",
+        "adapters": [
+            {
+                "id": "test-host-v1",
+                "arm": adapter.arm,
+                "activation_contract": adapter.activation_contract,
+                "evidence_owner": "vllm-hust-host",
+                "evidence_channel": "host-owned-event-stream",
+                "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
+                "sut_command_digest": sut_fingerprint["digest"],
+                "observer_command_digest": observer_fingerprint["digest"],
+            }
+        ],
+    }
+    registry_path = tmp_path / "verified-adapters.json"
+    registry_path.write_bytes(canonical(registry) + b"\n")
+    monkeypatch.setattr(runner_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+    verified = runner_module.verified_adapter_contract(
+        "test-host-v1",
+        adapter,
+        sys.executable,
+        [str(sut)],
+        sys.executable,
+        [str(observer)],
+    )
+    assert verified["sut_command"] == sut_fingerprint
+    observer.write_text("print('changed')\n")
+    with pytest.raises(ValueError, match="observer command"):
+        runner_module.verified_adapter_contract(
+            "test-host-v1",
+            adapter,
+            sys.executable,
+            [str(sut)],
+            sys.executable,
+            [str(observer)],
+        )
+
+    fixture_link = tmp_path / "renamed-sut.py"
+    fixture_link.symlink_to(Path("tests/fixtures/formal_sut_service.py").resolve())
+    with pytest.raises(ValueError, match="fixture-resolved"):
+        runner_module.verified_adapter_contract(
+            "test-host-v1",
+            adapter,
+            sys.executable,
+            [str(fixture_link)],
+            sys.executable,
+            [str(observer)],
+        )
+
+
+def test_offline_validator_rechecks_registry_and_executed_commands(
+    tmp_path, monkeypatch
+):
+    sut = tmp_path / "sut.py"
+    observer = tmp_path / "observer.py"
+    sut.write_text("print('sut')\n")
+    observer.write_text("print('observer')\n")
+    adapter = ECPAAdapter()
+    sut_arguments = [str(sut), *adapter.activation_arguments]
+    observer_arguments = [str(observer)]
+    sut_fingerprint = command_fingerprint(sys.executable, sut_arguments)
+    observer_fingerprint = command_fingerprint(sys.executable, observer_arguments)
+    registry = {
+        "schema": "ecpa-formal-adapter-registry/v1",
+        "adapters": [
+            {
+                "id": "test-host-v1",
+                "arm": adapter.arm,
+                "activation_contract": adapter.activation_contract,
+                "evidence_owner": "vllm-hust-host",
+                "evidence_channel": "host-owned-event-stream",
+                "host_event_schema": "ecpa-host-runtime-evidence/v1",
+                "required_observables": sorted(runner_module.FORMAL_HOST_OBSERVABLES),
+                "sut_command_digest": sut_fingerprint["digest"],
+                "observer_command_digest": observer_fingerprint["digest"],
+            }
+        ],
+    }
+    registry_path = tmp_path / "verified-adapters.json"
+    registry_path.write_bytes(canonical(registry) + b"\n")
+    monkeypatch.setattr(runner_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+    monkeypatch.setattr(harness_module, "VERIFIED_ADAPTER_REGISTRY", registry_path)
+    verification = runner_module.verified_adapter_contract(
+        "test-host-v1",
+        adapter,
+        sys.executable,
+        [str(sut)],
+        sys.executable,
+        observer_arguments,
+    )
+    record = {
+        "arm": adapter.arm,
+        "identity": {"adapter_verification": verification},
+    }
+    command = {
+        "argv": [sys.executable, *sut_arguments],
+        "sut_process": {"argv": [sys.executable, *sut_arguments]},
+        "observer_process": {"argv": [sys.executable, *observer_arguments]},
+    }
+    harness_module.validate_formal_adapter_verification(record, command)
+
+    tampered = copy.deepcopy(record)
+    tampered["identity"]["adapter_verification"]["registry_digest"] = "sha256:fake"
+    with pytest.raises(ValueError, match="metadata differs"):
+        harness_module.validate_formal_adapter_verification(tampered, command)
+    changed_command = copy.deepcopy(command)
+    changed_command["sut_process"]["argv"][-1] = "--different"
+    with pytest.raises(ValueError, match="executed SUT argv"):
+        harness_module.validate_formal_adapter_verification(record, changed_command)
+
+
+def test_fixture_evidence_is_nonformal_and_execution_identity_is_bound(tmp_path):
+    record = formal_complete_records(tmp_path)[0]
+    run_dir = tmp_path / record["artifact_root"]
+    assert record["evidence_class"] == "interface-fixture"
+    assert record["identity"]["adapter_verification"] is None
+    assert not (run_dir / "sut-telemetry.json").exists()
+    assert not (tmp_path / "formal" / "formal-record-index.json").exists()
+    execution = record["command"]["execution_identity"]
+    assert set(execution) == {"plan_id", "launch_id", "controller_instance"}
+    invocation_ids = {
+        item["invocation_id"] for item in record["command"]["phase_invocations"]
+    }
+    assert len(invocation_ids) == 5
+    assert all(
+        event["launch_id"] == execution["launch_id"] for event in record["observations"]
+    )
+    counterexample = copy.deepcopy(record)
+    counterexample["observations"][0]["launch_id"] = "launch:replayed"
+    assert oracle(scenarios()[0], counterexample)["verdict"] == "INCOMPLETE"
+    with pytest.raises(ValueError, match="fixture-only"):
+        validate_batch([record], tmp_path, formal=True)
+
+
+def test_exact_observer_pipe_bytes_are_bound_independently(tmp_path):
+    record = formal_complete_records(tmp_path)[0]
+    run_dir = tmp_path / record["artifact_root"]
+    pipe = run_dir / record["artifacts"]["observer_pipe"]
+    pipe.write_bytes(pipe.read_bytes() + b" ")
+    record["artifacts"]["digests"]["observer-pipe.bin"] = digest_file(pipe)
+    with pytest.raises(ValueError, match="observer pipe bytes"):
+        validate_record(
+            record,
+            tmp_path,
+            scenario=scenarios()[0],
+            protocol=json.loads((ROOT / "protocol.json").read_text()),
+            schema=json.loads((ROOT / "raw-record.schema.json").read_text()),
+        )
 
 
 def test_semantic_environment_is_runner_measured(tmp_path, monkeypatch):
@@ -472,6 +682,35 @@ def test_oracle_mutation_is_rejected(tmp_path):
             "'challenge':'guessed'}),flush=True) for i,p in enumerate(phases)];"
             "time.sleep(10)"
         ),
+        """import json, sys
+first = None
+for raw in sys.stdin:
+    request = json.loads(raw)
+    first = first or request
+    response = dict(request)
+    response["ack"] = True
+    if request["sequence"] > 1:
+        response["challenge"] = first["challenge"]
+    print(json.dumps(response), flush=True)
+""",
+        """import json, sys
+for raw in sys.stdin:
+    request = json.loads(raw)
+    response = dict(request)
+    response["ack"] = True
+    if request["sequence"] == 2:
+        response["phase"] = "fault-injected"
+    print(json.dumps(response), flush=True)
+""",
+        """import json, sys
+for raw in sys.stdin:
+    request = json.loads(raw)
+    if request["phase"] == "service-shutdown":
+        break
+    response = dict(request)
+    response["ack"] = True
+    print(json.dumps(response), flush=True)
+""",
     ],
 )
 def test_formal_plain_or_nonzero_command_still_writes_failed_record(tmp_path, code):
@@ -579,6 +818,11 @@ def test_runner_manifest_rejects_tampered_record_and_manual_jsonl(tmp_path):
 def test_manifest_rejects_noncanonical_jsonl_and_wrong_start_binding(tmp_path):
     formal_complete_records(tmp_path)
     root = tmp_path / "formal"
+    records = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("starts/*/record.json"))
+    ]
+    write_formal_manifest(root, records)
     current_path = root / "formal-record-index.json"
     current = json.loads(current_path.read_text())
     manifest_path = root / current["generation_index"]
@@ -590,10 +834,6 @@ def test_manifest_rejects_noncanonical_jsonl_and_wrong_start_binding(tmp_path):
     with pytest.raises(ValueError, match="start_id"):
         _reproduce_module().generate(tmp_path / "bad-index", current_path)
 
-    records = [
-        json.loads(path.read_text())
-        for path in sorted(root.glob("starts/*/record.json"))
-    ]
     current_path = write_formal_manifest(root, records)
     current = json.loads(current_path.read_text())
     manifest_path = root / current["generation_index"]

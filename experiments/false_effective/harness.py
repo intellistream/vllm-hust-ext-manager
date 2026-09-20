@@ -41,6 +41,17 @@ ALLOW_ENV = {
     "ECPA_ACTIVATION_CONTRACT",
     *SEMANTIC_ENV,
 }
+VERIFIED_ADAPTER_REGISTRY = Path(__file__).with_name("verified-adapters.json")
+FORMAL_HOST_OBSERVABLES = {
+    "service-ready",
+    "workload-complete",
+    "fault-injected",
+    "observer-captured",
+    "service-shutdown",
+    "activation-path",
+    "effective-claim",
+    "plugin-invoked",
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -62,6 +73,105 @@ def safe_path(root: Path, relative: str) -> Path:
     if candidate != root.resolve() and root.resolve() not in candidate.parents:
         raise ValueError("artifact path escapes run root")
     return candidate
+
+
+def validate_formal_adapter_verification(
+    record: dict[str, Any], command: dict[str, Any]
+) -> None:
+    """Recheck formal provenance against the repository-owned adapter registry."""
+    registry_bytes = VERIFIED_ADAPTER_REGISTRY.read_bytes()
+    registry = json.loads(registry_bytes)
+    if (
+        registry_bytes != canonical(registry) + b"\n"
+        or registry.get("schema") != "ecpa-formal-adapter-registry/v1"
+    ):
+        raise ValueError("verified adapter registry is not canonical")
+    rows = registry.get("adapters", [])
+    entries = {entry.get("id"): entry for entry in rows}
+    if None in entries or len(entries) != len(rows):
+        raise ValueError("verified adapter registry contains invalid or duplicate ids")
+    verification = record.get("identity", {}).get("adapter_verification")
+    entry = entries.get(verification.get("verification_id"))
+    if entry is None:
+        raise ValueError("formal adapter is absent from the trusted registry")
+    expected_contract = {
+        "vanilla-vllm-entry-points": "entry-points-unmanaged",
+        "manual-integration": "explicit-manual-hooks",
+        "ecpa": "manager-controlled-activation",
+    }[record["arm"]]
+    if (
+        entry.get("arm") != record["arm"]
+        or entry.get("activation_contract") != expected_contract
+        or entry.get("evidence_owner") != "vllm-hust-host"
+        or entry.get("evidence_channel") != "host-owned-event-stream"
+        or entry.get("host_event_schema") != "ecpa-host-runtime-evidence/v1"
+        or not FORMAL_HOST_OBSERVABLES.issubset(
+            set(entry.get("required_observables", []))
+        )
+    ):
+        raise ValueError("trusted registry entry does not satisfy the formal contract")
+    expected = {
+        "registry_schema": registry["schema"],
+        "verification_id": entry["id"],
+        "registry_digest": digest_bytes(registry_bytes),
+        "sut_command": verification.get("sut_command"),
+        "observer_command": verification.get("observer_command"),
+        "evidence_owner": entry.get("evidence_owner"),
+        "evidence_channel": entry.get("evidence_channel"),
+        "host_event_schema": entry.get("host_event_schema"),
+        "required_observables": sorted(entry.get("required_observables", [])),
+    }
+    if verification != expected:
+        raise ValueError("formal adapter metadata differs from the trusted registry")
+
+    for role, fingerprint, registered_digest in (
+        ("SUT", verification["sut_command"], entry.get("sut_command_digest")),
+        (
+            "observer",
+            verification["observer_command"],
+            entry.get("observer_command_digest"),
+        ),
+    ):
+        unsigned = {key: value for key, value in fingerprint.items() if key != "digest"}
+        if (
+            fingerprint.get("digest") != digest_bytes(canonical(unsigned))
+            or fingerprint.get("digest") != registered_digest
+        ):
+            raise ValueError(f"{role} fingerprint differs from the trusted registry")
+        executable = Path(fingerprint["executable"])
+        if not executable.is_file() or digest_file(executable) != fingerprint.get(
+            "executable_sha256"
+        ):
+            raise ValueError(f"{role} executable no longer matches its fingerprint")
+        for artifact in fingerprint.get("argument_files", []):
+            path = Path(artifact["path"])
+            if (
+                not path.is_file()
+                or digest_file(path) != artifact.get("sha256")
+                or path.resolve()
+                != Path(fingerprint["arguments"][artifact["index"]]).resolve()
+            ):
+                raise ValueError(
+                    f"{role} argument file no longer matches its fingerprint"
+                )
+
+    sut_fingerprint = verification["sut_command"]
+    observer_fingerprint = verification["observer_command"]
+    sut_argv = command.get("sut_process", {}).get("argv", [])
+    observer_argv = command.get("observer_process", {}).get("argv", [])
+    if (
+        not sut_argv
+        or Path(sut_argv[0]).resolve() != Path(sut_fingerprint["executable"])
+        or sut_argv[1:] != sut_fingerprint["arguments"]
+        or command.get("argv") != sut_argv
+    ):
+        raise ValueError("executed SUT argv differs from the registered command")
+    if (
+        not observer_argv
+        or Path(observer_argv[0]).resolve() != Path(observer_fingerprint["executable"])
+        or observer_argv[1:] != observer_fingerprint["arguments"]
+    ):
+        raise ValueError("executed observer argv differs from the registered command")
 
 
 def canonical_record_core(record: dict[str, Any]) -> dict[str, Any]:
@@ -191,7 +301,11 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
     ]
     reasons = [f"missing observable: {name}" for name in required if name not in events]
     reasons.extend(f"duplicate observable: {name}" for name in duplicate)
-    if record.get("evidence_class") == "formal-real":
+    causal_evidence = record.get("evidence_class") in {
+        "formal-real",
+        "interface-fixture",
+    }
+    if causal_evidence:
         if not record.get("command", {}).get("phase_complete"):
             reasons.append("runner did not confirm every lifecycle phase")
         if record.get("command", {}).get("premature_exit"):
@@ -203,12 +317,41 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
             "observer-captured",
             "service-shutdown",
         ]
+        expected_source = (
+            "host-observer"
+            if record.get("evidence_class") == "formal-real"
+            else "interface-observer"
+        )
+        execution_identity = record.get("command", {}).get("execution_identity", {})
+        invocations = {
+            item.get("phase"): item
+            for item in record.get("command", {}).get("phase_invocations", [])
+        }
+        if set(execution_identity) != {
+            "plan_id",
+            "launch_id",
+            "controller_instance",
+        } or not all(execution_identity.values()):
+            reasons.append("missing plan/launch/controller execution identity")
+        if len(invocations) != 5 or any(
+            not item.get("acknowledged") for item in invocations.values()
+        ):
+            reasons.append("phase invocation identity is incomplete")
         for name in required:
             event = events.get(name)
-            if event and event.get("source_role") != "trusted-observer":
+            if event and event.get("source_role") != expected_source:
                 reasons.append(f"untrusted observable source: {name}")
             if event and event.get("clock") != "monotonic":
                 reasons.append(f"invalid clock: {name}")
+            phase = name if name in lifecycle else "observer-captured"
+            invocation = invocations.get(phase, {})
+            if event and any(
+                event.get(field) != execution_identity.get(field)
+                for field in ("plan_id", "launch_id", "controller_instance")
+            ):
+                reasons.append(f"execution identity mismatch: {name}")
+            if event and event.get("invocation_id") != invocation.get("invocation_id"):
+                reasons.append(f"invocation identity mismatch: {name}")
         times = [events.get(name, {}).get("monotonic_ns") for name in lifecycle]
         if all(isinstance(value, int) for value in times):
             if times != sorted(times) or len(set(times)) != len(times):
@@ -235,10 +378,17 @@ def oracle(scenario: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
         elif activation.get("value") != expected_contract:
             reasons.append("activation path does not match adapter contract")
         elif (
-            activation.get("source_role") != "trusted-observer"
+            activation.get("source_role") != expected_source
             or activation.get("clock") != "monotonic"
         ):
             reasons.append("activation path lacks trusted observer provenance")
+        if record.get("evidence_class") == "formal-real":
+            verification = record.get("identity", {}).get("adapter_verification", {})
+            if (
+                verification.get("evidence_owner") != "vllm-hust-host"
+                or verification.get("evidence_channel") != "host-owned-event-stream"
+            ):
+                reasons.append("formal result lacks registry-pinned host evidence")
     truth = scenario["truth"]
     claimed = bool(events.get("effective-claim", {}).get("value", False))
     invoked = bool(events.get("plugin-invoked", {}).get("value", False))
@@ -385,7 +535,9 @@ def validate_record(
         ):
             if record[field] != intake[field]:
                 raise ValueError(f"record relabelled outside runner intake: {field}")
-        if record["evidence_class"] == "formal-real":
+        if command.get("execution_identity") != intake.get("execution_identity"):
+            raise ValueError("execution identity differs from runner intake")
+        if record["evidence_class"] in {"formal-real", "interface-fixture"}:
             sut = command.get("sut_process", {})
             observer = command.get("observer_process", {})
             if (
@@ -411,12 +563,28 @@ def validate_record(
             observer_pipe = safe_path(artifact_root, artifacts["observer_pipe"])
             if digest_file(observer_pipe) != command.get("observer_pipe_sha256"):
                 raise ValueError("observer pipe bytes digest mismatch")
-            if record.get("observer_binding") != {
+            expected_binding = {
                 "pid": observer.get("pid"),
                 "start_identity": observer.get("start_identity"),
                 "argv": observer.get("argv"),
-            }:
+                **command.get("execution_identity", {}),
+            }
+            if record.get("observer_binding") != expected_binding:
                 raise ValueError("observer result binding mismatch")
+            if record["evidence_class"] == "formal-real":
+                verification = record.get("identity", {}).get("adapter_verification")
+                if (
+                    record.get("identity", {}).get("fixture_only") is not False
+                    or not isinstance(verification, dict)
+                    or verification.get("evidence_owner") != "vllm-hust-host"
+                    or verification.get("evidence_channel") != "host-owned-event-stream"
+                    or verification.get("host_event_schema")
+                    != "ecpa-host-runtime-evidence/v1"
+                ):
+                    raise ValueError(
+                        "formal adapter verification is not registry-owned"
+                    )
+                validate_formal_adapter_verification(record, command)
             semantic = {
                 name: record["identity"]["semantic_environment"].get(name)
                 for name in SEMANTIC_ENV
@@ -492,6 +660,8 @@ def validate_record(
             .get("linux_identity"),
             "observer_argv": record["command"].get("observer_process", {}).get("argv"),
             "observer_pipe_sha256": record["command"].get("observer_pipe_sha256"),
+            "execution_identity": record["command"].get("execution_identity"),
+            "phase_invocations": record["command"].get("phase_invocations"),
             "excluded_fields": ["artifact_root", "receipt_digest"],
         }
         if receipt != expected_receipt or digest_file(receipt_path) != record.get(
@@ -527,11 +697,32 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
             schema=schema,
         )
         if formal and record["evidence_class"] != "formal-real":
-            raise ValueError("synthetic evidence cannot enter formal aggregate")
+            raise ValueError(
+                "fixture-only or synthetic evidence cannot enter formal aggregate"
+            )
         if formal and record.get("identity", {}).get("fixture_only"):
             raise ValueError("fixture-only evidence cannot enter formal aggregate")
     complete = [item for item in records if item["status"] == "complete"]
     if formal and complete:
+        execution_identities = [
+            item.get("command", {}).get("execution_identity", {}) for item in complete
+        ]
+        launch_ids = [item.get("launch_id") for item in execution_identities]
+        controllers = [item.get("controller_instance") for item in execution_identities]
+        invocation_ids = [
+            invocation.get("invocation_id")
+            for item in complete
+            for invocation in item.get("command", {}).get("phase_invocations", [])
+        ]
+        if (
+            None in launch_ids
+            or len(launch_ids) != len(set(launch_ids))
+            or None in controllers
+            or len(controllers) != len(set(controllers))
+            or None in invocation_ids
+            or len(invocation_ids) != len(set(invocation_ids))
+        ):
+            raise ValueError("launch/controller/invocation identity is not unique")
         groups: dict[str, list[dict[str, Any]]] = {}
         for item in complete:
             groups.setdefault(item["cell_id"], []).append(item)
@@ -540,11 +731,25 @@ def validate_batch(records: list[dict[str, Any]], root: Path, *, formal: bool) -
                 raise ValueError(f"cell {cell} lacks 3 starts x 3 arms")
             if any(sum(row["arm"] == arm for row in rows) < 3 for arm in ARMS):
                 raise ValueError(f"cell {cell} has fewer than 3 starts per arm")
+            for arm in ARMS:
+                plan_ids = {
+                    row["command"]["execution_identity"]["plan_id"]
+                    for row in rows
+                    if row["arm"] == arm
+                }
+                if len(plan_ids) != 1:
+                    raise ValueError(f"cell {cell} arm {arm} does not share one plan")
             identities = [
                 {
                     k: v
                     for k, v in row["identity"].items()
-                    if k not in {"arm", "evaluation_arm", "activation_contract"}
+                    if k
+                    not in {
+                        "arm",
+                        "evaluation_arm",
+                        "activation_contract",
+                        "adapter_verification",
+                    }
                 }
                 for row in rows
             ]
