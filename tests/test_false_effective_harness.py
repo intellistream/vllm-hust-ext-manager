@@ -19,6 +19,7 @@ from vllm_hust_ext.ecpa_model import (
     PluginIdentity,
     PredecessorSnapshot,
 )
+from vllm_hust_ext.formal_lifecycle_source import build_parser
 from vllm_hust_ext.host_event_sink import quarantine_journal, snapshot_journal
 from vllm_hust_ext.plan_artifact import plan_artifact_bytes, read_plan_artifact
 from vllm_hust_ext.quarantine_transaction import (
@@ -45,7 +46,9 @@ from harness import (  # noqa: E402
     safe_path,
     sanitized_env,
     validate_batch,
+    validate_cross_arm_scenario_binding,
     validate_record,
+    validate_scenario_binding_contract,
 )
 from runner import (  # noqa: E402
     ECPAAdapter,
@@ -301,10 +304,53 @@ assert commit == {
 }
 """
     )
+    entry_point = {
+        "group": "vllm.general_plugins",
+        "name": "demo",
+        "value": "demo.plugin:register",
+    }
+    descriptor = tmp_path / "partial-worker-coverage.json"
+    descriptor.write_bytes(
+        canonical(
+            {
+                "schema": "ecpa-evidence-quarantine-fault/v1",
+                "scenario": "partial-worker-coverage",
+                "target": {
+                    "host": "host-a",
+                    "role": "worker",
+                    "ordinal": 0,
+                    "process_epoch": 7,
+                },
+                "entry_point": entry_point,
+            }
+        )
+        + b"\n"
+    )
     commands = {
         phase: (sys.executable, [str(source), phase])
         for phase in runner_module.FORMAL_LIFECYCLE_FACT_SOURCES
     }
+    commands["fault-injected"][1].extend(
+        [
+            "partial-coverage-quarantine",
+            "--event-dir",
+            str(tmp_path / "events"),
+            "--device",
+            "1",
+            "--inode",
+            "2",
+            "--quarantine-dir",
+            str(tmp_path / "quarantine"),
+            "--quarantine-device",
+            "1",
+            "--quarantine-inode",
+            "3",
+            "--descriptor",
+            str(descriptor),
+            "--descriptor-sha256",
+            digest_file(descriptor),
+        ]
+    )
     fields = {
         "lifecycle_fact_schema": "ecpa-formal-lifecycle-fact/v1",
         "lifecycle_fact_schema_digest": digest_file(
@@ -315,6 +361,13 @@ assert commit == {
         "lifecycle_fact_command_digests": {
             phase: command_fingerprint(executable, arguments)["digest"]
             for phase, (executable, arguments) in commands.items()
+        },
+        "scenario_bindings": {
+            "partial-worker-coverage": {
+                "descriptor_sha256": digest_file(descriptor),
+                "entry_point": entry_point,
+                "fault_source_subcommand": "partial-coverage-quarantine",
+            }
         },
     }
     return fields, commands
@@ -346,6 +399,124 @@ def lifecycle_process_records(fingerprints):
         }
         for index, (phase, fingerprint) in enumerate(sorted(fingerprints.items()))
     }
+
+
+def test_scenario_binding_pins_descriptor_and_cross_arm_entry_point(tmp_path):
+    fields, commands = lifecycle_registry_fields(tmp_path)
+    entry = {"scenario_bindings": fields["scenario_bindings"]}
+    fault = command_fingerprint(*commands["fault-injected"])
+    subcommand_index = fault["arguments"].index("partial-coverage-quarantine")
+    parsed = build_parser().parse_args(fault["arguments"][subcommand_index:])
+    assert parsed.source == "partial-coverage-quarantine"
+
+    verified = runner_module.verified_scenario_binding(
+        entry, "partial-worker-coverage", fault
+    )
+    assert verified["scenario"] == "partial-worker-coverage"
+    assert verified["entry_point"] == {
+        "group": "vllm.general_plugins",
+        "name": "demo",
+        "value": "demo.plugin:register",
+    }
+    assert verified["comparison_binding_id"] == harness_module.digest_bytes(
+        canonical(
+            {
+                "scenario": "partial-worker-coverage",
+                "descriptor_sha256": verified["descriptor_sha256"],
+                "entry_point": verified["entry_point"],
+                "fault_source_subcommand": "partial-coverage-quarantine",
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not bind"):
+        runner_module.verified_scenario_binding(entry, "worker-replacement", fault)
+
+    wrong_subcommand = copy.deepcopy(fault)
+    index = wrong_subcommand["arguments"].index("partial-coverage-quarantine")
+    wrong_subcommand["arguments"][index] = "another-fault"
+    wrong_subcommand["arguments"].extend(["--marker", "partial-coverage-quarantine"])
+    with pytest.raises(ValueError, match="subcommand or entry point"):
+        runner_module.verified_scenario_binding(
+            entry, "partial-worker-coverage", wrong_subcommand
+        )
+    self_declared_slot = copy.deepcopy(entry)
+    self_declared_slot["scenario_bindings"]["partial-worker-coverage"][
+        "fault_source_subcommand_index"
+    ] = len(wrong_subcommand["arguments"]) - 1
+    with pytest.raises(ValueError, match="does not bind"):
+        runner_module.verified_scenario_binding(
+            self_declared_slot, "partial-worker-coverage", wrong_subcommand
+        )
+
+    for malformed in (
+        {**verified, "fault_source_subcommand": "journal-capture"},
+        {**verified, "entry_point": {"group": "vllm.general_plugins"}},
+    ):
+        malformed.pop("comparison_binding_id", None)
+        malformed.pop("scenario", None)
+        with pytest.raises(ValueError, match="subcommand or entry point"):
+            validate_scenario_binding_contract(
+                malformed, "partial-worker-coverage", fault["arguments"]
+            )
+
+    descriptor_index = fault["arguments"].index("--descriptor") + 1
+    descriptor = Path(fault["arguments"][descriptor_index])
+    altered = json.loads(descriptor.read_text())
+    altered["entry_point"]["name"] = "another-plugin"
+    descriptor.write_bytes(canonical(altered) + b"\n")
+    changed = copy.deepcopy(entry)
+    changed["scenario_bindings"]["partial-worker-coverage"]["descriptor_sha256"] = (
+        digest_file(descriptor)
+    )
+    changed_fault = copy.deepcopy(fault)
+    digest_index = changed_fault["arguments"].index("--descriptor-sha256") + 1
+    changed_fault["arguments"][digest_index] = digest_file(descriptor)
+    with pytest.raises(ValueError, match="differs from scenario binding"):
+        runner_module.verified_scenario_binding(
+            changed, "partial-worker-coverage", changed_fault
+        )
+
+    descriptor.write_bytes(canonical(["not", "an", "object"]) + b"\n")
+    non_object = copy.deepcopy(entry)
+    non_object["scenario_bindings"]["partial-worker-coverage"]["descriptor_sha256"] = (
+        digest_file(descriptor)
+    )
+    non_object_fault = copy.deepcopy(fault)
+    non_object_fault["arguments"][digest_index] = digest_file(descriptor)
+    with pytest.raises(ValueError, match="differs from scenario binding"):
+        runner_module.verified_scenario_binding(
+            non_object, "partial-worker-coverage", non_object_fault
+        )
+
+
+def test_cross_arm_scenario_binding_rejects_mismatched_entry_point():
+    def row(binding_id, descriptor="sha256:same"):
+        return {
+            "identity": {
+                "adapter_verification": {
+                    "scenario_binding": {
+                        "comparison_binding_id": binding_id,
+                        "descriptor_sha256": descriptor,
+                    }
+                }
+            }
+        }
+
+    validate_cross_arm_scenario_binding("partial-worker-coverage", [row("same")] * 3)
+    with pytest.raises(ValueError, match="do not share"):
+        validate_cross_arm_scenario_binding(
+            "partial-worker-coverage", [row("same"), row("same"), row("different")]
+        )
+    with pytest.raises(ValueError, match="do not share"):
+        validate_cross_arm_scenario_binding(
+            "partial-worker-coverage", [row("same"), row("same"), row(None)]
+        )
+    with pytest.raises(ValueError, match="do not share"):
+        validate_cross_arm_scenario_binding(
+            "partial-worker-coverage",
+            [row("same"), row("same"), row("same", "sha256:different")],
+        )
 
 
 def test_formal_planned_aggregate_has_zero_cells_and_null_metrics(tmp_path):
@@ -1576,6 +1747,7 @@ if args.ecpa_formal_activation_probe:
     )
     record = {
         "arm": adapter.arm,
+        "scenario": "partial-worker-coverage",
         "identity": {"adapter_verification": verification},
     }
     command = {
@@ -1600,6 +1772,25 @@ if args.ecpa_formal_activation_probe:
         "lifecycle_fact_errors": {},
     }
     harness_module.validate_formal_adapter_verification(record, command)
+
+    for malformed_binding in (
+        {
+            **lifecycle_fields["scenario_bindings"]["partial-worker-coverage"],
+            "fault_source_subcommand": "journal-capture",
+        },
+        {
+            **lifecycle_fields["scenario_bindings"]["partial-worker-coverage"],
+            "entry_point": {"group": "vllm.general_plugins"},
+        },
+    ):
+        malformed_registry = copy.deepcopy(registry)
+        malformed_registry["adapters"][0]["scenario_bindings"][
+            "partial-worker-coverage"
+        ] = malformed_binding
+        registry_path.write_bytes(canonical(malformed_registry) + b"\n")
+        with pytest.raises(ValueError, match="subcommand or entry point"):
+            harness_module.validate_formal_adapter_verification(record, command)
+    registry_path.write_bytes(canonical(registry) + b"\n")
 
     tampered = copy.deepcopy(record)
     tampered["identity"]["adapter_verification"]["registry_digest"] = "sha256:fake"
@@ -1643,6 +1834,7 @@ if args.ecpa_formal_activation_probe:
     }
     fixture_record = {
         "arm": adapter.arm,
+        "scenario": "partial-worker-coverage",
         "identity": {"adapter_verification": fixture_verification},
     }
     fixture_command = {
@@ -1743,6 +1935,7 @@ def test_ecpa_offline_validator_binds_manager_target_observer_and_plan(
     )
     record = {
         "arm": adapter.arm,
+        "scenario": "partial-worker-coverage",
         "identity": {"adapter_verification": verification},
     }
     command = {

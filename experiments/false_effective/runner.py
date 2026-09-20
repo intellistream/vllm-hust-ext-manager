@@ -41,6 +41,7 @@ from harness import (
     validate_formal_lifecycle_receipt,
     validate_record,
     validate_required_process_snapshot,
+    validate_scenario_binding_contract,
 )
 from jsonschema import Draft7Validator
 
@@ -385,6 +386,61 @@ def verified_lifecycle_fact_commands(
     if len(digests) != len(set(digests)) or forbidden_digests.intersection(digests):
         raise ValueError("lifecycle fact commands are not independent")
     return fingerprints
+
+
+def verified_scenario_binding(
+    entry: dict[str, Any],
+    scenario_id: str,
+    fault_command: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind one reviewed scenario to the exact fault descriptor and entry point."""
+    bindings = entry.get("scenario_bindings")
+    binding = bindings.get(scenario_id) if isinstance(bindings, dict) else None
+    if binding is None:
+        raise ValueError("verified adapter does not bind the requested scenario")
+    arguments = fault_command.get("arguments")
+    verified_binding = validate_scenario_binding_contract(
+        binding, scenario_id, arguments
+    )
+    entry_point = verified_binding["entry_point"]
+    try:
+        descriptor_path = Path(_single_option(arguments, "--descriptor"))
+        descriptor_digest = _single_option(arguments, "--descriptor-sha256")
+    except ValueError as exc:
+        raise ValueError("fault source does not bind one descriptor") from exc
+    raw = descriptor_path.read_bytes()
+    if len(raw) > 64 * 1024:
+        raise ValueError("fault descriptor exceeds the registration limit")
+    try:
+        descriptor = json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("fault descriptor JSON is invalid") from exc
+    actual_digest = digest_bytes(raw)
+    target = descriptor.get("target") if isinstance(descriptor, dict) else None
+    if (
+        not isinstance(descriptor, dict)
+        or raw != canonical(descriptor) + b"\n"
+        or set(descriptor) != {"schema", "scenario", "target", "entry_point"}
+        or descriptor.get("schema") != "ecpa-evidence-quarantine-fault/v1"
+        or descriptor.get("scenario") != scenario_id
+        or descriptor.get("entry_point") != entry_point
+        or not isinstance(target, dict)
+        or set(target) != {"host", "role", "ordinal", "process_epoch"}
+        or target.get("role") != "worker"
+        or not isinstance(target.get("host"), str)
+        or not target["host"]
+        or target["host"].strip() != target["host"]
+        or any(
+            isinstance(target.get(field), bool)
+            or not isinstance(target.get(field), int)
+            or target[field] < 0
+            for field in ("ordinal", "process_epoch")
+        )
+        or descriptor_digest != actual_digest
+        or binding.get("descriptor_sha256") != actual_digest
+    ):
+        raise ValueError("fault descriptor differs from scenario binding")
+    return verified_binding
 
 
 def run_bounded_command(
@@ -999,6 +1055,7 @@ def verified_adapter_contract(
     observer_executable: str,
     observer_arguments: list[str],
     lifecycle_fact_commands: dict[str, tuple[str, list[str]]] | None = None,
+    scenario_id: str = "partial-worker-coverage",
 ) -> dict[str, Any]:
     """Resolve a code-reviewed adapter entry; caller assertions are not authority."""
     if isinstance(adapter, ECPAAdapter):
@@ -1051,6 +1108,9 @@ def verified_adapter_contract(
         lifecycle_fact_commands,
         {sut["digest"], observer["digest"]},
     )
+    scenario_binding = verified_scenario_binding(
+        entry, scenario_id, fact_commands["fault-injected"]
+    )
     activation_probe = run_activation_probe(entry, adapter, executable, arguments)
     return {
         "registry_schema": registry.get("schema"),
@@ -1059,6 +1119,7 @@ def verified_adapter_contract(
         "sut_command": sut,
         "observer_command": observer,
         "lifecycle_fact_commands": fact_commands,
+        "scenario_binding": scenario_binding,
         "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
@@ -1080,6 +1141,7 @@ def verified_ecpa_adapter_contract(
     observer_executable: str,
     observer_arguments: list[str],
     lifecycle_fact_commands: dict[str, tuple[str, list[str]]] | None = None,
+    scenario_id: str = "partial-worker-coverage",
 ) -> dict[str, Any]:
     """Pin manager, target, and observer independently for managed ECPA."""
     if not verification_id:
@@ -1142,6 +1204,9 @@ def verified_ecpa_adapter_contract(
             observer["digest"],
         },
     )
+    scenario_binding = verified_scenario_binding(
+        entry, scenario_id, fact_commands["fault-injected"]
+    )
     activation_probe = run_ecpa_activation_probe(entry, adapter, manager_executable)
     return {
         "registry_schema": registry.get("schema"),
@@ -1151,6 +1216,7 @@ def verified_ecpa_adapter_contract(
         "target_command": target,
         "observer_command": observer,
         "lifecycle_fact_commands": fact_commands,
+        "scenario_binding": scenario_binding,
         "activation_probe": activation_probe,
         "evidence_owner": entry["evidence_owner"],
         "evidence_channel": entry["evidence_channel"],
@@ -2159,6 +2225,7 @@ def run_formal_start(
                 observer_executable,
                 observer_arguments,
                 lifecycle_fact_commands,
+                scenario["id"],
             )
             argv, env, binding = adapter.managed_launch(
                 manager_executable=manager_executable,
@@ -2186,6 +2253,7 @@ def run_formal_start(
                 observer_executable,
                 observer_arguments,
                 lifecycle_fact_commands,
+                scenario["id"],
             )
             _, env = adapter.launch(executable, arguments, dict(os.environ))
             argv = [
