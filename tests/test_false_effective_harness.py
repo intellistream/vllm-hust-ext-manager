@@ -1880,7 +1880,7 @@ Path(sys.argv[1]).write_text(str(child.pid))
         sys.executable, [str(source), str(descendant_pid_path)]
     )
 
-    with pytest.raises(ValueError, match="timed out|truncated"):
+    with pytest.raises(ValueError, match="timed out|truncated|exited before receipt"):
         runner_module.run_lifecycle_fact_source(
             "service-ready",
             fingerprint,
@@ -1952,6 +1952,64 @@ sys.stdin.readline()
             env=dict(os.environ),
             timeout_s=2,
         )
+
+
+def test_lifecycle_fact_source_uses_pidfd_after_diagnostics_close(tmp_path):
+    source = tmp_path / "delayed_exit_lifecycle_source.py"
+    source.write_text(
+        """import json, os, socket, sys, time
+request = json.loads(sys.stdin.readline())
+payload = {
+    'schema': 'ecpa-formal-lifecycle-fact/v1',
+    'fact': request['fact'],
+    'source_kind': request['source_kind'],
+    'plan_id': request['plan_id'],
+    'launch_id': request['launch_id'],
+    'controller_instance': request['controller_instance'],
+    'invocation_id': request['invocation_id'],
+    'sequence': request['sequence'],
+    'challenge': request['challenge'],
+    'monotonic_ns': time.monotonic_ns(),
+    'value': True,
+    'sut_process_identity': request['sut_process_identity'],
+}
+channel = socket.socket(fileno=int(os.environ['ECPA_LIFECYCLE_FACT_FD']))
+channel.send(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode())
+sys.stdin.readline()
+os.close(1)
+os.close(2)
+time.sleep(0.1)
+"""
+    )
+    fingerprint = command_fingerprint(sys.executable, [str(source)])
+    request = {
+        "schema": "ecpa-lifecycle-fact-request/v1",
+        "fact": "service-ready",
+        "source_kind": "readiness-probe",
+        "plan_id": "plan",
+        "launch_id": "launch",
+        "controller_instance": "controller",
+        "invocation_id": "invocation",
+        "sequence": 1,
+        "challenge": "challenge",
+        "sut_process_identity": {
+            "pid": os.getpid(),
+            "start_ticks": 1,
+            "argv": ["test"],
+        },
+    }
+
+    event, process = runner_module.run_lifecycle_fact_source(
+        "service-ready",
+        fingerprint,
+        request=request,
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout_s=1,
+    )
+
+    assert event["value"] is True
+    assert process["exit_code"] == 0
 
 
 def test_runner_seals_inconsistent_observer_ack_as_failed(tmp_path):

@@ -384,7 +384,14 @@ def run_lifecycle_fact_source(
         sender.close()
         raise
     sender.close()
+    pidfd = -1
     try:
+        try:
+            pidfd = os.pidfd_open(process.pid)
+        except (AttributeError, OSError) as exc:
+            raise RuntimeError(
+                "formal lifecycle sources require Linux pidfd support"
+            ) from exc
         initial_identity = wait_for_linux_process_identity(
             process, argv, timeout_s, fingerprint
         )
@@ -411,10 +418,16 @@ def run_lifecycle_fact_source(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
-            readable, _, _ = select.select([*active, receiver], [], [], remaining)
+            readable, _, _ = select.select(
+                [*active, receiver, pidfd], [], [], remaining
+            )
             if not readable:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
             for stream in readable:
+                if stream == pidfd:
+                    raise ValueError(
+                        f"lifecycle fact source exited before receipt: {phase}"
+                    )
                 if stream is receiver:
                     raw, ancillary, flags, _ = receiver.recvmsg(
                         1024 * 1024,
@@ -487,14 +500,22 @@ def run_lifecycle_fact_source(
         )
         process.stdin.flush()
         process.stdin.close()
-        while active or process.poll() is None:
+        source_exited = False
+        while active or not source_exited:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
-            readable, _, _ = select.select([*active, receiver], [], [], remaining)
+            watched: list[Any] = [*active, receiver]
+            if not source_exited:
+                watched.append(pidfd)
+            readable, _, _ = select.select(watched, [], [], remaining)
             if not readable:
                 raise ValueError(f"lifecycle fact source timed out: {phase}")
             for stream in readable:
+                if stream == pidfd:
+                    process.wait()
+                    source_exited = True
+                    continue
                 if stream is receiver:
                     receiver.recvmsg(
                         1024 * 1024,
@@ -545,6 +566,8 @@ def run_lifecycle_fact_source(
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
+        if pidfd >= 0:
+            os.close(pidfd)
         receiver.close()
     ended = time.monotonic_ns()
     if process.returncode != 0 or stdout or len(raw) + len(stderr) > 1024 * 1024:
