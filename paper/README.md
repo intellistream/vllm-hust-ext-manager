@@ -15,6 +15,7 @@ Build:
 cd paper
 make
 make validate-results
+make check-evidence-summary
 ```
 
 The expected tool is `latexmk` with `pdflatex` and BibTeX. `main.pdf` is a build
@@ -33,6 +34,10 @@ Evidence rules:
 - Aggregates may not hide a failed provider, process topology, or version tuple.
 - A figure/table generator must reject mixed identities and missing required
   provenance before producing a paper result.
+- Artifact-backed counts and modeled metrics in `main.tex` come from the
+  checked-in `generated/evidence-summary.tex`. Regenerate it with `make
+  evidence-summary`; `make check-evidence-summary` fails if it is stale or if
+  the corpus, planner, formal-status, and adapter-registry inputs disagree.
 
 Alignment:
 
