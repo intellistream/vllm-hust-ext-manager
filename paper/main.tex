@@ -6,7 +6,8 @@
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{amsmath}
-\newcommand{\system}{\textsc{ECPA}}
+\usepackage{xspace}
+\newcommand{\system}{\textsc{ECPA}\xspace}
 \newcommand{\code}[1]{\texttt{#1}}
 \input{generated/evidence-summary.tex}
 \raggedbottom
@@ -303,6 +304,67 @@ strong rollback.  This is evidence about the stated abstraction under its
 recorded assumptions, not a proof that the implementation refines the model or
 that a real vLLM-HUST deployment recovers correctly.  H3 therefore remains a
 planned formal-real claim.
+
+\subsection{Refinement Boundary}
+The safety claim spans three representations that must not be conflated.  The
+contract compiler produces a canonical plan and obligation set; the durable
+coordinator records an intended state transition; and the traffic authority
+controls the externally observed route.  Let durable coordinator state be
+$S=(g,q,p,c,f,\pi)$, where $g$ is the candidate generation, $q$ the lifecycle
+state, $p$ and $c$ the predecessor and candidate digests, $f$ the route fence,
+and $\pi$ the accepted proof digest.  Let the traffic authority report
+$R=(g_r,f_r,d_r)$ for its observed generation, fence, and route snapshot
+digest.  The abstract predicate \emph{exposed} is represented only when
+\begin{equation*}
+\begin{aligned}
+q &= \textsc{CandidateOpen}, \\
+(g_r,f_r,d_r) &= (g,f,c), \qquad valid(\pi,g,c).
+\end{aligned}
+\end{equation*}
+A database row alone is therefore not an exposure fact, and a route mutation
+alone is not a committed transition.
+
+The reference implementation uses an intent--effect--query--receipt protocol
+at every authority-crossing transition.  It first commits a transition intent,
+invokes the traffic adapter, queries the adapter's actual route, and commits a
+receipt only if generation, fence, and snapshot digest match.  Recovery treats
+an intent without a receipt as an uncertain operation and reconciles it from a
+fresh route query.  A failed or unobservable close enters \textsc{SafetyUnknown}
+rather than manufacturing fail-closed success.  Table~\ref{tab:refinement}
+states the refinement obligations explicitly; passing the finite abstract
+model establishes none of them by itself.
+
+\begin{table}[t]
+\centering\small
+\caption{Refinement obligations between the abstract transaction and the
+reference implementation.}
+\label{tab:refinement}
+\begin{tabularx}{\columnwidth}{@{}lX@{}}
+\toprule
+Obligation & Implementation boundary and falsification test \\
+\midrule
+R1: plan immutability & Bind the canonical plan and target digest before
+activation.  Falsify with mutation and mixed-generation inputs. \\
+R2: evidence binding & Insert a receipt only after identity, authority, epoch,
+and coverage checks.  Falsify with replay, source substitution, and PID reuse. \\
+R3: exposure agreement & Query the traffic authority and match the proof-bound
+generation, fence, and snapshot before an open receipt.  Crash at each
+intent/effect/query boundary. \\
+R4: stale-writer exclusion & Bind a lease token and durable revision
+compare-and-swap.  Recreate the manager, expire the lease, and delay a writer. \\
+R5: recovery conservatism & Reconcile unmatched intents from the traffic
+authority and block unknown routes.  Lose the query and fail compensation. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+These obligations separate the theorem we want from the implementation we
+have.  R1--R5 are exercised today only by the single-host reference gate and
+its fault-injection suite.  Establishing them for vLLM-HUST requires the
+registered formal-real adapter, host-owned process evidence, and a real traffic
+authority.  Until then, the artifact supports an abstract safety result and a
+reference-implementation conformance result, not an end-to-end refinement
+claim.
 
 \section{Design}
 \subsection{Typed Static Manifests}
@@ -634,6 +696,16 @@ time, throughput, latency quantiles, CPU time, memory, process messages, and
 evidence bytes.  Raw observations follow the checked-in JSON schema; failures
 remain rows rather than being removed from aggregates.
 
+Each experiment also targets a premise of the safety argument.  Worker
+replacement and partial coverage challenge frozen epoch membership.  Replayed
+receipts, cross-source substitution, and SUT self-report challenge identity and
+authority locality.  Crashes before and after route mutation challenge the
+intent--effect--query--receipt refinement.  Lease expiry and controller
+recreation challenge stale-writer exclusion.  Query loss and compensation
+failure challenge conservative recovery.  A cell is informative only if the
+injection is independently observed; asking the SUT whether its own fault
+occurred cannot falsify the corresponding premise.
+
 \begin{table}[t]
 \centering
 \small
@@ -733,6 +805,19 @@ specialized registration and resource/storage lifecycles
 controllers distinguish desired from observed state \cite{k8s-api-conventions}.
 ECPA borrows that discipline but contributes an activation commit spanning
 plugin, provider, and worker authorities.  It is not a general reconciler.
+
+\textbf{Consistent update and dynamic upgrade.}  Consistent network updates
+use versioned configurations and controlled exposure to prevent packets from
+observing invalid intermediate network states \cite{reitblatt-update}.  ECPA
+shares the concern for externally visible intermediate states, but its unit of
+consistency is an inference-extension plan whose obligations span host
+processes, providers, and external authorities; it does not provide per-packet
+network-update semantics.  Dynamic software update systems such as Kitsune
+make update points and state transformation explicit while preserving a
+running program \cite{kitsune}.  ECPA neither rewrites live code nor proves
+state-transformer correctness.  It coordinates separately installed
+extensions and refuses exposure when their declared cross-process effects lack
+fresh evidence.
 
 \textbf{Runtime hooks and provenance.}  OCI runtime hooks provide ordered
 extension points around container lifecycle \cite{oci-runtime}; they do not
