@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema", "classification", "formal_real_result", "producer", "observed_path", "translation", "limitations"],
+  "properties": {
+    "schema": {"const": "ecpa-vllm-host-adapter-preflight/v1"},
+    "classification": {"const": "cross-repository-adapter-preflight"},
+    "formal_real_result": {"const": false},
+    "producer": {
+      "type": "object",
+      "required": ["repository", "origin", "commit", "tree", "source_blobs"],
+      "properties": {
+        "repository": {"const": "vLLM-HUST/vllm-hust"},
+        "origin": {"enum": ["https://github.com/vLLM-HUST/vllm-hust.git", "git@github.com:vLLM-HUST/vllm-hust.git"]},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_blobs": {
+          "type": "object",
+          "required": ["vllm/plugins/evidence.py", "vllm/v1/core/sched/preemption.py", "vllm/v1/engine/core.py", "vllm/v1/executor/multiproc_executor.py"],
+          "additionalProperties": false,
+          "patternProperties": {"^vllm/": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}
+        }
+      },
+      "additionalProperties": false
+    },
+    "observed_path": {
+      "type": "object",
+      "required": ["controller", "selected_victim", "events", "process_role", "process_ordinal", "assignment_source", "dispatch_id"],
+      "properties": {
+        "controller": {"const": "vllm.v1.core.sched.preemption.PreemptionPolicyController"},
+        "selected_victim": {"const": "first"},
+        "events": {"const": ["scheduler_resolution", "scheduler_dispatch"]},
+        "process_role": {"const": "engine-core-scheduler"},
+        "process_ordinal": {"const": 0},
+        "assignment_source": {"const": "host"},
+        "dispatch_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "translation": {
+      "type": "object",
+      "required": ["plan_id", "launch_id", "obligation", "event", "evidence_digest"],
+      "properties": {
+        "plan_id": {"type": "string", "pattern": "^plan:sha256:[0-9a-f]{64}$"},
+        "launch_id": {"const": "launch:adapter-preflight"},
+        "obligation": {"const": "scheduler-dispatch"},
+        "event": {"const": "invoked"},
+        "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "limitations": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "additionalProperties": false
+}
