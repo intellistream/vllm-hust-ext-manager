@@ -19,6 +19,35 @@ import jsonschema
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "paper/generated/evidence-summary.tex"
+WORKSHOP_SOURCE_IDENTITY = {
+    "repository": "vLLM-HUST/vllm-hust-website",
+    "repository_id": 1141990731,
+    "node_id": "R_kgDORBFlSw",
+    "default_branch": "main",
+    "commit_sha": "8336f5b67c69910aa7d5dfc3b5b94407e99928bd",
+    "metadata_path": "data/plugin-workshop-metadata.json",
+    "metadata_snapshot_path": "docs/corpus/plugin-workshop-metadata.snapshot.json",
+    "metadata_blob_sha": "04b6d4a23f62ba5fc4b3d53dff5a712b117560f2",
+    "metadata_sha256": (
+        "94164486d075671dde0e2992557d5117073644c402054be518673cea68bbd08e"
+    ),
+    "source_rows_sha256": (
+        "aabd0a6dbd49e2314c816e115fe90307a1e2e085e91665eb5a8ec672c2625adf"
+    ),
+    "audit_rows_sha256": (
+        "be253c011bc72e159a8390cea9cc1ba3d615468672ce1019c8c4475358301c4e"
+    ),
+    "mod_count": 24,
+}
+WORKSHOP_SOURCE_FIELDS = (
+    "id",
+    "repository",
+    "repository_id",
+    "node_id",
+    "visibility",
+    "default_branch",
+    "head_commit",
+)
 
 
 def load_json(root: Path, relative: str) -> dict[str, Any]:
@@ -41,6 +70,11 @@ def require_count(value: Any, label: str) -> int:
 
 def digest(root: Path, relative: str) -> str:
     return hashlib.sha256((root / relative).read_bytes()).hexdigest()
+
+
+def canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def recompute_transaction_model(root: Path) -> dict[str, Any]:
@@ -82,6 +116,10 @@ def corpus_evidence_path(value: str) -> str:
 
 
 def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
+    workshop = load_json(root, "docs/corpus/workshop-mods.json")
+    workshop_metadata = load_json(
+        root, "docs/corpus/plugin-workshop-metadata.snapshot.json"
+    )
     plugins = load_json(root, "docs/corpus/plugins.json")
     snapshots = load_json(root, "docs/corpus/source-snapshots.json")
     cases = load_json(root, "experiments/contract_planner/cases.json")
@@ -110,6 +148,7 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     )
 
     for artifact, schema in (
+        (workshop, "docs/corpus/workshop-mods.schema.json"),
         (plugins, "docs/corpus/plugins.schema.json"),
         (snapshots, "docs/corpus/source-snapshots.schema.json"),
         (cases, "experiments/contract_planner/cases.schema.json"),
@@ -142,7 +181,8 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     for decision in decisions:
         decision_validator.validate(decision)
 
-    require_schema(plugins, "ecpa-plugin-corpus/v1", "plugin corpus")
+    require_schema(workshop, "ecpa-workshop-mod-corpus/v1", "workshop MOD corpus")
+    require_schema(plugins, "ecpa-plugin-corpus/v1", "planner seed corpus")
     require_schema(
         snapshots, "ecpa-corpus-source-snapshots/0.1", "source snapshot corpus"
     )
@@ -172,6 +212,7 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         "bounded transaction model",
     )
 
+    workshop_rows = workshop.get("mods")
     plugin_rows = plugins.get("plugins")
     source_rows = snapshots.get("sources")
     case_rows = cases.get("cases")
@@ -183,6 +224,7 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     if not all(
         isinstance(rows, list)
         for rows in (
+            workshop_rows,
             plugin_rows,
             source_rows,
             case_rows,
@@ -194,6 +236,68 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         )
     ):
         raise ValueError("paper evidence inputs must contain arrays")
+
+    workshop_counts = workshop.get("counts")
+    if not isinstance(workshop_counts, dict):
+        raise ValueError("workshop MOD corpus is missing derived counts")
+    integration_counts: dict[str, int] = {}
+    test_counts: dict[str, int] = {}
+    build_counts: dict[str, int] = {}
+    for row in workshop_rows:
+        integration = row["integration_class"]
+        local_test = row["local_test"]
+        package_build = row["package_build"]
+        integration_counts[integration] = integration_counts.get(integration, 0) + 1
+        test_counts[local_test] = test_counts.get(local_test, 0) + 1
+        build_counts[package_build] = build_counts.get(package_build, 0) + 1
+    expected_workshop_counts = {
+        "mods": len(workshop_rows),
+        "ecpa_bundle_namespace": integration_counts.get("ecpa_bundle_namespace", 0),
+        "namespace_mismatch": integration_counts.get("namespace_mismatch", 0),
+        "general_plugin_only": integration_counts.get("general_plugin_only", 0),
+        "direct_or_non_entry_integration": integration_counts.get(
+            "direct_or_non_entry_integration", 0
+        ),
+        "source_only": integration_counts.get("source_only", 0),
+        "package_projects": build_counts.get("pass", 0)
+        + build_counts.get("qualified_staging_required", 0),
+        "local_package_build_pass": build_counts.get("pass", 0),
+        "local_tests_pass": test_counts.get("pass", 0),
+        "environment_blocked": test_counts.get("environment_blocked", 0),
+        "no_automated_tests": test_counts.get("no_automated_tests", 0),
+    }
+    population = workshop.get("population")
+    workshop_source_rows = [
+        {field: row[field] for field in WORKSHOP_SOURCE_FIELDS} for row in workshop_rows
+    ]
+    metadata_plugins = workshop_metadata.get("plugins")
+    if not isinstance(population, dict) or population != WORKSHOP_SOURCE_IDENTITY:
+        raise ValueError(
+            "workshop page source identity differs from the frozen authority"
+        )
+    if (
+        digest(root, population["metadata_snapshot_path"])
+        != population["metadata_sha256"]
+        or canonical_digest(workshop_source_rows) != population["source_rows_sha256"]
+        or canonical_digest(workshop_rows) != population["audit_rows_sha256"]
+        or workshop_metadata.get("schema_version") != "plugin-workshop-metadata/v1"
+        or not isinstance(metadata_plugins, dict)
+        or list(metadata_plugins) != [row["id"] for row in workshop_rows]
+        or any(
+            metadata_plugins[row["id"]].get("repository") != row["repository"]
+            for row in workshop_rows
+        )
+    ):
+        raise ValueError("workshop rows are not bound to the frozen page snapshot")
+    if (
+        workshop_counts != expected_workshop_counts
+        or len(workshop_rows) != 24
+        or workshop.get("population", {}).get("mod_count") != len(workshop_rows)
+        or len({row["id"] for row in workshop_rows}) != len(workshop_rows)
+        or len({row["repository_id"] for row in workshop_rows}) != len(workshop_rows)
+        or any(not row["repository"].startswith("vLLM-HUST/") for row in workshop_rows)
+    ):
+        raise ValueError("workshop MOD population or derived counts are inconsistent")
 
     counts = plugins.get("counts")
     if not isinstance(counts, dict) or counts != {
@@ -455,7 +559,11 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         formatted_metrics[label] = f"{float(metric['value']):.1f}"
 
     return {
-        "corpus_extensions": len(plugin_rows),
+        "workshop_mods": len(workshop_rows),
+        "workshop_bundle_namespace": workshop_counts["ecpa_bundle_namespace"],
+        "workshop_test_pass": workshop_counts["local_tests_pass"],
+        "workshop_environment_blocked": workshop_counts["environment_blocked"],
+        "planner_seed_extensions": len(plugin_rows),
         "adaptation_candidates": len(excluded_rows),
         "planner_cases": planner_cases,
         "planner_admits": planner_admits,
@@ -487,7 +595,11 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
 
 def render(summary: dict[str, int | str]) -> str:
     macros = (
-        ("ECPACorpusExtensions", "corpus_extensions"),
+        ("ECPAWorkshopMods", "workshop_mods"),
+        ("ECPAWorkshopBundleNamespace", "workshop_bundle_namespace"),
+        ("ECPAWorkshopTestPass", "workshop_test_pass"),
+        ("ECPAWorkshopEnvironmentBlocked", "workshop_environment_blocked"),
+        ("ECPAPlannerSeedExtensions", "planner_seed_extensions"),
         ("ECPAAdaptationCandidates", "adaptation_candidates"),
         ("ECPAPlannerCases", "planner_cases"),
         ("ECPAPlannerAdmits", "planner_admits"),

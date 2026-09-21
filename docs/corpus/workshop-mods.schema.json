@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ecpa.example/docs/corpus/workshop-mods.schema.json",
+  "type": "object",
+  "required": ["schema", "observed_at", "authority", "population", "counts", "mods", "evidence_limits"],
+  "properties": {
+    "schema": {"const": "ecpa-workshop-mod-corpus/v1"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "authority": {"const": "vLLM-HUST plugin page workshop metadata"},
+    "population": {
+      "type": "object",
+      "required": ["repository", "repository_id", "node_id", "default_branch", "commit_sha", "metadata_path", "metadata_snapshot_path", "metadata_blob_sha", "metadata_sha256", "source_rows_sha256", "audit_rows_sha256", "mod_count"],
+      "properties": {
+        "repository": {"const": "vLLM-HUST/vllm-hust-website"},
+        "repository_id": {"type": "integer", "minimum": 1},
+        "node_id": {"type": "string", "minLength": 1},
+        "default_branch": {"const": "main"},
+        "commit_sha": {"$ref": "#/definitions/git_sha"},
+        "metadata_path": {"const": "data/plugin-workshop-metadata.json"},
+        "metadata_snapshot_path": {"const": "docs/corpus/plugin-workshop-metadata.snapshot.json"},
+        "metadata_blob_sha": {"$ref": "#/definitions/git_sha"},
+        "metadata_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_rows_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "audit_rows_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "mod_count": {"const": 24}
+      },
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "required": ["mods", "ecpa_bundle_namespace", "namespace_mismatch", "general_plugin_only", "direct_or_non_entry_integration", "source_only", "package_projects", "local_package_build_pass", "local_tests_pass", "environment_blocked", "no_automated_tests"],
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "mods": {
+      "type": "array",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "required": ["id", "repository", "repository_id", "node_id", "visibility", "default_branch", "head_commit", "integration_class", "package_build", "local_test", "evidence_class"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "repository": {"type": "string", "pattern": "^vLLM-HUST/[^/]+$"},
+          "repository_id": {"type": "integer", "minimum": 1},
+          "node_id": {"type": "string", "minLength": 1},
+          "visibility": {"enum": ["public", "private", "internal"]},
+          "default_branch": {"type": "string", "minLength": 1},
+          "head_commit": {"$ref": "#/definitions/git_sha"},
+          "integration_class": {"enum": ["ecpa_bundle_namespace", "namespace_mismatch", "general_plugin_only", "direct_or_non_entry_integration", "source_only"]},
+          "bundle_id": {"type": ["string", "null"]},
+          "package_build": {"enum": ["pass", "qualified_staging_required", "not_applicable"]},
+          "local_test": {"enum": ["pass", "environment_blocked", "no_automated_tests"]},
+          "test_summary": {"type": "string"},
+          "evidence_class": {"const": "source-package-cpu-only"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence_limits": {"type": "array", "minItems": 3, "items": {"type": "string", "minLength": 1}}
+  },
+  "definitions": {"git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}},
+  "additionalProperties": false
+}

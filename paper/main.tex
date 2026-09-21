@@ -50,9 +50,9 @@ immutable execution plan; a transactional runtime prepares, activates,
 observes, exposes, and rolls back that plan. Authority-owned evidence discharges
 plan obligations, and an ExposureGate makes a generation externally visible
 only after fresh evidence covers its epoch-scoped targets. We derive the model
-from a source-bound corpus of \ECPACorpusExtensions{} extensions and
-\ECPAAdaptationCandidates{} adaptation candidates spanning scheduling, KV data
-paths, deployment control, and observability.  We implement a host-neutral
+from the plugin page's source-bound population of \ECPAWorkshopMods{} MODs,
+spanning scheduling, speculative decoding, KV data paths, model execution,
+communication, and observability.  We implement a host-neutral
 coordinator, a narrow adapter for one vLLM-compatible prototype host, and an
 adversarial evaluation harness covering namespace errors, resource conflicts,
 partial worker coverage, replay, crash recovery, lease expiration, and failed
@@ -657,35 +657,54 @@ test keys; a production host issuer, trust root/key lifecycle, and
 formal performance measurements remain future work.
 
 \section{Extension Corpus and Case Studies}
-We audited the authoritative workspace and accessible repositories by reading
-packaging metadata, manifests, registration functions, implementation paths,
-and evidence documents.  Names containing ``plugin'' were insufficient.  The
-resulting machine-readable corpus contains \ECPACorpusExtensions{} registered
-extensions and \ECPAAdaptationCandidates{} adaptation candidates.  Candidates
-contain relevant hook, adapter, policy, or
-schema code but lack a verified registration surface; ordinary services and
-unrelated optimization repositories are excluded.
+Our external-validity population is the \ECPAWorkshopMods{} MODs rendered by the
+vLLM-HUST plugin page, frozen by website commit, metadata blob, and SHA-256
+digest.  We resolved every page entry to a repository numeric identity,
+default branch, and exact head, then inspected packaging metadata, manifests,
+registration functions, implementation paths, and repository-local tests.
+Research projects from our own portfolio are not substituted for or appended
+to this population.
+
+Of these MODs, \ECPAWorkshopBundleNamespace{} installable distributions register
+the ECPA static-bundle namespace and are discoverable without importing plugin
+implementations.  DLA exposes a concrete false-effective candidate: it ships a
+static bundle under the near-miss namespace \texttt{vllm.extension\_bundles}, so
+the ECPA manager discovers no DLA bundle.  Other MODs use general entry points,
+direct host integration, or source-patch/scaffold delivery and therefore
+exercise adaptation rather than native bundle discovery.  Isolated
+source/package/CPU checks passed for \ECPAWorkshopTestPass{} MODs; another
+\ECPAWorkshopEnvironmentBlocked{} reached Ascend host dependencies unavailable
+in the audit environment.  These checks establish neither NPU execution nor
+runtime effectiveness.
+
+Separately, a historically reviewed \ECPAPlannerSeedExtensions{}-extension seed
+and \ECPAAdaptationCandidates{} candidates retain a 31-case static planner
+oracle.  That seed includes local provider examples and is used only to keep the
+modeled planner experiment reproducible; it is not cited as page-corpus
+coverage.
 
 The unit of analysis is an extension contract, not a favored optimization.
-The corpus deliberately crosses five semantic families: scheduler decisions,
-KV transfer and materialization, state/cache management, deployment control,
-and lifecycle observability (Figure~\ref{fig:case-coverage}).  BidKV is one scheduler-policy instance.  It does
+The page population crosses scheduler decisions, speculative decoding, MoE
+offload, KV transfer/materialization/compression, graph and communication paths,
+scaling, and lifecycle observability (Figure~\ref{fig:case-coverage}).  BidKV is
+one scheduler-policy instance.  It does
 not define ECPA's contract schema, evidence vocabulary, or evaluation oracle.
 
 \begin{table}[t]
 \centering\small
-\caption{Representative cases selected from the full artifact corpus.}
+\caption{Representative cases selected from the 24-MOD page population.}
 \begin{tabularx}{\columnwidth}{@{}lXX@{}}
 \toprule
 Case & Extension/authority & ECPA obligation \\
 \midrule
-BidKV & scheduler policy & scheduler-owned invocation; exclusive policy slot \\
-Mooncake & KV connector + external service & worker invocation + provider operation evidence \\
-Production Stack & render/check provider & controller, router, and autoscaler evidence; no apply \\
-KV Admission & general plugin/private scheduler seam & exact-version registration and decision event \\
-Lifecycle Profiler & multi-process observer & all required roles emit launch-bound events \\
-Prefix state cache & request-state reuse & cache lookup/use event and state-ownership boundary \\
-Tiered KV cache & state placement and movement & data-path invocation and tier ownership \\
+BidKV & scheduler preemption policy & scheduler-owned invocation and decision effect \\
+DiffSpec / vSpec & speculative decoding & bundle discovery, worker coverage, accepted-token effect \\
+LatchMoE & MoE offload & worker invocation, placement effect, and rollback boundary \\
+KVCompress & KV compression & cache-path invocation, representation and ownership evidence \\
+Lifecycle Profiler & general-plugin observer & required roles emit launch-bound lifecycle events \\
+BetterScale & direct worker-class integration & exact host/pins and worker-path effect evidence \\
+TraceLoom & scheduler/native analyzer & capture provenance separated from offline analysis \\
+DLA & bundle plus victim selector & reject the near-miss bundle namespace before activation \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -695,44 +714,80 @@ Tiered KV cache & state placement and movement & data-path invocation and tier o
 \begin{tikzpicture}[x=2.85cm,y=0.58cm,font=\footnotesize]
 \foreach \x/\name in {0/{Control / parent},1/{Engine / scheduler},2/{Worker / data path},3/{External authority}}
   \node[align=center,font=\bfseries\footnotesize] at (\x,1.0) {\name};
-\foreach \y/\name in {0/BidKV, -1/Mooncake, -2/{Production stack}, -3/{KV admission}, -4/{Lifecycle profiler}, -5/{Prefix state cache}, -6/{Tiered KV cache}}
+\foreach \y/\name in {0/BidKV, -1/{DiffSpec / vSpec}, -2/LatchMoE, -3/KVCompress, -4/{Lifecycle profiler}, -5/BetterScale, -6/TraceLoom, -7/DLA}
   \node[anchor=east] at (-0.58,\y) {\name};
 
 \draw[fill=ecpablue] (0.68,-0.27) rectangle (1.32,0.27);
 \draw[fill=ecpablue] (1.68,-1.27) rectangle (2.32,-0.73);
-\draw[fill=ecpablue] (2.68,-1.27) rectangle (3.32,-0.73);
-\draw[fill=ecpablue] (-0.32,-2.27) rectangle (0.32,-1.73);
-\draw[fill=ecpablue] (2.68,-2.27) rectangle (3.32,-1.73);
-\draw[fill=ecpablue] (0.68,-3.27) rectangle (1.32,-2.73);
+\draw[fill=ecpablue] (1.68,-2.27) rectangle (2.32,-1.73);
+\draw[fill=ecpablue] (1.68,-3.27) rectangle (2.32,-2.73);
 \draw[fill=ecpablue] (-0.32,-4.27) rectangle (0.32,-3.73);
 \draw[fill=ecpablue] (0.68,-4.27) rectangle (1.32,-3.73);
 \draw[fill=ecpablue] (1.68,-4.27) rectangle (2.32,-3.73);
-\draw[dashed,thick,fill=ecpablue!35] (0.68,-5.27) rectangle (1.32,-4.73);
-\draw[dashed,thick,fill=ecpablue!35] (1.68,-5.27) rectangle (2.32,-4.73);
-\draw[dashed,thick,fill=ecpablue!35] (1.68,-6.27) rectangle (2.32,-5.73);
+\draw[fill=ecpablue] (1.68,-5.27) rectangle (2.32,-4.73);
+\draw[fill=ecpablue] (0.68,-6.27) rectangle (1.32,-5.73);
+\draw[fill=ecpablue] (1.68,-6.27) rectangle (2.32,-5.73);
+\draw[dashed,thick,fill=ecpablue!35] (-0.32,-7.27) rectangle (0.32,-6.73);
+\draw[dashed,thick,fill=ecpablue!35] (0.68,-7.27) rectangle (1.32,-6.73);
 
-\node[anchor=west] at (-0.30,-7.05) {\tikz\draw[fill=ecpablue] (0,0) rectangle (.18,.18); selected case};
-\node[anchor=west] at (1.45,-7.05) {\tikz\draw[dashed,thick,fill=ecpablue!35] (0,0) rectangle (.18,.18); corpus pressure only};
+\node[anchor=west] at (-0.30,-8.05) {\tikz\draw[fill=ecpablue] (0,0) rectangle (.18,.18); observed integration surface};
+\node[anchor=west] at (1.55,-8.05) {\tikz\draw[dashed,thick,fill=ecpablue!35] (0,0) rectangle (.18,.18); namespace/adaptation gap};
 \end{tikzpicture}
-\caption{The evaluation is multi-extension even though it uses one prototype
-host.  Selected cases exercise different process and authority domains;
-dashed rows shape the contract taxonomy but are not promoted to formal runtime
-results.  Empty cells mean the case does not claim that authority, not that the
-corpus was unexamined.}
+\caption{Representative integration surfaces in the 24-MOD page population.
+Solid cells are source-observed host/process surfaces; dashed DLA cells mark a
+namespace/adaptation gap, not a successful activation. Empty cells do not imply
+that a MOD was omitted from the audit.}
 \label{fig:case-coverage}
 \end{figure*}
 
-The cases exercise distinct failure semantics.  A KV connector can be
-configured while a worker has the wrong connector or wheel variant.  A
-deployment provider can render valid inputs while an external rollout is
-absent, and two controllers can conflict over replicas.  A lifecycle observer
-can run in the parent while one worker emits no events.  A cache/tiering
-extension can execute code without changing placement or reuse.  A scheduler
-policy, including BidKV, can be selected without ever affecting a scheduling
-decision.  For each, the corpus records resources, process topology, external
-authority, version knowledge, evidence, and rollback boundary.  Unknown fields
-remain unknown; none is promoted to ECPA L3 merely because repository-local
-tests pass.
+\begin{table*}[t]
+\centering\scriptsize
+\caption{All 24 page MODs were inspected at their frozen repository heads. ``Pass''
+is package or repository-local CPU/source evidence, never an NPU or runtime-effect claim.}
+\begin{tabularx}{\textwidth}{@{}l l l X@{}}
+\toprule
+MOD & Integration surface & Package & Local source/CPU result \\
+\midrule
+BidKV & ECPA bundle & pass & 385 passed, 25 skipped \\
+DiffSpec & ECPA bundle + general plugin & pass & environment-blocked at Ascend/HCCL import \\
+vSpec & ECPA bundle + general plugin & pass & environment-blocked at vLLM Ascend/HCCL import \\
+LatchMoE & ECPA bundle + general plugin & pass & environment-blocked at vLLM Ascend import \\
+Adaptive Quantized KV & ECPA bundle & pass & 36 passed, 2 skipped \\
+Quant Runtime Descriptor & ECPA bundle & pass & 7 passed \\
+KVCompress & ECPA bundle + general plugin & pass & 110 passed, 1 skipped; 4 host/NPU-blocked \\
+KV Tiering & source scaffold & n/a & no automated tests \\
+K-Norm & source scaffold & n/a & no automated tests \\
+PyramidKV & ECPA bundle & pass & 33 passed \\
+Quantized KV Cache & general plugin & pass & 8 passed, 2 skipped \\
+SimLLM & ECPA bundle & pass & 5 passed \\
+Unified Communication & ECPA bundle & pass & 4 passed \\
+Split Batch / Full Graph & ECPA bundle & pass & 4 passed \\
+KV Transfer Observability & ECPA bundle & pass & 125 passed \\
+Layered Prefill & ECPA bundle & pass & 5 passed \\
+Activation Sparsity & ECPA bundle & pass & 4 passed \\
+Pipeline Microbatch & ECPA bundle & pass & 8 passed \\
+QoS Scheduler & ECPA bundle & pass & 4 passed \\
+BetterScale & direct worker class & qualified staging required & 97 passed, 10 subtests \\
+Request Lifecycle Profiler & general plugin & pass & 234 passed, 9 skipped \\
+KV Materialization Control & general plugin & pass & 83 passed; 3 host/HCCL-blocked \\
+DLA & near-miss bundle namespace & pass & 16 passed, 1 skipped \\
+TraceLoom & direct scheduler/analyzer & pass & 50/50 native tests passed \\
+\bottomrule
+\end{tabularx}
+\label{tab:all-workshop-mods}
+\end{table*}
+
+The cases exercise distinct failure semantics.  A speculative-decoding MOD can
+load while never producing an accepted draft token.  An offload, compression,
+or scaling implementation can execute setup code without changing placement,
+representation, or the selected worker path.  A lifecycle observer can run in
+the parent while one worker emits no events.  Trace capture can succeed while
+offline analysis is incorrectly treated as runtime proof.  A scheduler policy,
+including BidKV or DLA, can be selected without ever affecting a scheduling
+decision; DLA additionally demonstrates that a near-miss registration namespace
+can hide an otherwise packaged bundle.  For each MOD, the corpus records source
+identity, integration class, package result, CPU/source result, and evidence
+limit.  None is promoted to ECPA L3 merely because repository-local tests pass.
 
 These cases become fixtures rather than anecdotes: each needs a positive cell,
 an inert-import or missing-process cell, an identity/version mismatch, and a
@@ -740,9 +795,8 @@ conflict or authority-boundary cell.  The corpus therefore supplies generality
 pressure to the contract while the conformance suite prevents the reference
 implementation from defining correctness by itself.
 
-The corpus supplies breadth across \ECPACorpusExtensions{} registered extensions,
-\ECPAAdaptationCandidates{} adaptation candidates, multiple plugin classes, and
-distinct process/authority scopes.
+The page population supplies breadth across \ECPAWorkshopMods{} MODs, multiple
+delivery models, plugin classes, and distinct process/authority scopes.
 Historical corpus metadata may mention another supported runtime, but that is
 not a cross-runtime ECPA experiment.  Our generality evidence is therefore the
 combination of corpus diversity, prototype-host process scopes, the fault model, and
@@ -752,8 +806,8 @@ For the L2 study, we freeze a canonical resource-and-alias taxonomy,
 \ECPAPlannerCases{} modeled
 single/pair/triple compositions, and a separately stored manual candidate
 oracle before implementing the evaluator.  The models cover all
-\ECPACorpusExtensions{} registered
-extensions and add explicitly marked synthetic controls for otherwise absent
+\ECPAPlannerSeedExtensions{} seed extensions and add explicitly marked
+synthetic controls for otherwise absent
 conflict boundaries; the \ECPAAdaptationCandidates{} adaptation candidates
 remain excluded.  The
 oracle passed independent exact-digest label review.  This preregistration is
@@ -864,7 +918,9 @@ Claim area & Current evidence & Status \\
 \midrule
 Static planning & \ECPAPlannerCases{} labeled cases: \ECPAPlannerAdmits{} admit,
 \ECPAPlannerRejects{} reject & modeled \\
-Source binding & \ECPASourceRepositories{} repositories and
+Page population & \ECPAWorkshopMods{} frozen MOD heads; \ECPAWorkshopBundleNamespace{}
+ECPA bundles & observed \\
+Planner seed binding & \ECPASourceRepositories{} repositories and
 \ECPASourceObjects{} Git objects & observed \\
 Namespace safety & installed entry: expected 1; changed lookup: 0 & negative \\
 Transaction model & \ECPATransactionModelStates{} states,
@@ -918,7 +974,7 @@ counterexample to ``unit tests plus installation imply activation,'' and it has
 been retained as the M0 negative fixture rather than merged.
 
 The source-bound modeled L2 corpus additionally contains \ECPAPlannerCases{}
-frozen composition cases over \ECPACorpusExtensions{} registered extensions.
+frozen composition cases over \ECPAPlannerSeedExtensions{} seed extensions.
 The compiler matches all \ECPAPlannerAdmits{} admits and \ECPAPlannerRejects{}
 rejects, including reject classes, after independent oracle review.  Exact
 repository commits, root trees, and \ECPASourceObjects{} cited Git objects
@@ -1046,7 +1102,7 @@ across multiple extension classes, process roles, versions/topologies, and injec
 failures can show that the mechanism is not tied to one plugin, but cannot show
 that an independent inference framework adopts the same abstractions.
 Cross-runtime validation is deferred future work.  Accordingly, neither this
-paper nor the \ECPACorpusExtensions{}+\ECPAAdaptationCandidates{} corpus
+paper nor the \ECPAWorkshopMods{}-MOD page population
 supports a cross-framework or industry-standard claim.
 
 \section{Conclusion}

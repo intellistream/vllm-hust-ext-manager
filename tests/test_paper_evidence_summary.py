@@ -11,6 +11,9 @@ from jsonschema import ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR_PATH = ROOT / "paper/scripts/generate_evidence_summary.py"
 INPUTS = (
+    "docs/corpus/plugin-workshop-metadata.snapshot.json",
+    "docs/corpus/workshop-mods.json",
+    "docs/corpus/workshop-mods.schema.json",
     "docs/corpus/plugins.json",
     "docs/corpus/plugins.schema.json",
     "docs/corpus/source-snapshots.json",
@@ -72,7 +75,11 @@ def test_checked_summary_matches_all_authoritative_inputs() -> None:
     summary = generator.collect_summary(ROOT)
 
     assert summary == {
-        "corpus_extensions": 11,
+        "workshop_mods": 24,
+        "workshop_bundle_namespace": 16,
+        "workshop_test_pass": 17,
+        "workshop_environment_blocked": 5,
+        "planner_seed_extensions": 11,
         "adaptation_candidates": 5,
         "planner_cases": 31,
         "planner_admits": 21,
@@ -218,6 +225,45 @@ def test_generator_rejects_declared_corpus_count_drift(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="declared counts"):
+        generator.collect_summary(tmp_path)
+
+
+def test_generator_rejects_workshop_authority_identity_drift(tmp_path: Path) -> None:
+    generator = load_generator()
+    copy_inputs(tmp_path)
+    corpus = tmp_path / "docs/corpus/workshop-mods.json"
+    rewrite_json(
+        corpus,
+        lambda value: value["population"].__setitem__("commit_sha", "1" * 40),
+    )
+
+    with pytest.raises(ValueError, match="frozen authority"):
+        generator.collect_summary(tmp_path)
+
+
+def test_generator_rejects_coordinated_workshop_row_substitution(
+    tmp_path: Path,
+) -> None:
+    generator = load_generator()
+    copy_inputs(tmp_path)
+    corpus = tmp_path / "docs/corpus/workshop-mods.json"
+
+    def substitute_and_rehash(value) -> None:
+        value["mods"][0]["repository"] = "vLLM-HUST/not-a-page-mod"
+        source_rows = [
+            {field: row[field] for field in generator.WORKSHOP_SOURCE_FIELDS}
+            for row in value["mods"]
+        ]
+        value["population"]["source_rows_sha256"] = generator.canonical_digest(
+            source_rows
+        )
+        value["population"]["audit_rows_sha256"] = generator.canonical_digest(
+            value["mods"]
+        )
+
+    rewrite_json(corpus, substitute_and_rehash)
+
+    with pytest.raises(ValueError, match="frozen authority|frozen page snapshot"):
         generator.collect_summary(tmp_path)
 
 
