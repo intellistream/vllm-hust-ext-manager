@@ -1,0 +1,26 @@
+{
+  "blockers": [
+    "runtime-checkout-unavailable",
+    "accelerator-plugin-checkout-unavailable",
+    "accelerator-plugin-runtime-unverified",
+    "cann-version-mismatch",
+    "container-server-unavailable",
+    "container-image-unfrozen",
+    "model-files-incomplete",
+    "model-weights-missing"
+  ],
+  "candidate_id": "partial-worker-coverage-ascend-910b2-112-v1",
+  "classification": "deployment-stack-preflight",
+  "formal_real_result": false,
+  "non_claims": [
+    "A ready preflight is not a registered adapter or formal-real result.",
+    "This audit does not establish model correctness, worker coverage, or policy effect.",
+    "Compatibility metadata does not replace a real serving launch and independent observations."
+  ],
+  "observation_digest": "sha256:07d840f6ca699c1e68ad0ed4321905c195205073b3792093a9405d5c413e524c",
+  "observed_at": "2026-09-21T11:33:08+08:00",
+  "registration_authority": false,
+  "requirements_digest": "sha256:9f638287bfd55507049b4b568dc4c95147d130dbc5c03e487b3f506e7aca2f10",
+  "schema": "ecpa-formal-real-stack-preflight/v1",
+  "status": "blocked"
+}

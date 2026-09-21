@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema", "classification", "formal_real_result", "registration_authority", "candidate_id", "observed_at", "requirements_digest", "observation_digest", "status", "blockers", "non_claims"],
+  "properties": {
+    "schema": {"const": "ecpa-formal-real-stack-preflight/v1"},
+    "classification": {"const": "deployment-stack-preflight"},
+    "formal_real_result": {"const": false},
+    "registration_authority": {"const": false},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "requirements_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "observation_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"enum": ["blocked", "ready-for-registration-review"]},
+    "blockers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "runtime-checkout-unavailable",
+          "runtime-identity-mismatch",
+          "accelerator-plugin-checkout-unavailable",
+          "accelerator-plugin-identity-mismatch",
+          "accelerator-plugin-runtime-unverified",
+          "cann-version-mismatch",
+          "hardware-topology-mismatch",
+          "container-server-unavailable",
+          "container-image-unfrozen",
+          "container-image-mismatch",
+          "model-identity-mismatch",
+          "model-files-incomplete",
+          "model-weights-missing"
+        ]
+      }
+    },
+    "non_claims": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "blocked"}}}, "then": {"properties": {"blockers": {"minItems": 1}}}},
+    {"if": {"properties": {"status": {"const": "ready-for-registration-review"}}}, "then": {"properties": {"blockers": {"maxItems": 0}}}}
+  ],
+  "additionalProperties": false
+}
