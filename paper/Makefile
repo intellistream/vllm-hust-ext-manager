@@ -2,6 +2,9 @@ LATEXMK ?= latexmk
 TECTONIC ?= tectonic
 EVIDENCE_SUMMARY := generated/evidence-summary.tex
 EVIDENCE_INPUTS := \
+	../docs/corpus/plugin-workshop-metadata.snapshot.json \
+	../docs/corpus/workshop-mods.json \
+	../docs/corpus/workshop-mods.schema.json \
 	../docs/corpus/plugins.json \
 	../docs/corpus/plugins.schema.json \
 	../docs/corpus/source-snapshots.json \

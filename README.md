@@ -29,6 +29,7 @@ drift, and runtime effects that cannot be proved statically.
 - [Formal-real lifecycle source profile](docs/design/formal-real-lifecycle-sources.md)
 - [Reference ExposureGate M1](docs/design/reference-exposure-gate.md)
 - [Existing plugin-path inventory and next experiments](docs/research/ecpa-existing-path-inventory.md)
+- [Page-bound 24-MOD audit](docs/corpus/workshop-mods.json)
 
 `vllm-hust-ext` is a provider-neutral control point for discovering, validating,
 configuring, enabling, planning, rendering, and checking vLLM-HUST extensions.
