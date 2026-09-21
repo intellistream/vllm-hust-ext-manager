@@ -14,6 +14,13 @@ Its first formal comparison is the three-arm partial-worker-coverage study in
 [`../experiments/false_effective/first-formal-real-study.json`](../experiments/false_effective/first-formal-real-study.json).
 That study is a preregistration, not a result, until every admission blocker is
 removed and all nine starts pass the formal validator.
+Its deployment transition is separately recorded in
+[`../experiments/false_effective/first-formal-real-deployment.json`](../experiments/false_effective/first-formal-real-deployment.json).
+That packet binds the preregistration and protocol digests, then requires all
+three arm registrations, all five lifecycle-source registrations, fixed
+deployment identity, the producer admission receipt, and five reviews to move
+atomically from `unregistered` to `registered`. It is a review artifact, not a
+runtime allowlist: only `verified-adapters.json` authorizes execution.
 
 The current evaluation is a deep **vLLM-HUST-only system study**. It seeks
 external validity across real plugin categories, parent/engine/worker scopes,

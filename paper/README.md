@@ -43,6 +43,10 @@ Evidence rules:
   formal-real preregistration is
   `../experiments/false_effective/first-formal-real-study.json`; validation
   keeps it pre-admission while the producer and adapter registry are absent.
+- `../experiments/false_effective/first-formal-real-deployment.json` is the
+  separate registration-review packet. It must bind all three arms, all five
+  lifecycle sources, producer admission, deployment identity, and review gates
+  before admission; it does not replace the runtime adapter registry.
 
 Alignment:
 

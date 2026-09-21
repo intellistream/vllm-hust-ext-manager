@@ -1,0 +1,72 @@
+{
+  "schema": "ecpa-formal-real-deployment-registration/v1",
+  "study_id": "partial-worker-coverage-three-arm-v1",
+  "registration_state": "unregistered",
+  "admissible": false,
+  "bindings": {
+    "study_sha256": "b18e227347192dc30909d43ba8dc20ba051e0dac0e5ea85af4aaebd12d393513",
+    "protocol_sha256": "c76ac785334273d942723cf26fe840a3d7c0cf6cfb15a0fb0aa04810f9ab70bc",
+    "registration_design_base": {
+      "repository": "intellistream/vllm-hust-ext-manager",
+      "commit": "a26ded6b169a25001b03500e7b252740aeabce8b",
+      "tree": "3476f88bc18e295d2e56988ce6af3963d397e5c9"
+    }
+  },
+  "producer_candidate": {
+    "repository": "vLLM-HUST/vllm-hust",
+    "pull_request": 27,
+    "reviewed_head": "c9b6bbff27fc8241ba37abf037560cf2875317a2",
+    "reviewed_tree": "f00d6c0ffef2afd94548a3cfaecf61f65593d0a7",
+    "base": "badce8df2ac489ab55bbbd19e5eb9eea56986f65",
+    "observed_state": "open",
+    "merge_commit": null,
+    "human_line_review": false,
+    "observed_at": "2026-09-21T09:05:00+08:00"
+  },
+  "producer_admission_receipt": null,
+  "deployment_identity": {
+    "runtime_commit": null,
+    "runtime_tree": null,
+    "manager_commit": null,
+    "manager_tree": null,
+    "model": null,
+    "workload_request_sha256": null,
+    "hardware": null,
+    "topology": null,
+    "container_digest": null,
+    "fault_descriptor_sha256": null,
+    "plugin_entry_point": null,
+    "warm_state": null
+  },
+  "arm_registrations": [
+    {"arm": "vanilla-vllm-entry-points", "registration": null},
+    {"arm": "manual-integration", "registration": null},
+    {"arm": "ecpa", "registration": null}
+  ],
+  "source_registrations": [
+    {"phase": "service-ready", "source_kind": "readiness-probe", "source_subcommand": "readiness-http", "authority": "lifecycle-source", "registration": null},
+    {"phase": "workload-complete", "source_kind": "workload-driver", "source_subcommand": "workload-http", "authority": "lifecycle-source", "registration": null},
+    {"phase": "fault-injected", "source_kind": "fault-actuator", "source_subcommand": "partial-coverage-quarantine", "authority": "lifecycle-source", "registration": null},
+    {"phase": "observer-captured", "source_kind": "host-observer", "source_subcommand": "journal-capture", "authority": "vllm-hust-host", "registration": null},
+    {"phase": "service-shutdown", "source_kind": "process-monitor", "source_subcommand": "shutdown-process", "authority": "process-monitor", "registration": null}
+  ],
+  "reviews": {
+    "cross_arm_equivalence": false,
+    "commands": false,
+    "activation_paths": false,
+    "observer_independence": false,
+    "artifact_retention": false
+  },
+  "blockers": [
+    "producer-not-merged",
+    "human-line-review-absent",
+    "adapter-registry-empty",
+    "deployment-identity-unfrozen",
+    "commands-not-deployment-reviewed"
+  ],
+  "non_claims": [
+    "This registration packet is a review input, not runtime authority or a formal-real result.",
+    "Only verified-adapters.json authorizes commands at runtime.",
+    "Null command and identity slots must not be inferred from developer machines or fixture paths."
+  ]
+}

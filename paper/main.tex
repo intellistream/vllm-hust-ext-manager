@@ -561,6 +561,18 @@ The first formal comparison is the partial-worker-coverage scenario across all
 \ECPAFormalArms{} arms and \ECPAFirstStudyStarts{} independent starts.  It
 remains pre-admission while the producer, deployment identity, commands, and
 adapter registry are not all frozen; preregistration is not a result.
+We separate four artifacts that would otherwise collapse into one ``ready''
+bit.  The study preregistration fixes the comparison and falsifier; a
+repository-owned producer receipt records merge and review facts; a deployment
+registration packet binds the matched identities and command fingerprints; and
+the runtime adapter registry is the only artifact that authorizes those
+commands.  The checked deployment packet currently retains
+\ECPADeploymentBlockers{} blockers and has
+\ECPARegisteredDeploymentArms{} of \ECPAFormalArms{} arms registered.  Null
+slots are intentional: neither a developer-machine command nor a candidate PR
+is inherited as deployment identity.  Admission requires all arm and lifecycle
+source registrations in one transition, so a partially frozen comparison
+cannot enter the aggregate.
 The hypotheses are aligned with issues M0--M3.  \textbf{H1:} in preregistered
 failure cells, \system has zero
 false-effective outcomes and at least 99\% required-event coverage.
@@ -617,6 +629,27 @@ Formal-real & \ECPAFormalCompleted{} complete, \ECPAFormalPlanned{} planned;
 \ECPAVerifiedAdapters{} registered adapters & planned \\
 Rollback & reference faults only; real injection pending & planned \\
 Overhead & matched \ECPAFormalArms{}-arm experiment & planned \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Authority chain for the first formal-real cell.  Each row is a
+different fact; later rows cannot infer earlier ones.}
+\begin{tabularx}{\columnwidth}{@{}lXX@{}}
+\toprule
+Artifact & Establishes & Current state \\
+\midrule
+Study preregistration & arms, order, falsifier, outcomes & frozen; no result \\
+Producer receipt & reviewed host seam merged into vLLM-HUST & absent \\
+Deployment packet & matched identities and reviewed commands &
+\ECPADeploymentBlockers{} blockers \\
+Runtime registry & exact commands permitted to execute &
+\ECPAVerifiedAdapters{} adapters \\
+Run generation & raw observations for one independent start & 0 of
+\ECPAFirstStudyStarts{} starts \\
 \bottomrule
 \end{tabularx}
 \end{table}

@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commandDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commandRegistration": {
+      "type": "object",
+      "required": ["role", "command_digest"],
+      "properties": {
+        "role": {"enum": ["sut", "manager", "target", "observer", "lifecycle-source"]},
+        "command_digest": {"$ref": "#/definitions/commandDigest"}
+      },
+      "additionalProperties": false
+    },
+    "armRegistration": {
+      "type": "object",
+      "required": ["registry_id", "registry_entry_sha256", "commands", "activation_probe_digest"],
+      "properties": {
+        "registry_id": {"type": "string", "minLength": 1},
+        "registry_entry_sha256": {"$ref": "#/definitions/sha256"},
+        "commands": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/definitions/commandRegistration"}},
+        "activation_probe_digest": {"$ref": "#/definitions/commandDigest"}
+      },
+      "additionalProperties": false
+    },
+    "sourceRegistration": {
+      "type": "object",
+      "required": ["registry_ids", "command_digest"],
+      "properties": {
+        "registry_ids": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "command_digest": {"$ref": "#/definitions/commandDigest"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["schema", "study_id", "registration_state", "admissible", "bindings", "producer_candidate", "producer_admission_receipt", "deployment_identity", "arm_registrations", "source_registrations", "reviews", "blockers", "non_claims"],
+  "properties": {
+    "schema": {"const": "ecpa-formal-real-deployment-registration/v1"},
+    "study_id": {"const": "partial-worker-coverage-three-arm-v1"},
+    "registration_state": {"enum": ["unregistered", "registered"]},
+    "admissible": {"type": "boolean"},
+    "bindings": {
+      "type": "object",
+      "required": ["study_sha256", "protocol_sha256", "registration_design_base"],
+      "properties": {
+        "study_sha256": {"$ref": "#/definitions/sha256"},
+        "protocol_sha256": {"$ref": "#/definitions/sha256"},
+        "registration_design_base": {
+          "type": "object",
+          "required": ["repository", "commit", "tree"],
+          "properties": {
+            "repository": {"const": "intellistream/vllm-hust-ext-manager"},
+            "commit": {"$ref": "#/definitions/sha"},
+            "tree": {"$ref": "#/definitions/sha"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "producer_candidate": {"type": "object"},
+    "producer_admission_receipt": {"type": ["object", "null"]},
+    "deployment_identity": {
+      "type": "object",
+      "required": ["runtime_commit", "runtime_tree", "manager_commit", "manager_tree", "model", "workload_request_sha256", "hardware", "topology", "container_digest", "fault_descriptor_sha256", "plugin_entry_point", "warm_state"],
+      "properties": {
+        "runtime_commit": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/sha"}]},
+        "runtime_tree": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/sha"}]},
+        "manager_commit": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/sha"}]},
+        "manager_tree": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/sha"}]},
+        "model": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]},
+        "workload_request_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/commandDigest"}]},
+        "hardware": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]},
+        "topology": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]},
+        "container_digest": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/commandDigest"}]},
+        "fault_descriptor_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/commandDigest"}]},
+        "plugin_entry_point": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["group", "name", "value"],
+              "properties": {
+                "group": {"type": "string", "minLength": 1},
+                "name": {"type": "string", "minLength": 1},
+                "value": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "warm_state": {"oneOf": [{"type": "null"}, {"enum": ["cold", "warm"]}]}
+      },
+      "additionalProperties": false
+    },
+    "arm_registrations": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["arm", "registration"],
+        "properties": {
+          "arm": {"type": "string"},
+          "registration": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/armRegistration"}]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "source_registrations": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["phase", "source_kind", "source_subcommand", "authority", "registration"],
+        "properties": {
+          "phase": {"type": "string"},
+          "source_kind": {"type": "string"},
+          "source_subcommand": {"type": "string"},
+          "authority": {"enum": ["lifecycle-source", "vllm-hust-host", "process-monitor"]},
+          "registration": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/sourceRegistration"}]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "reviews": {
+      "type": "object",
+      "required": ["cross_arm_equivalence", "commands", "activation_paths", "observer_independence", "artifact_retention"],
+      "properties": {
+        "cross_arm_equivalence": {"type": "boolean"},
+        "commands": {"type": "boolean"},
+        "activation_paths": {"type": "boolean"},
+        "observer_independence": {"type": "boolean"},
+        "artifact_retention": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "blockers": {"type": "array", "uniqueItems": true, "items": {"enum": ["producer-not-merged", "human-line-review-absent", "adapter-registry-empty", "deployment-identity-unfrozen", "commands-not-deployment-reviewed"]}},
+    "non_claims": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

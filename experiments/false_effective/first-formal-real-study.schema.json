@@ -43,7 +43,21 @@
         "topology": {"type": ["string", "null"]},
         "container_digest": {"type": ["string", "null"]},
         "fault_descriptor_sha256": {"type": ["string", "null"]},
-        "plugin_entry_point": {"type": ["string", "null"]},
+        "plugin_entry_point": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["group", "name", "value"],
+              "properties": {
+                "group": {"type": "string", "minLength": 1},
+                "name": {"type": "string", "minLength": 1},
+                "value": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
         "warm_state": {"type": ["string", "null"]}
       },
       "additionalProperties": false

@@ -30,6 +30,8 @@ INPUTS = (
     "experiments/false_effective/artifacts/reference-summary.json",
     "experiments/false_effective/first-formal-real-study.json",
     "experiments/false_effective/first-formal-real-study.schema.json",
+    "experiments/false_effective/first-formal-real-deployment.json",
+    "experiments/false_effective/first-formal-real-deployment.schema.json",
     "experiments/false_effective/scenarios.json",
     "experiments/false_effective/protocol.json",
     "experiments/false_effective/verified-adapters.json",
@@ -86,6 +88,8 @@ def test_checked_summary_matches_all_authoritative_inputs() -> None:
         "schedule_rows": 3,
         "research_claims": 4,
         "first_study_starts": 9,
+        "deployment_blockers": 5,
+        "registered_deployment_arms": 0,
     }
     assert (
         generator.render(summary)
@@ -127,6 +131,23 @@ def test_generator_rejects_unregistered_formal_completion(tmp_path: Path) -> Non
     rewrite_json(aggregate, lambda value: value.__setitem__("completed_cells", 1))
 
     with pytest.raises(ValueError, match="require a verified adapter"):
+        generator.collect_summary(tmp_path)
+
+
+def test_generator_rejects_premature_deployment_registration(
+    tmp_path: Path,
+) -> None:
+    generator = load_generator()
+    copy_inputs(tmp_path)
+    deployment = (
+        tmp_path / "experiments/false_effective/first-formal-real-deployment.json"
+    )
+    rewrite_json(
+        deployment,
+        lambda value: value.__setitem__("registration_state", "registered"),
+    )
+
+    with pytest.raises(ValueError, match="not fail closed"):
         generator.collect_summary(tmp_path)
 
 

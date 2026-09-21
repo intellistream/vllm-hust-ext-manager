@@ -16,6 +16,13 @@ all five lifecycle phases, assumes no baseline outcome, and remains
 `pre-admission` until its producer, deployment identity, commands, and adapter
 registry satisfy every recorded blocker.
 
+[`first-formal-real-deployment.json`](first-formal-real-deployment.json) is the
+machine-checked registration packet for that transition. It currently keeps
+every deployment and command slot null. Registration is all-or-nothing across
+the three arms and five lifecycle sources, is digest-bound to the study and
+protocol, and must agree with the runtime registry. The packet cannot authorize
+a process; `verified-adapters.json` remains the sole runtime command authority.
+
 ```bash
 PYTHONPATH=src python3 experiments/false_effective/reproduce.py --output /tmp/false-effective
 # Or ingest the runner-owned manifest (hand-written JSONL is rejected):
