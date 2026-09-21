@@ -236,7 +236,67 @@ def test_coordinated_source_kind_collapse_is_rejected(tmp_path: Path) -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="source kinds differ from the runner"):
+    with pytest.raises(ValueError, match="runner, and source kinds differ"):
+        validator.validate(tmp_path)
+
+
+def test_coordinated_runner_study_source_kind_swap_is_rejected(
+    tmp_path: Path,
+) -> None:
+    validator = load_validator()
+    copy_inputs(tmp_path)
+    harness = tmp_path / "experiments/false_effective/harness.py"
+    harness_text = harness.read_text()
+    harness_text = (
+        harness_text.replace(
+            '"service-ready": "readiness-probe"',
+            '"service-ready": "temporary-kind"',
+            1,
+        )
+        .replace(
+            '"workload-complete": "workload-driver"',
+            '"workload-complete": "readiness-probe"',
+            1,
+        )
+        .replace(
+            '"service-ready": "temporary-kind"',
+            '"service-ready": "workload-driver"',
+            1,
+        )
+    )
+    harness.write_text(harness_text)
+    study = tmp_path / "experiments/false_effective/first-formal-real-study.json"
+
+    def swap_study_kinds(value):
+        ready = value["phase_authorities"][0]
+        workload = value["phase_authorities"][1]
+        ready["source_kind"], workload["source_kind"] = (
+            workload["source_kind"],
+            ready["source_kind"],
+        )
+
+    rewrite_json(study, swap_study_kinds)
+
+    with pytest.raises(ValueError, match="runner, and source kinds differ"):
+        validator.validate(tmp_path)
+
+
+def test_phase_authority_swap_is_rejected(tmp_path: Path) -> None:
+    validator = load_validator()
+    copy_inputs(tmp_path)
+    study = tmp_path / "experiments/false_effective/first-formal-real-study.json"
+
+    def swap_authorities(value):
+        ready = value["phase_authorities"][0]
+        shutdown = value["phase_authorities"][4]
+        ready["authority"], shutdown["authority"] = (
+            shutdown["authority"],
+            ready["authority"],
+        )
+
+    rewrite_json(study, swap_authorities)
+
+    with pytest.raises(ValueError, match="authority differs from its source kind"):
         validator.validate(tmp_path)
 
 

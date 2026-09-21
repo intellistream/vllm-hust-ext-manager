@@ -36,6 +36,13 @@ HYPOTHESIS_EXPERIMENT_KINDS = {
     "H3": {"formal-recovery"},
     "H4": {"formal-performance"},
 }
+SOURCE_KIND_AUTHORITIES = {
+    "readiness-probe": "lifecycle-source",
+    "workload-driver": "lifecycle-source",
+    "fault-actuator": "lifecycle-source",
+    "host-observer": "vllm-hust-host",
+    "process-monitor": "process-monitor",
+}
 
 
 def load(root: Path, relative: str) -> dict[str, Any]:
@@ -177,6 +184,9 @@ def validate(root: Path = ROOT) -> dict[str, int | str]:
     phase_source_kinds = {
         row["phase"]: row["source_kind"] for row in study["phase_authorities"]
     }
+    phase_authorities = {
+        row["phase"]: row["authority"] for row in study["phase_authorities"]
+    }
     if len(phase_commands) != len(study["phase_authorities"]):
         raise ValueError("first formal study phase authorities must be unique")
     if phase_commands != PHASE_COMMANDS:
@@ -184,12 +194,21 @@ def validate(root: Path = ROOT) -> dict[str, int | str]:
     runner_source_kinds = python_literal(
         root, "experiments/false_effective/harness.py", "FORMAL_LIFECYCLE_FACT_SOURCES"
     )
+    source_accepted_kinds = python_literal(
+        root, "src/vllm_hust_ext/formal_lifecycle_source.py", "SOURCE_KINDS"
+    )
     if (
         len(runner_source_kinds) != 5
         or len(set(runner_source_kinds.values())) != 5
         or phase_source_kinds != runner_source_kinds
+        or source_accepted_kinds != runner_source_kinds
     ):
-        raise ValueError("first formal study source kinds differ from the runner")
+        raise ValueError("formal study, runner, and source kinds differ")
+    if any(
+        phase_authorities[phase] != SOURCE_KIND_AUTHORITIES[source_kind]
+        for phase, source_kind in phase_source_kinds.items()
+    ):
+        raise ValueError("formal study authority differs from its source kind")
     source_subcommands = parser_subcommands(
         root, "src/vllm_hust_ext/formal_lifecycle_source.py"
     )
