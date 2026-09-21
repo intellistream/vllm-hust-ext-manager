@@ -38,6 +38,11 @@ Evidence rules:
   checked-in `generated/evidence-summary.tex`. Regenerate it with `make
   evidence-summary`; `make check-evidence-summary` fails if it is stale or if
   the corpus, planner, formal-status, and adapter-registry inputs disagree.
+- `../docs/research/claims-to-experiment-matrix.json` separates each paper
+  claim from its falsifier, evidence authority, and experiment. The first
+  formal-real preregistration is
+  `../experiments/false_effective/first-formal-real-study.json`; validation
+  keeps it pre-admission while the producer and adapter registry are absent.
 
 Alignment:
 

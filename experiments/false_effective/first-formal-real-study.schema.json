@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema", "study_id", "experiment_id", "status", "admissible", "scenario", "comparison_unit", "arms", "repetitions", "schedule", "planned_starts", "producer_candidate", "blockers", "fixed_identity", "phase_authorities", "required_host_observables", "truth", "outcomes", "acceptance", "non_claims"],
+  "properties": {
+    "schema": {"const": "ecpa-first-formal-real-study/v1"},
+    "study_id": {"const": "partial-worker-coverage-three-arm-v1"},
+    "experiment_id": {"const": "EXP-FE-PARTIAL-WORKER"},
+    "status": {"enum": ["pre-admission", "admitted", "running", "complete"]},
+    "admissible": {"type": "boolean"},
+    "scenario": {"const": "partial-worker-coverage"},
+    "comparison_unit": {"const": "scenario-by-repetition-across-three-arms"},
+    "arms": {"type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": {"type": "string"}},
+    "repetitions": {"type": "integer", "minimum": 3},
+    "schedule": {"type": "array", "minItems": 3, "items": {"type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": {"type": "string"}}},
+    "planned_starts": {"type": "integer", "minimum": 9},
+    "producer_candidate": {
+      "type": "object",
+      "required": ["repository", "pull_request", "reviewed_head", "reviewed_tree", "base", "observed_state", "merge_commit", "human_line_review", "observed_at"],
+      "properties": {
+        "repository": {"const": "vLLM-HUST/vllm-hust"},
+        "pull_request": {"const": 27},
+        "reviewed_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "reviewed_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "base": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "observed_state": {"enum": ["open", "merged", "closed"]},
+        "merge_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "human_line_review": {"type": "boolean"},
+        "observed_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "blockers": {"type": "array", "uniqueItems": true, "items": {"enum": ["producer-not-merged", "human-line-review-absent", "adapter-registry-empty", "deployment-identity-unfrozen", "commands-not-deployment-reviewed"]}},
+    "fixed_identity": {
+      "type": "object",
+      "required": ["runtime_commit", "manager_commit", "model", "workload_request_sha256", "hardware", "topology", "container_digest", "fault_descriptor_sha256", "plugin_entry_point", "warm_state"],
+      "properties": {
+        "runtime_commit": {"type": ["string", "null"]},
+        "manager_commit": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "workload_request_sha256": {"type": ["string", "null"]},
+        "hardware": {"type": ["string", "null"]},
+        "topology": {"type": ["string", "null"]},
+        "container_digest": {"type": ["string", "null"]},
+        "fault_descriptor_sha256": {"type": ["string", "null"]},
+        "plugin_entry_point": {"type": ["string", "null"]},
+        "warm_state": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "phase_authorities": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["phase", "source_kind", "source_subcommand", "authority", "proves", "does_not_prove"],
+        "properties": {
+          "phase": {"type": "string"},
+          "source_kind": {"type": "string"},
+          "source_subcommand": {"type": "string"},
+          "authority": {"enum": ["lifecycle-source", "vllm-hust-host", "process-monitor"]},
+          "proves": {"type": "string", "minLength": 1},
+          "does_not_prove": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "required_host_observables": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string"}},
+    "truth": {
+      "type": "object",
+      "required": ["activation_possible_after_fault", "effectiveness_requires_complete_process_coverage", "baseline_outcome_assumed"],
+      "properties": {
+        "activation_possible_after_fault": {"const": false},
+        "effectiveness_requires_complete_process_coverage": {"const": true},
+        "baseline_outcome_assumed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {"enum": ["false_effective_by_arm", "required_event_coverage_by_arm", "failure_detection_latency_ms", "incomplete_exposure_window_ms", "raw_failure_count_by_arm"]}
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["complete_starts_per_arm", "comparison_binding_equal_across_arms", "effectiveness_requires_process_coverage", "h1_falsifier", "paper_result_gate"],
+      "properties": {
+        "complete_starts_per_arm": {"type": "integer", "minimum": 3},
+        "comparison_binding_equal_across_arms": {"const": true},
+        "effectiveness_requires_process_coverage": {"const": 1},
+        "h1_falsifier": {"const": "ecpa-claims-effective-with-incomplete-coverage-or-required-event-coverage-below-0.99"},
+        "paper_result_gate": {"const": "all-nine-starts-validator-approved"}
+      },
+      "additionalProperties": false
+    },
+    "non_claims": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

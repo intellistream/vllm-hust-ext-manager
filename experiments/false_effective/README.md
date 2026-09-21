@@ -9,6 +9,13 @@ three independent starts per arm. The checked formal matrix is entirely
 `planned` because no real service command, model/workload, and process-owned
 observer were supplied. Missing metrics remain JSON `null` or empty CSV cells.
 
+The first executable preregistration is
+[`first-formal-real-study.json`](first-formal-real-study.json): a nine-start,
+three-arm `partial-worker-coverage` comparison. It fixes separate authority for
+all five lifecycle phases, assumes no baseline outcome, and remains
+`pre-admission` until its producer, deployment identity, commands, and adapter
+registry satisfy every recorded blocker.
+
 ```bash
 PYTHONPATH=src python3 experiments/false_effective/reproduce.py --output /tmp/false-effective
 # Or ingest the runner-owned manifest (hand-written JSONL is rejected):
