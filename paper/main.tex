@@ -7,8 +7,15 @@
 \usepackage{xcolor}
 \usepackage{amsmath}
 \usepackage{xspace}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,fit,positioning,shapes.geometric}
 \newcommand{\system}{\textsc{ECPA}\xspace}
 \newcommand{\code}[1]{\texttt{#1}}
+\definecolor{ecpablue}{HTML}{DCEBFA}
+\definecolor{ecpagreen}{HTML}{DFF1E3}
+\definecolor{ecpaorange}{HTML}{FBE8CF}
+\definecolor{ecpared}{HTML}{F7D8D8}
+\definecolor{ecpagray}{HTML}{ECEFF3}
 \input{generated/evidence-summary.tex}
 \raggedbottom
 \setlength{\emergencystretch}{2em}
@@ -43,13 +50,15 @@ immutable execution plan; a transactional runtime prepares, activates,
 observes, exposes, and rolls back that plan. Authority-owned evidence discharges
 plan obligations, and an ExposureGate makes a generation externally visible
 only after fresh evidence covers its epoch-scoped targets. We derive the model
-from \ECPACorpusExtensions{} extensions and
-\ECPAAdaptationCandidates{} adaptation candidates in vLLM-HUST, and implement
-a reference coordinator and adversarial evaluation harness covering namespace
-errors, resource conflicts, partial worker coverage, replay, crash recovery,
-lease expiration, and failed compensation. ECPA provides explicit extension
-semantics beyond API availability while preserving optimization-specific
-algorithms outside the runtime.
+from a source-bound corpus of \ECPACorpusExtensions{} extensions and
+\ECPAAdaptationCandidates{} adaptation candidates spanning scheduling, KV data
+paths, deployment control, and observability.  We implement a host-neutral
+coordinator, a narrow adapter for one vLLM-compatible prototype host, and an
+adversarial evaluation harness covering namespace errors, resource conflicts,
+partial worker coverage, replay, crash recovery, lease expiration, and failed
+compensation.  ECPA provides explicit extension semantics beyond API
+availability while keeping host bindings and optimization-specific algorithms
+outside the contract runtime.
 \end{abstract}
 
 \section{Introduction}
@@ -70,11 +79,11 @@ often collapse these cases into an ``enabled'' bit.  That bit is useful intent,
 but it is not evidence that the plugin changed the running system.
 
 The repository that motivated this work contains a smaller but revealing
-incident.  Its documented static bundle namespace is
-\code{vllm\_hust.extension\_bundles}.  A one-line ``bugfix'' changed discovery
-to \code{vllm.extension\_bundles}.  Sixty-six unit tests still passed.  Yet an
-installed Mooncake example registered one bundle in the documented namespace,
-the modified manager selected zero entries, and discovery returned no bundles.
+incident.  A one-line ``bugfix'' changed discovery from the host-owned static
+bundle namespace to an upstream-looking namespace.  Sixty-six unit tests still
+passed.  Yet an installed KV-connector provider registered one bundle in the
+declared namespace, the modified manager selected zero entries, and discovery
+returned no bundles.
 Installation succeeded; the code imported; runtime intent could still exist;
 the plugin was nevertheless absent from the activation path.  The incident is
 not important because of the spelling error itself.  It demonstrates that
@@ -93,6 +102,11 @@ invocation can discharge only its corresponding process or invocation
 obligation.  A manager cannot manufacture runtime effectiveness from
 configuration.
 
+Figure~\ref{fig:architecture} summarizes this split: portable contracts and
+transactions stop at a typed adapter, while host and provider authorities send
+effect evidence back across that boundary.  Neither the adapter nor an
+individual plugin can open the traffic gate by self-report.
+
 Our safety property is: \emph{no activation is exposed as effective unless
 every required plan obligation in the current epoch has fresh evidence from
 the authority that can observe its planned effect}.  Process-scoped obligations
@@ -103,12 +117,13 @@ extensions whose effect spans multiple inference processes and authority
 domains.  Existing plugin APIs, controllers, and provenance systems are inputs
 to that transaction, not components that ECPA replaces.
 
-This paper evaluates that mechanism as a deep case study of \textbf{vLLM-HUST},
-which is also the reference implementation's host runtime.  We seek generality
-within this scope through diverse plugin categories, parent/engine/worker
-process scopes, versions and topologies, authority boundaries, and fault modes.
-We do not claim cross-framework validation.  A second inference runtime is
-future external-validity work, not a prerequisite for the present study.
+The contract, compiler, coordinator, and evidence protocol do not name a host
+runtime or plugin package.  We evaluate them through a deep study on one
+vLLM-compatible prototype host, connected only through a typed host adapter.
+Within that host we cover multiple independently implemented extension classes,
+parent/engine/worker process scopes, versions and topologies, authority
+boundaries, and fault modes.  This is single-host evidence, not a claim of
+cross-framework validation; a second runtime is future external-validity work.
 
 This paper makes three contributions, with claim strength bounded by
 the evidence available today:
@@ -125,9 +140,57 @@ the evidence available today:
 \end{itemize}
 The contract compiler, reference coordinator, evidence protocol, and
 fail-closed formal harness are implemented.  The source-bound static corpus is
-measured; the real vLLM-HUST matched experiment and performance evaluation
+measured; the matched prototype-host experiment and performance evaluation
 remain incomplete.  We do not present modeled decisions, interface fixtures,
 or provider demonstrations as proof of runtime effectiveness.
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  node distance=5mm and 7mm,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=8mm,
+    text width=25mm, inner sep=3pt},
+  wide/.style={box, text width=31mm},
+  flow/.style={-{Latex[length=2mm]}, thick},
+  evidence/.style={-{Latex[length=2mm]}, thick, dashed, color=blue!65!black}
+]
+\node[box, fill=ecpablue] (contracts) {Extension contracts\\capability, resource, lifecycle};
+\node[box, fill=ecpablue, right=of contracts] (compiler) {Contract compiler\\conflicts, order, coverage};
+\node[box, fill=ecpagreen, right=of compiler] (plan) {Immutable plan\\IDs, targets, obligations};
+\node[wide, fill=ecpaorange, right=of plan] (runtime) {Transactional runtime\\prepare $\rightarrow$ activate $\rightarrow$ observe};
+\node[wide, fill=ecpagray, right=of runtime] (adapter) {Typed host adapter\\translate plan, never redefine it};
+
+\node[wide, fill=ecpagray, below=10mm of adapter] (paths) {Host execution paths\\scheduler, workers, KV path, router};
+\node[wide, fill=ecpablue, left=of paths] (extensions) {Independent extensions\\policy, connector, tiering, observer};
+\node[wide, fill=ecpagreen, left=of extensions] (verify) {Evidence verifier\\host/provider events; identity, epoch, coverage};
+\node[box, fill=ecpaorange, left=of verify] (gate) {ExposureGate\\admit one generation};
+\node[box, fill=ecpared, left=of gate] (traffic) {External traffic\\or closed route};
+
+\draw[flow] (contracts) -- (compiler);
+\draw[flow] (compiler) -- (plan);
+\draw[flow] (plan) -- (runtime);
+\draw[flow] (runtime) -- (adapter);
+\draw[flow] (adapter) -- (paths);
+\draw[flow] (extensions) -- (paths);
+\draw[evidence] (paths.west) -- ++(-4mm,0) |- ([yshift=5mm]extensions.north) -| (verify.north);
+\draw[evidence] (extensions.west) -- (verify.east);
+\draw[flow] (verify) -- (gate);
+\draw[flow] (gate) -- (traffic);
+
+\node[draw, dashed, rounded corners=2pt, fit=(adapter)(paths), inner sep=4pt,
+  label={[font=\footnotesize]below:host-specific boundary}] {};
+\node[draw, dashed, rounded corners=2pt, fit=(contracts)(compiler)(plan)(runtime)(verify)(gate),
+  inner sep=5pt, label={[font=\footnotesize]above:ECPA host-neutral boundary}] {};
+\end{tikzpicture}
+}
+\caption{ECPA separates portable extension semantics from a narrow host adapter.
+The adapter maps an immutable plan into native execution paths; it cannot
+declare success.  Effect evidence returns from the authority that can observe
+each obligation, and only the ExposureGate can make a generation visible.}
+\label{fig:architecture}
+\end{figure*}
 
 \section{Background and Motivation}
 \subsection{Why Existing State Is Ambiguous}
@@ -232,7 +295,7 @@ fault actuator, host observer, and process monitor.  Each source receives its
 own control pipe and kernel-credentialed Unix datagram channel and may emit one
 canonical receipt bound to the current challenge, sequence, execution identity,
 value, time, and observed SUT process.  The host observer owns only effect
-capture from the vLLM-HUST-host-owned journal; it does not stand in for
+capture from the prototype host's native journal; it does not stand in for
 readiness, workload, fault, or shutdown authority.  A formal observable carrying
 \code{causal\_ack} is rejected.  The generic observer derives activation path,
 effective claim, invocation, and coverage observations from the host-owned
@@ -302,7 +365,7 @@ invariants, including no candidate admission before a proof-bound open receipt,
 no admission in failed-safe or safety-unknown states, and predecessor-only
 strong rollback.  This is evidence about the stated abstraction under its
 recorded assumptions, not a proof that the implementation refines the model or
-that a real vLLM-HUST deployment recovers correctly.  H3 therefore remains a
+that a real prototype-host deployment recovers correctly.  H3 therefore remains a
 planned formal-real claim.
 
 \subsection{Refinement Boundary}
@@ -360,7 +423,7 @@ authority and block unknown routes.  Lose the query and fail compensation. \\
 
 These obligations separate the theorem we want from the implementation we
 have.  R1--R5 are exercised today only by the single-host reference gate and
-its fault-injection suite.  Establishing them for vLLM-HUST requires the
+its fault-injection suite.  Establishing them for the prototype host requires the
 registered formal-real adapter, host-owned process evidence, and a real traffic
 authority.  Until then, the artifact supports an abstract safety result and a
 reference-implementation conformance result, not an end-to-end refinement
@@ -373,8 +436,10 @@ implementation modules.  The schema distinguishes bundle identity, component
 kind, semantic capability, host/API range, provider, required service, resource
 claims, and activation/evidence contracts.  Static discovery avoids executing
 plugin code merely to decide whether it is eligible.  Namespace ownership is
-typed: the project owns \code{vllm\_hust.*}; a provider may delegate to an
-official \code{vllm.*} hook but may not mint an upstream-looking group.
+typed and parameterized by the host profile: a manifest names the owning
+authority and exact registration group; an adapter may delegate to a
+host-native hook but may not mint a group owned by another authority.  No
+namespace or package prefix is built into the ECPA schema.
 
 The namespace incident becomes a schema fixture: package metadata must contain
 exactly the declared group and bundle identity, and a clean installed-package
@@ -450,7 +515,7 @@ worker versions without special-case status strings.
 \subsection{Fail-Closed Activation and Deterministic Rollback}
 Planning is side-effect free.  Activation proceeds through prepare, validate,
 activate, observe, expose, and commit; shutdown and rollback are explicit
-terminal or compensating paths.  Exposure is distinct from activation: a
+terminal or compensating paths (Figure~\ref{fig:transaction}).  Exposure is distinct from activation: a
 candidate may run behind a closed gate while obligations accumulate, but it
 cannot receive external traffic until the gate accepts its complete identity
 and evidence set.  Missing required services, contradictory capabilities, or
@@ -459,6 +524,45 @@ predecessor plan, rendered inputs, version identities, and authority owners.
 Rollback re-renders that predecessor and requires its own evidence gate.
 External-service lifecycle remains operator-owned; rollback can restore client
 configuration without pretending to downgrade a service it does not control.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  node distance=3.5mm and 4mm,
+  state/.style={draw, rounded corners=2pt, align=center, minimum height=6mm,
+    text width=14mm, inner sep=1.5pt},
+  flow/.style={-{Latex[length=1.6mm]}, thick},
+  fail/.style={-{Latex[length=1.6mm]}, thick, color=red!65!black}
+]
+\node[state, fill=ecpablue] (prepare) {Prepare};
+\node[state, fill=ecpablue, right=of prepare] (validate) {Validate};
+\node[state, fill=ecpaorange, right=of validate] (activate) {Activate};
+\node[state, fill=ecpaorange, below=of activate] (observe) {Observe};
+\node[state, fill=ecpagreen, left=of observe] (gate) {Gate};
+\node[state, fill=ecpagreen, left=of gate] (expose) {Expose};
+\node[state, fill=ecpagray, below=8mm of gate] (rollback) {Rollback};
+\node[state, fill=ecpagreen, left=of rollback] (restored) {Restored};
+\node[state, fill=ecpared, right=of rollback] (unknown) {FailedSafe / Unknown};
+
+\draw[flow] (prepare) -- (validate);
+\draw[flow] (validate) -- (activate);
+\draw[flow] (activate) -- (observe);
+\draw[flow] (observe) -- (gate);
+\draw[flow] (gate) -- node[above]{proof} (expose);
+\draw[fail] (validate) |- (rollback);
+\draw[fail] (activate) -- (rollback);
+\draw[fail] (observe) -- (rollback);
+\draw[fail] (gate) -- (rollback);
+\draw[flow] (rollback) -- (restored);
+\draw[fail] (rollback) -- (unknown);
+\end{tikzpicture}
+\caption{Activation is a transaction, not a callback list.  External traffic
+remains closed through observation and proof validation.  Any pre-exposure
+failure enters explicit compensation; unverifiable compensation is reported as
+safety-unknown rather than success.}
+\label{fig:transaction}
+\end{figure}
 
 \subsection{Authority Separation}
 Core owns manifests, intent, planning, and evidence validation.  Providers own
@@ -469,18 +573,20 @@ apply, delete, or restart infrastructure.  This separation limits both failure
 blast radius and the claims that status may make.
 
 \section{Durable Coordinator}
-The reference implementation is written in Python as \code{vllm-hust-ext}.
-\system is not synonymous with that repository: it comprises the contract,
-planner/evidence semantics, reference implementation, corpus, and conformance
-tests.  Core modules
+The reference coordinator is written in Python, but \system is not synonymous
+with its package or prototype host.  It comprises the versioned contract,
+planner/evidence semantics, transactional runtime, adapter interface, corpus,
+and conformance tests.  Core modules
 parse manifests, discover installed bundles, maintain user configuration,
 resolve compatibility, reject duplicate registrations and resource conflicts,
 and dispatch to host providers.  The CLI exposes list, inspect, configure,
-enable, check, and run-oriented paths.  Providers currently cover vLLM-native
-policies, Mooncake connectors/services, and rendered production-stack inputs.
-The current implementation and formal evaluation target vLLM-HUST; the
-contract/host boundary remains explicit so future work can test portability
-without presenting portability as a result of this paper.
+enable, check, and run-oriented paths.  Providers currently cover scheduler
+policies, KV connectors and services, memory/data-path controls, lifecycle
+observers, and rendered production-stack inputs.  The current evaluation uses
+one vLLM-compatible prototype host, but all host-specific command lines,
+namespaces, process-role mappings, and evidence decoders reside behind the
+adapter interface.  This separation is a design property; it is not evidence
+of cross-runtime portability.
 
 The implementation already keeps static bundle discovery separate from
 implementation entry points and distinguishes persistent intent from provider
@@ -503,8 +609,8 @@ Consequently we claim measured modeled L2 admission, not a completed end-to-end
 
 To reduce the remaining host-integration risk without promoting a synthetic
 run into a result, the artifact also includes a cross-repository adapter
-preflight.  Given an exact clean vLLM-HUST commit and tree, it binds the host
-producer's source blobs and native EngineCore/worker rank assignments, freezes
+preflight.  Given an exact clean prototype-host commit and tree, it binds the host
+producer's source blobs and native engine/worker rank assignments, freezes
 the checked Git-object bytes against worktree drift, executes that tree's real
 preemption-policy controller, persists its resolution and
 dispatch through the deployment-owned journal, and translates the exact
@@ -547,10 +653,10 @@ separate Go implementation passing the shared corpus.  A coordinator adapter
 verifies signature and binding
 before ingestion, while SQLite retains nonce replay fencing and the coordinator
 retains epoch, obligation, coverage, and commit authority.  This milestone uses
-test keys; a real vLLM-HUST issuer, production trust root/key lifecycle, and
+test keys; a production host issuer, trust root/key lifecycle, and
 formal performance measurements remain future work.
 
-\section{Case Studies}
+\section{Extension Corpus and Case Studies}
 We audited the authoritative workspace and accessible repositories by reading
 packaging metadata, manifests, registration functions, implementation paths,
 and evidence documents.  Names containing ``plugin'' were insufficient.  The
@@ -559,6 +665,12 @@ extensions and \ECPAAdaptationCandidates{} adaptation candidates.  Candidates
 contain relevant hook, adapter, policy, or
 schema code but lack a verified registration surface; ordinary services and
 unrelated optimization repositories are excluded.
+
+The unit of analysis is an extension contract, not a favored optimization.
+The corpus deliberately crosses five semantic families: scheduler decisions,
+KV transfer and materialization, state/cache management, deployment control,
+and lifecycle observability (Figure~\ref{fig:case-coverage}).  BidKV is one scheduler-policy instance.  It does
+not define ECPA's contract schema, evidence vocabulary, or evaluation oracle.
 
 \begin{table}[t]
 \centering\small
@@ -572,17 +684,52 @@ Mooncake & KV connector + external service & worker invocation + provider operat
 Production Stack & render/check provider & controller, router, and autoscaler evidence; no apply \\
 KV Admission & general plugin/private scheduler seam & exact-version registration and decision event \\
 Lifecycle Profiler & multi-process observer & all required roles emit launch-bound events \\
+Prefix state cache & request-state reuse & cache lookup/use event and state-ownership boundary \\
+Tiered KV cache & state placement and movement & data-path invocation and tier ownership \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-The cases exercise distinct failure semantics.  BidKV can be selected without
-the scheduler invoking the policy.  Mooncake can be configured while a worker
-has the wrong connector or wheel variant.  Production Stack can render valid
-inputs while an external rollout is absent, and an HPA can conflict with a
-controller over replicas.  KV Admission can import while its private scheduler
-seam drifts.  A lifecycle profiler can run in the parent while one worker emits
-no events.  For each, the corpus records resources, process topology, external
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[x=2.85cm,y=0.58cm,font=\footnotesize]
+\foreach \x/\name in {0/{Control / parent},1/{Engine / scheduler},2/{Worker / data path},3/{External authority}}
+  \node[align=center,font=\bfseries\footnotesize] at (\x,1.0) {\name};
+\foreach \y/\name in {0/BidKV, -1/Mooncake, -2/{Production stack}, -3/{KV admission}, -4/{Lifecycle profiler}, -5/{Prefix state cache}, -6/{Tiered KV cache}}
+  \node[anchor=east] at (-0.58,\y) {\name};
+
+\draw[fill=ecpablue] (0.68,-0.27) rectangle (1.32,0.27);
+\draw[fill=ecpablue] (1.68,-1.27) rectangle (2.32,-0.73);
+\draw[fill=ecpablue] (2.68,-1.27) rectangle (3.32,-0.73);
+\draw[fill=ecpablue] (-0.32,-2.27) rectangle (0.32,-1.73);
+\draw[fill=ecpablue] (2.68,-2.27) rectangle (3.32,-1.73);
+\draw[fill=ecpablue] (0.68,-3.27) rectangle (1.32,-2.73);
+\draw[fill=ecpablue] (-0.32,-4.27) rectangle (0.32,-3.73);
+\draw[fill=ecpablue] (0.68,-4.27) rectangle (1.32,-3.73);
+\draw[fill=ecpablue] (1.68,-4.27) rectangle (2.32,-3.73);
+\draw[dashed,thick,fill=ecpablue!35] (0.68,-5.27) rectangle (1.32,-4.73);
+\draw[dashed,thick,fill=ecpablue!35] (1.68,-5.27) rectangle (2.32,-4.73);
+\draw[dashed,thick,fill=ecpablue!35] (1.68,-6.27) rectangle (2.32,-5.73);
+
+\node[anchor=west] at (-0.30,-7.05) {\tikz\draw[fill=ecpablue] (0,0) rectangle (.18,.18); selected case};
+\node[anchor=west] at (1.45,-7.05) {\tikz\draw[dashed,thick,fill=ecpablue!35] (0,0) rectangle (.18,.18); corpus pressure only};
+\end{tikzpicture}
+\caption{The evaluation is multi-extension even though it uses one prototype
+host.  Selected cases exercise different process and authority domains;
+dashed rows shape the contract taxonomy but are not promoted to formal runtime
+results.  Empty cells mean the case does not claim that authority, not that the
+corpus was unexamined.}
+\label{fig:case-coverage}
+\end{figure*}
+
+The cases exercise distinct failure semantics.  A KV connector can be
+configured while a worker has the wrong connector or wheel variant.  A
+deployment provider can render valid inputs while an external rollout is
+absent, and two controllers can conflict over replicas.  A lifecycle observer
+can run in the parent while one worker emits no events.  A cache/tiering
+extension can execute code without changing placement or reuse.  A scheduler
+policy, including BidKV, can be selected without ever affecting a scheduling
+decision.  For each, the corpus records resources, process topology, external
 authority, version knowledge, evidence, and rollback boundary.  Unknown fields
 remain unknown; none is promoted to ECPA L3 merely because repository-local
 tests pass.
@@ -598,7 +745,7 @@ The corpus supplies breadth across \ECPACorpusExtensions{} registered extensions
 distinct process/authority scopes.
 Historical corpus metadata may mention another supported runtime, but that is
 not a cross-runtime ECPA experiment.  Our generality evidence is therefore the
-combination of corpus diversity, vLLM-HUST process scopes, the fault model, and
+combination of corpus diversity, prototype-host process scopes, the fault model, and
 the explicit contract/host boundary---not cross-framework validation.
 
 For the L2 study, we freeze a canonical resource-and-alias taxonomy,
@@ -740,7 +887,7 @@ different fact; later rows cannot infer earlier ones.}
 Artifact & Establishes & Current state \\
 \midrule
 Study preregistration & arms, order, falsifier, outcomes & frozen; no result \\
-Producer receipt & reviewed host seam merged into vLLM-HUST & absent \\
+Producer receipt & reviewed evidence seam merged into prototype host & absent \\
 Deployment packet & matched identities and reviewed commands &
 \ECPADeploymentBlockers{} blockers \\
 Runtime registry & exact commands permitted to execute &
@@ -846,7 +993,7 @@ does not transfer runtime or external-service authority.
 
 The standardization path is deliberately evidence-gated: stabilize the
 internal contract; validate diverse plugins; obtain maintained adoption in
-both vLLM-HUST and intellistream; submit an upstream RFC and incorporate public
+independent host and extension repositories; submit an upstream RFC and incorporate public
 feedback; demonstrate interoperability between independently written
 implementations; and only then establish neutral governance and evolution.
 A de-facto-standard claim additionally requires external users, public
@@ -895,7 +1042,7 @@ oracle, not a production control plane, distributed side-effect transaction,
 physical exactly-once guarantee, or completed performance evaluation.
 
 External validity is bounded by this single-runtime study.  Deep validation
-across vLLM-HUST plugins, process roles, versions/topologies, and injected
+across multiple extension classes, process roles, versions/topologies, and injected
 failures can show that the mechanism is not tied to one plugin, but cannot show
 that an independent inference framework adopts the same abstractions.
 Cross-runtime validation is deferred future work.  Accordingly, neither this
