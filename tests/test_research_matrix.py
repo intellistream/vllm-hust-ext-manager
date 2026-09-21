@@ -217,14 +217,23 @@ def test_reciprocal_h3_h4_experiment_swap_is_rejected(tmp_path: Path) -> None:
         validator.validate(tmp_path)
 
 
-def test_runner_source_kind_drift_is_rejected(tmp_path: Path) -> None:
+def test_coordinated_source_kind_collapse_is_rejected(tmp_path: Path) -> None:
     validator = load_validator()
     copy_inputs(tmp_path)
     harness = tmp_path / "experiments/false_effective/harness.py"
     harness.write_text(
         harness.read_text().replace(
-            '"service-ready": "readiness-probe"', '"service-ready": "changed-probe"', 1
+            '"workload-complete": "workload-driver"',
+            '"workload-complete": "readiness-probe"',
+            1,
         )
+    )
+    study = tmp_path / "experiments/false_effective/first-formal-real-study.json"
+    rewrite_json(
+        study,
+        lambda value: value["phase_authorities"][1].__setitem__(
+            "source_kind", "readiness-probe"
+        ),
     )
 
     with pytest.raises(ValueError, match="source kinds differ from the runner"):

@@ -184,7 +184,11 @@ def validate(root: Path = ROOT) -> dict[str, int | str]:
     runner_source_kinds = python_literal(
         root, "experiments/false_effective/harness.py", "FORMAL_LIFECYCLE_FACT_SOURCES"
     )
-    if phase_source_kinds != runner_source_kinds:
+    if (
+        len(runner_source_kinds) != 5
+        or len(set(runner_source_kinds.values())) != 5
+        or phase_source_kinds != runner_source_kinds
+    ):
         raise ValueError("first formal study source kinds differ from the runner")
     source_subcommands = parser_subcommands(
         root, "src/vllm_hust_ext/formal_lifecycle_source.py"
