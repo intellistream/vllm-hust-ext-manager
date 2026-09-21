@@ -23,6 +23,14 @@ the three arms and five lifecycle sources, is digest-bound to the study and
 protocol, and must agree with the runtime registry. The packet cannot authorize
 a process; `verified-adapters.json` remains the sole runtime command authority.
 
+Before registration, the cross-repository host-adapter preflight in
+[`vllm_host_adapter_preflight.py`](vllm_host_adapter_preflight.py) can execute a
+pinned vLLM-HUST tree's native preemption-policy controller through the real
+deployment journal and ECPA translator. Its schema fixes
+`formal_real_result=false`: it is an integration compatibility check, not a
+serving run or a completed formal cell. See
+[`../../docs/design/vllm-host-adapter-preflight.md`](../../docs/design/vllm-host-adapter-preflight.md).
+
 ```bash
 PYTHONPATH=src python3 experiments/false_effective/reproduce.py --output /tmp/false-effective
 # Or ingest the runner-owned manifest (hand-written JSONL is rejected):

@@ -439,6 +439,17 @@ real launch and aggregation experiment across parent/worker topologies.
 Consequently we claim measured modeled L2 admission, not a completed end-to-end
 \system evaluation.
 
+To reduce the remaining host-integration risk without promoting a synthetic
+run into a result, the artifact also includes a cross-repository adapter
+preflight.  Given an exact clean vLLM-HUST commit and tree, it binds the host
+producer's source blobs and native EngineCore/worker rank assignments, freezes
+the checked Git-object bytes against worktree drift, executes that tree's real
+preemption-policy controller, persists its resolution and
+dispatch through the deployment-owned journal, and translates the exact
+dispatch bytes into a Plan-bound invocation statement.  This establishes wire
+and adapter-path compatibility only: it starts no serving engine, proves no
+worker coverage, and is schema-forbidden from claiming a formal-real result.
+
 The coordinator persists an immutable canonical plan before launching work.
 Each plan has a monotonically increasing generation, predecessor, launch ID,
 process epoch, target set, obligations, and deadline.  Generation
