@@ -39,11 +39,11 @@ Alignment:
 | Governance item | Paper location |
 |---|---|
 | Research charter | Sections 1--3 |
-| Issue #2 / M0 taxonomy and failure model | Sections 2, 3, 6 |
-| Issue #4 / M1 capability and conflict planner | Sections 3.2--3.3, H2 |
-| Issue #3 / M2 lifecycle, runtime evidence, rollback | Sections 3.4--3.7, H1/H3 |
-| Issue #5 / program, two-week gate, stop-loss | Sections 1, 6, 8 |
-| M3 cost gate | H4 and Section 6 |
+| Issue #2 / M0 taxonomy and failure model | Sections 2, 3, 7 |
+| Issue #4 / M1 capability and conflict planner | Sections 4.2--4.4, H2 |
+| Issue #3 / M2 lifecycle, runtime evidence, rollback | Sections 4.5--4.8, H1/H3 |
+| Issue #5 / program, two-week gate, stop-loss | Sections 1, 7, 9 |
+| M3 cost gate | H4 and Section 7 |
 
 `artifacts/results.schema.json` is the machine contract. The example is planned,
 not a measured result. Run `make validate-results` before admitting artifacts.
