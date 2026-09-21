@@ -35,6 +35,9 @@ INPUTS = (
     "experiments/false_effective/scenarios.json",
     "experiments/false_effective/protocol.json",
     "experiments/false_effective/verified-adapters.json",
+    "experiments/transaction_model/artifacts/result-summary.json",
+    "experiments/transaction_model/result-summary.schema.json",
+    "experiments/transaction_model/explore.py",
     "spec/0.1/contract-taxonomy.json",
     "spec/0.1/contract-taxonomy.schema.json",
     "src/vllm_hust_ext/contract_compiler.py",
@@ -90,6 +93,10 @@ def test_checked_summary_matches_all_authoritative_inputs() -> None:
         "first_study_starts": 9,
         "deployment_blockers": 5,
         "registered_deployment_arms": 0,
+        "transaction_model_states": 39,
+        "transaction_model_edges": 102,
+        "transaction_model_rejections": 522,
+        "transaction_model_invariants": 7,
     }
     assert (
         generator.render(summary)
@@ -148,6 +155,41 @@ def test_generator_rejects_premature_deployment_registration(
     )
 
     with pytest.raises(ValueError, match="not fail closed"):
+        generator.collect_summary(tmp_path)
+
+
+def test_generator_rejects_transaction_model_relabelled_as_formal_real(
+    tmp_path: Path,
+) -> None:
+    generator = load_generator()
+    copy_inputs(tmp_path)
+    summary = tmp_path / "experiments/transaction_model/artifacts/result-summary.json"
+    rewrite_json(
+        summary,
+        lambda value: value.__setitem__("formal_real_result", True),
+    )
+
+    with pytest.raises(ValidationError):
+        generator.collect_summary(tmp_path)
+
+
+def test_generator_recomputes_transaction_model_instead_of_trusting_artifact(
+    tmp_path: Path,
+) -> None:
+    generator = load_generator()
+    copy_inputs(tmp_path)
+    summary = tmp_path / "experiments/transaction_model/artifacts/result-summary.json"
+
+    def forge(value) -> None:
+        value["reachable_states"] += 1
+        value["valid_edges"] += 1
+        value["rejected_state_action_pairs"] -= 1
+        value["reachable_states_sha256"] = "1" * 64
+        value["valid_edges_sha256"] = "2" * 64
+
+    rewrite_json(summary, forge)
+
+    with pytest.raises(ValueError, match="modeled evidence"):
         generator.collect_summary(tmp_path)
 
 

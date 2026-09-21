@@ -292,6 +292,18 @@ does not own.  These boundaries determine the observer-independence and
 failure-injection experiments rather than being treated as implementation
 details.
 
+We also encode the declared exposure transaction as a finite abstract model.
+Exhaustive fixed-point exploration reaches \ECPATransactionModelStates{} states
+and \ECPATransactionModelEdges{} valid edges, while rejecting
+\ECPATransactionModelRejections{} invalid state-action pairs.  None of the
+reachable states violates its \ECPATransactionModelInvariants{} checked
+invariants, including no candidate admission before a proof-bound open receipt,
+no admission in failed-safe or safety-unknown states, and predecessor-only
+strong rollback.  This is evidence about the stated abstraction under its
+recorded assumptions, not a proof that the implementation refines the model or
+that a real vLLM-HUST deployment recovers correctly.  H3 therefore remains a
+planned formal-real claim.
+
 \section{Design}
 \subsection{Typed Static Manifests}
 Discovery reads distribution metadata and a static manifest without importing
@@ -625,6 +637,8 @@ Static planning & \ECPAPlannerCases{} labeled cases: \ECPAPlannerAdmits{} admit,
 Source binding & \ECPASourceRepositories{} repositories and
 \ECPASourceObjects{} Git objects & observed \\
 Namespace safety & installed entry: expected 1; changed lookup: 0 & negative \\
+Transaction model & \ECPATransactionModelStates{} states,
+\ECPATransactionModelEdges{} valid edges; no abstract counterexample & modeled \\
 Formal-real & \ECPAFormalCompleted{} complete, \ECPAFormalPlanned{} planned;
 \ECPAVerifiedAdapters{} registered adapters & planned \\
 Rollback & reference faults only; real injection pending & planned \\

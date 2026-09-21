@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,24 @@ def require_count(value: Any, label: str) -> int:
 
 def digest(root: Path, relative: str) -> str:
     return hashlib.sha256((root / relative).read_bytes()).hexdigest()
+
+
+def recompute_transaction_model(root: Path) -> dict[str, Any]:
+    path = root / "experiments/transaction_model/explore.py"
+    module_name = "ecpa_paper_transaction_model"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ValueError("cannot load bounded transaction model")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        result = module.explore()
+    finally:
+        sys.modules.pop(module_name, None)
+    if not isinstance(result, dict):
+        raise ValueError("bounded transaction model did not return an object")
+    return result
 
 
 def validate_schema(root: Path, artifact: dict[str, Any], relative: str) -> None:
@@ -85,6 +105,9 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     deployment = load_json(
         root, "experiments/false_effective/first-formal-real-deployment.json"
     )
+    transaction_model = load_json(
+        root, "experiments/transaction_model/artifacts/result-summary.json"
+    )
 
     for artifact, schema in (
         (plugins, "docs/corpus/plugins.schema.json"),
@@ -104,6 +127,10 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         (
             deployment,
             "experiments/false_effective/first-formal-real-deployment.schema.json",
+        ),
+        (
+            transaction_model,
+            "experiments/transaction_model/result-summary.schema.json",
         ),
     ):
         validate_schema(root, artifact, schema)
@@ -138,6 +165,11 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         deployment,
         "ecpa-formal-real-deployment-registration/v1",
         "first formal deployment registration",
+    )
+    require_schema(
+        transaction_model,
+        "ecpa-bounded-transaction-model/v1",
+        "bounded transaction model",
     )
 
     plugin_rows = plugins.get("plugins")
@@ -369,6 +401,29 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     )
     if common_deployment_invalid or unregistered_invalid or registered_invalid:
         raise ValueError("first formal deployment registration is not fail closed")
+    transaction_states = require_count(
+        transaction_model.get("reachable_states"), "transaction-model states"
+    )
+    transaction_edges = require_count(
+        transaction_model.get("valid_edges"), "transaction-model edges"
+    )
+    transaction_rejections = require_count(
+        transaction_model.get("rejected_state_action_pairs"),
+        "transaction-model rejected pairs",
+    )
+    if (
+        transaction_model != recompute_transaction_model(root)
+        or transaction_model.get("classification") != "exhaustive-finite-abstract-model"
+        or transaction_model.get("implementation_sha256")
+        != digest(root, "experiments/transaction_model/explore.py")
+        or transaction_model.get("formal_real_result") is not False
+        or transaction_model.get("fixed_point_reached") is not True
+        or transaction_model.get("counterexamples") != []
+        or transaction_states == 0
+        or transaction_edges == 0
+        or transaction_rejections == 0
+    ):
+        raise ValueError("bounded transaction model is not valid modeled evidence")
     reference_starts = require_count(reference.get("starts"), "reference starts")
     reference_scenarios = reference.get("scenarios")
     if (
@@ -423,6 +478,10 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         "registered_deployment_arms": sum(
             row["registration"] is not None for row in deployment_arms
         ),
+        "transaction_model_states": transaction_states,
+        "transaction_model_edges": transaction_edges,
+        "transaction_model_rejections": transaction_rejections,
+        "transaction_model_invariants": len(transaction_model["invariants"]),
     }
 
 
@@ -449,6 +508,10 @@ def render(summary: dict[str, int | str]) -> str:
         ("ECPAFirstStudyStarts", "first_study_starts"),
         ("ECPADeploymentBlockers", "deployment_blockers"),
         ("ECPARegisteredDeploymentArms", "registered_deployment_arms"),
+        ("ECPATransactionModelStates", "transaction_model_states"),
+        ("ECPATransactionModelEdges", "transaction_model_edges"),
+        ("ECPATransactionModelRejections", "transaction_model_rejections"),
+        ("ECPATransactionModelInvariants", "transaction_model_invariants"),
     )
     lines = [
         "% Generated by paper/scripts/generate_evidence_summary.py; do not edit.",

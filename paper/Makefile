@@ -26,6 +26,9 @@ EVIDENCE_INPUTS := \
 	../experiments/false_effective/scenarios.json \
 	../experiments/false_effective/protocol.json \
 	../experiments/false_effective/verified-adapters.json \
+	../experiments/transaction_model/explore.py \
+	../experiments/transaction_model/artifacts/result-summary.json \
+	../experiments/transaction_model/result-summary.schema.json \
 	../spec/0.1/contract-taxonomy.json \
 	../spec/0.1/contract-taxonomy.schema.json \
 	../src/vllm_hust_ext/contract_compiler.py \
