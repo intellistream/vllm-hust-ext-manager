@@ -26,7 +26,8 @@ EVIDENCE_INPUTS := \
 	../experiments/false_effective/verified-adapters.json \
 	../spec/0.1/contract-taxonomy.json \
 	../spec/0.1/contract-taxonomy.schema.json \
-	../src/vllm_hust_ext/contract_compiler.py
+	../src/vllm_hust_ext/contract_compiler.py \
+	../src/vllm_hust_ext/formal_lifecycle_source.py
 
 .PHONY: all clean evidence-summary check-evidence-summary check-research-matrix validate-results
 all: main.pdf

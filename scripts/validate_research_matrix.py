@@ -30,6 +30,12 @@ HYPOTHESIS_CONTRIBUTIONS = {
     "H3": "transactional-runtime",
     "H4": "bounded-cost",
 }
+HYPOTHESIS_EXPERIMENT_KINDS = {
+    "H1": {"formal-comparison"},
+    "H2": {"modeled-static"},
+    "H3": {"formal-recovery"},
+    "H4": {"formal-performance"},
+}
 
 
 def load(root: Path, relative: str) -> dict[str, Any]:
@@ -63,6 +69,22 @@ def python_literal(root: Path, relative: str, name: str) -> Any:
         ):
             return ast.literal_eval(node.value)
     raise ValueError(f"{relative} does not define literal {name}")
+
+
+def parser_subcommands(root: Path, relative: str) -> set[str]:
+    module = ast.parse((root / relative).read_text(), filename=relative)
+    commands = set()
+    for node in ast.walk(module):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_parser"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            commands.add(node.args[0].value)
+    return commands
 
 
 def validate(root: Path = ROOT) -> dict[str, int | str]:
@@ -111,6 +133,11 @@ def validate(root: Path = ROOT) -> dict[str, int | str]:
                 and not experiment["kind"].startswith("formal-")
             ):
                 raise ValueError("claim evidence class differs from experiment kind")
+            if (
+                experiment["kind"]
+                not in HYPOTHESIS_EXPERIMENT_KINDS[claim["paper_hypothesis"]]
+            ):
+                raise ValueError("paper hypothesis differs from experiment kind")
     for experiment_id, experiment in experiments.items():
         for claim_id in experiment["supports"]:
             claim = claims.get(claim_id)
@@ -147,10 +174,23 @@ def validate(root: Path = ROOT) -> dict[str, int | str]:
     phase_commands = {
         row["phase"]: row["source_subcommand"] for row in study["phase_authorities"]
     }
+    phase_source_kinds = {
+        row["phase"]: row["source_kind"] for row in study["phase_authorities"]
+    }
     if len(phase_commands) != len(study["phase_authorities"]):
         raise ValueError("first formal study phase authorities must be unique")
     if phase_commands != PHASE_COMMANDS:
         raise ValueError("first formal study does not bind the five lifecycle sources")
+    runner_source_kinds = python_literal(
+        root, "experiments/false_effective/harness.py", "FORMAL_LIFECYCLE_FACT_SOURCES"
+    )
+    if phase_source_kinds != runner_source_kinds:
+        raise ValueError("first formal study source kinds differ from the runner")
+    source_subcommands = parser_subcommands(
+        root, "src/vllm_hust_ext/formal_lifecycle_source.py"
+    )
+    if set(phase_commands.values()) != source_subcommands:
+        raise ValueError("first formal study subcommands differ from the source CLI")
     runner_observables = python_literal(
         root, "experiments/false_effective/harness.py", "FORMAL_HOST_OBSERVABLES"
     )

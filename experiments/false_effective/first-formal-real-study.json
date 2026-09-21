@@ -39,11 +39,11 @@
     "warm_state": null
   },
   "phase_authorities": [
-    {"phase": "service-ready", "source_subcommand": "readiness-http", "authority": "lifecycle-source", "proves": "The exact loopback service endpoint returned the registered status within the bounded probe.", "does_not_prove": "Plugin invocation, process coverage, or policy effect."},
-    {"phase": "workload-complete", "source_subcommand": "workload-http", "authority": "lifecycle-source", "proves": "The registered canonical request produced a non-empty OpenAI choices response.", "does_not_prove": "Which plugin or policy influenced the response."},
-    {"phase": "fault-injected", "source_subcommand": "partial-coverage-quarantine", "authority": "lifecycle-source", "proves": "Exactly one bound worker evidence journal was transactionally quarantined while a peer remained.", "does_not_prove": "Worker death, plugin deactivation, or Plan mutation."},
-    {"phase": "observer-captured", "source_subcommand": "journal-capture", "authority": "vllm-hust-host", "proves": "The frozen host journal contains Plan-, launch-, controller-, process-, and invocation-bound runtime events.", "does_not_prove": "Lifecycle phases owned by readiness, workload, fault, or shutdown sources."},
-    {"phase": "service-shutdown", "source_subcommand": "shutdown-process", "authority": "process-monitor", "proves": "The exact PID, start ticks, and argv identity exited.", "does_not_prove": "Successful rollback or preservation of an external service."}
+    {"phase": "service-ready", "source_kind": "readiness-probe", "source_subcommand": "readiness-http", "authority": "lifecycle-source", "proves": "The exact loopback service endpoint returned the registered status within the bounded probe.", "does_not_prove": "Plugin invocation, process coverage, or policy effect."},
+    {"phase": "workload-complete", "source_kind": "workload-driver", "source_subcommand": "workload-http", "authority": "lifecycle-source", "proves": "The registered canonical request produced a non-empty OpenAI choices response.", "does_not_prove": "Which plugin or policy influenced the response."},
+    {"phase": "fault-injected", "source_kind": "fault-actuator", "source_subcommand": "partial-coverage-quarantine", "authority": "lifecycle-source", "proves": "Exactly one bound worker evidence journal was transactionally quarantined while a peer remained.", "does_not_prove": "Worker death, plugin deactivation, or Plan mutation."},
+    {"phase": "observer-captured", "source_kind": "host-observer", "source_subcommand": "journal-capture", "authority": "vllm-hust-host", "proves": "The frozen host journal contains Plan-, launch-, controller-, process-, and invocation-bound runtime events.", "does_not_prove": "Lifecycle phases owned by readiness, workload, fault, or shutdown sources."},
+    {"phase": "service-shutdown", "source_kind": "process-monitor", "source_subcommand": "shutdown-process", "authority": "process-monitor", "proves": "The exact PID, start ticks, and argv identity exited.", "does_not_prove": "Successful rollback or preservation of an external service."}
   ],
   "required_host_observables": ["service-ready", "workload-complete", "fault-injected", "observer-captured", "service-shutdown", "activation-path", "effective-claim", "plugin-invoked", "coverage"],
   "truth": {

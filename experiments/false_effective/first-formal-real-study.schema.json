@@ -53,9 +53,10 @@
       "minItems": 5,
       "items": {
         "type": "object",
-        "required": ["phase", "source_subcommand", "authority", "proves", "does_not_prove"],
+        "required": ["phase", "source_kind", "source_subcommand", "authority", "proves", "does_not_prove"],
         "properties": {
           "phase": {"type": "string"},
+          "source_kind": {"type": "string"},
           "source_subcommand": {"type": "string"},
           "authority": {"enum": ["lifecycle-source", "vllm-hust-host", "process-monitor"]},
           "proves": {"type": "string", "minLength": 1},

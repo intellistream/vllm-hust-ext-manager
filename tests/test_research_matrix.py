@@ -21,6 +21,7 @@ INPUTS = (
     "experiments/false_effective/harness.py",
     "experiments/contract_planner/results/metrics.json",
     "paper/main.tex",
+    "src/vllm_hust_ext/formal_lifecycle_source.py",
 )
 
 
@@ -191,4 +192,54 @@ def test_open_producer_rejects_fake_registry_entry(tmp_path: Path) -> None:
     rewrite_json(registry, lambda value: value["adapters"].append({"id": "fake"}))
 
     with pytest.raises(ValueError, match="unadmitted producer"):
+        validator.validate(tmp_path)
+
+
+def test_reciprocal_h3_h4_experiment_swap_is_rejected(tmp_path: Path) -> None:
+    validator = load_validator()
+    copy_inputs(tmp_path)
+    matrix = tmp_path / "docs/research/claims-to-experiment-matrix.json"
+
+    def swap(value):
+        h3 = value["claims"][2]
+        h4 = value["claims"][3]
+        recovery = value["experiments"][3]
+        performance = value["experiments"][4]
+        h3["experiments"], h4["experiments"] = h4["experiments"], h3["experiments"]
+        recovery["supports"], performance["supports"] = (
+            performance["supports"],
+            recovery["supports"],
+        )
+
+    rewrite_json(matrix, swap)
+
+    with pytest.raises(ValueError, match="hypothesis differs from experiment kind"):
+        validator.validate(tmp_path)
+
+
+def test_runner_source_kind_drift_is_rejected(tmp_path: Path) -> None:
+    validator = load_validator()
+    copy_inputs(tmp_path)
+    harness = tmp_path / "experiments/false_effective/harness.py"
+    harness.write_text(
+        harness.read_text().replace(
+            '"service-ready": "readiness-probe"', '"service-ready": "changed-probe"', 1
+        )
+    )
+
+    with pytest.raises(ValueError, match="source kinds differ from the runner"):
+        validator.validate(tmp_path)
+
+
+def test_source_cli_subcommand_drift_is_rejected(tmp_path: Path) -> None:
+    validator = load_validator()
+    copy_inputs(tmp_path)
+    source = tmp_path / "src/vllm_hust_ext/formal_lifecycle_source.py"
+    source.write_text(
+        source.read_text().replace(
+            'add_parser("readiness-http")', 'add_parser("changed-http")', 1
+        )
+    )
+
+    with pytest.raises(ValueError, match="subcommands differ from the source CLI"):
         validator.validate(tmp_path)
