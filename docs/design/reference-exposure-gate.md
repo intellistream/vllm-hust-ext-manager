@@ -105,3 +105,10 @@ reference state-machine behavior only. It does not prove a real vLLM data path,
 distributed leases, throughput, latency, or production rollback.
 `BEHAVIORAL` rollback in the matrix is also synthetic: it exercises the typed
 oracle boundary but is not an independently measured equivalence result.
+
+The complementary finite abstraction under
+`experiments/transaction_model/` explores every reachable abstract state and
+state-action pair to a fixed point. It checks admission, intent/receipt,
+predecessor preservation, failed-safe, safety-unknown, and rollback invariants.
+This is modeled design evidence only: it does not replace the real host adapter,
+authority-owned observations, fault injection, or matched H3 recovery cells.
