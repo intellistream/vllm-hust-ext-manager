@@ -68,3 +68,6 @@ Alignment:
 not a measured result. Run `make validate-results` before admitting artifacts.
 The ECPA interoperability contract is versioned under `../spec/`; the Manager
 is a reference implementation rather than the standard itself.
+
+Open scientific and evaluation decisions that must not be silently promoted to
+claims are tracked in [`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md).
