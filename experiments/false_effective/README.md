@@ -37,6 +37,10 @@ runtime, accelerator plugin, CANN, hardware, container image, and model snapshot
 before commands can be reviewed. Its checked 112 candidate is intentionally
 blocked and non-formal; see
 [`../../docs/design/formal-real-deployment-stack-preflight.md`](../../docs/design/formal-real-deployment-stack-preflight.md).
+The adjacent checked smoke records one successful real NPU request but fixes
+its classification to pre-admission: source overrides, an older binary image,
+disabled custom ops, one device, and SUT-owned diagnostics cannot become a
+formal cell.
 
 ```bash
 PYTHONPATH=src python3 experiments/false_effective/reproduce.py --output /tmp/false-effective

@@ -73,6 +73,9 @@ def test_fully_matching_stack_is_only_ready_for_registration_review() -> None:
     observation["accelerator_plugin"]["commit"] = requirements["accelerator_plugin"][
         "commit"
     ]
+    observation["accelerator_plugin"]["tree"] = requirements["accelerator_plugin"][
+        "tree"
+    ]
     requirements["accelerator_plugin"]["verified_runtime_commit"] = requirements[
         "runtime"
     ]["upstream_commit"]
@@ -82,7 +85,12 @@ def test_fully_matching_stack_is_only_ready_for_registration_review() -> None:
     requirements["execution"]["image_digest"] = "sha256:" + "1" * 64
     observation["execution"]["container_server_accessible"] = True
     observation["execution"]["image_digest"] = requirements["execution"]["image_digest"]
+    observation["execution"]["image_source_commits"] = requirements["execution"][
+        "image_source_commits"
+    ]
+    observation["execution"]["runtime_mode"] = requirements["execution"]["runtime_mode"]
     observation["model"]["files"] = list(requirements["model"]["required_files"])
+    observation["model"]["file_sha256"] = dict(requirements["model"]["file_sha256"])
 
     result = preflight.audit_stack(requirements, observation)
 
@@ -107,3 +115,19 @@ def test_identity_and_topology_drift_fail_closed() -> None:
     assert "accelerator-plugin-identity-mismatch" in blockers
     assert "hardware-topology-mismatch" in blockers
     assert "model-identity-mismatch" in blockers
+
+
+def test_source_binary_mode_and_model_content_drift_fail_closed() -> None:
+    preflight = load_preflight()
+    requirements, observation = inputs()
+
+    blockers = preflight.audit_stack(requirements, observation)["blockers"]
+
+    assert "accelerator-plugin-runtime-unverified" in blockers
+    assert "container-source-binary-mismatch" in blockers
+    assert "runtime-mode-mismatch" in blockers
+    assert "model-content-mismatch" not in blockers
+
+    observation["model"]["file_sha256"]["config.json"] = "0" * 64
+    blockers = preflight.audit_stack(requirements, observation)["blockers"]
+    assert "model-content-mismatch" in blockers
