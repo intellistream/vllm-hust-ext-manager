@@ -1,4 +1,5 @@
 LATEXMK ?= latexmk
+TECTONIC ?= tectonic
 EVIDENCE_SUMMARY := generated/evidence-summary.tex
 EVIDENCE_INPUTS := \
 	../docs/corpus/plugins.json \
@@ -34,7 +35,7 @@ EVIDENCE_INPUTS := \
 	../src/vllm_hust_ext/contract_compiler.py \
 	../src/vllm_hust_ext/formal_lifecycle_source.py
 
-.PHONY: all clean evidence-summary check-evidence-summary check-research-matrix validate-results
+.PHONY: all clean evidence-summary check-evidence-summary check-research-matrix tectonic validate-results
 all: main.pdf
 
 $(EVIDENCE_SUMMARY): scripts/generate_evidence_summary.py $(EVIDENCE_INPUTS)
@@ -50,6 +51,9 @@ check-research-matrix:
 
 main.pdf: main.tex references.bib $(EVIDENCE_SUMMARY) check-research-matrix
 	$(LATEXMK) -pdf -interaction=nonstopmode -halt-on-error main.tex
+
+tectonic: main.tex references.bib $(EVIDENCE_SUMMARY) check-research-matrix
+	$(TECTONIC) --keep-logs main.tex
 
 validate-results: check-evidence-summary check-research-matrix
 	python3 scripts/validate_results.py artifacts/results.example.json
