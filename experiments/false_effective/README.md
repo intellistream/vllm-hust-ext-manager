@@ -31,6 +31,13 @@ deployment journal and ECPA translator. Its schema fixes
 serving run or a completed formal cell. See
 [`../../docs/design/vllm-host-adapter-preflight.md`](../../docs/design/vllm-host-adapter-preflight.md).
 
+The separate deployment-stack preflight in
+[`deployment_stack_preflight.py`](deployment_stack_preflight.py) binds the
+runtime, accelerator plugin, CANN, hardware, container image, and model snapshot
+before commands can be reviewed. Its checked 112 candidate is intentionally
+blocked and non-formal; see
+[`../../docs/design/formal-real-deployment-stack-preflight.md`](../../docs/design/formal-real-deployment-stack-preflight.md).
+
 ```bash
 PYTHONPATH=src python3 experiments/false_effective/reproduce.py --output /tmp/false-effective
 # Or ingest the runner-owned manifest (hand-written JSONL is rejected):

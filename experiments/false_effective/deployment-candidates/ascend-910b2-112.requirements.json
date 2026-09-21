@@ -1,0 +1,36 @@
+{
+  "schema": "ecpa-formal-real-stack-requirements/v1",
+  "candidate_id": "partial-worker-coverage-ascend-910b2-112-v1",
+  "runtime": {
+    "repository": "vLLM-HUST/vllm-hust",
+    "commit": "c9b6bbff27fc8241ba37abf037560cf2875317a2",
+    "tree": "f00d6c0ffef2afd94548a3cfaecf61f65593d0a7",
+    "upstream_commit": "01f1f58f10c616850a5f5ade129a7b58d62075fb"
+  },
+  "accelerator_plugin": {
+    "repository": "vllm-project/vllm-ascend",
+    "commit": "cb79183b7c04467c7358fe568ee88e85603ee965",
+    "verified_runtime_commit": "84030bbe3d74d99bad477a3d2e37a973ccd8865c",
+    "required_cann_version": "9.1.0"
+  },
+  "hardware": {
+    "device_family": "Ascend 910B2",
+    "minimum_devices": 2
+  },
+  "model": {
+    "repository": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "required_files": ["config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json"],
+    "weight_patterns": ["*.safetensors", "pytorch_model*.bin"]
+  },
+  "execution": {
+    "container_required": true,
+    "image_digest": null
+  },
+  "sources": {
+    "runtime_pr": "https://github.com/vLLM-HUST/vllm-hust/pull/27",
+    "accelerator_plugin_main": "https://github.com/vllm-project/vllm-ascend/commit/cb79183b7c04467c7358fe568ee88e85603ee965",
+    "accelerator_plugin_verified_runtime_file": ".github/vllm-main-verified.commit",
+    "accelerator_plugin_version_file": "mkdocs.yml"
+  }
+}
