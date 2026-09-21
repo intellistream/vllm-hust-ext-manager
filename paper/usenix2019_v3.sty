@@ -20,19 +20,28 @@
 
 \if@twocolumn\else\input twocolumn.sty\fi
 \usepackage{mathptmx}  % times roman, including math (where possible)
+\usepackage{iftex}
 
 % hopefully embeds all fonts in pdf
 \usepackage[T1]{fontenc}
-\usepackage[utf8]{inputenc}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+\fi
 \usepackage{pslatex}
 
 % appearance
-\usepackage[kerning,spacing]{microtype} % more compact and arguably nicer
+\ifPDFTeX
+  \usepackage[kerning,spacing]{microtype} % more compact and arguably nicer
+\else
+  \usepackage{microtype} % XeTeX supports protrusion, not pdfTeX spacing/kerning
+\fi
 \usepackage{flushend} % make cols in last page equal in size
 
 % refs and bib
 \usepackage{cite}               % order multiple entries in \cite{...}
-\usepackage{breakurl}           % break too-long urls in refs
+\ifPDFTeX
+  \usepackage{breakurl}         % break too-long urls in refs
+\fi
 \usepackage{url}                % allow \url in bibtex for clickable links
 \usepackage{xcolor}             % color definitions, to be use for...
 \usepackage[]{hyperref}         % ...clickable refs within pdf...

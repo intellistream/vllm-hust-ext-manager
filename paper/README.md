@@ -16,11 +16,16 @@ cd paper
 make
 make validate-results
 make check-evidence-summary
+# Reproducible XeTeX-based build without a system TeX Live installation:
+make tectonic
 ```
 
-The expected tool is `latexmk` with `pdflatex` and BibTeX. `main.pdf` is a build
-artifact and is ignored by Git. The checked-in source uses only common TeX Live
-packages.
+The default build uses `latexmk` with `pdflatex` and BibTeX. The alternative
+target uses Tectonic's XeTeX engine and integrated BibTeX pass. The vendored
+USENIX style selects only engine-supported `microtype`, `inputenc`, and
+`breakurl` behavior, so both targets consume the same `main.tex` without a
+generated source patch. Override either executable with `LATEXMK=/path` or
+`TECTONIC=/path`. `main.pdf` and intermediate files are ignored by Git.
 
 Evidence rules:
 
