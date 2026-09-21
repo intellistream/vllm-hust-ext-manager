@@ -27,9 +27,12 @@
           "container-server-unavailable",
           "container-image-unfrozen",
           "container-image-mismatch",
+          "container-source-binary-mismatch",
+          "runtime-mode-mismatch",
           "model-identity-mismatch",
           "model-files-incomplete",
-          "model-weights-missing"
+          "model-weights-missing",
+          "model-content-mismatch"
         ]
       }
     },

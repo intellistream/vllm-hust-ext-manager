@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema", "classification", "formal_real_result", "registration_authority", "candidate_id", "observed_at", "identities", "execution", "limitations"],
+  "properties": {
+    "schema": {"const": "ecpa-pre-admission-real-smoke/v1"},
+    "classification": {"const": "pre-admission-real-smoke"},
+    "formal_real_result": {"const": false},
+    "registration_authority": {"const": false},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "identities": {
+      "type": "object",
+      "required": ["runtime_commit", "runtime_tree", "accelerator_plugin_commit", "accelerator_plugin_tree", "container_image_id", "cann_version", "hardware", "model_repository", "model_revision"],
+      "properties": {
+        "runtime_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "runtime_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "accelerator_plugin_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "accelerator_plugin_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "container_image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "cann_version": {"const": "9.1.0"},
+        "hardware": {"const": "Ascend 910B2"},
+        "model_repository": {"const": "Qwen/Qwen2.5-0.5B-Instruct"},
+        "model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["status", "exit_code", "device_count", "source_overrides", "batch_invariant", "custom_ops", "completed_phases", "prompt_sha256", "output_sha256", "diagnostic_log_sha256"],
+      "properties": {
+        "status": {"const": "succeeded"},
+        "exit_code": {"const": 0},
+        "device_count": {"const": 1},
+        "source_overrides": {"const": true},
+        "batch_invariant": {"const": true},
+        "custom_ops": {"const": false},
+        "completed_phases": {
+          "type": "array",
+          "const": ["platform-activation", "model-load", "kv-cache-initialization", "kernel-warmup", "request-execution", "shutdown"]
+        },
+        "prompt_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "output_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "diagnostic_log_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "limitations": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "additionalProperties": false
+}

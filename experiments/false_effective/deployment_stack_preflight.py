@@ -49,7 +49,9 @@ def audit_stack(
 
     if observed_plugin["commit"] is None:
         blockers.append("accelerator-plugin-checkout-unavailable")
-    elif observed_plugin["commit"] != plugin["commit"]:
+    elif observed_plugin["commit"] != plugin["commit"] or observed_plugin.get(
+        "tree"
+    ) != plugin.get("tree"):
         blockers.append("accelerator-plugin-identity-mismatch")
 
     if plugin["verified_runtime_commit"] != runtime["upstream_commit"]:
@@ -69,6 +71,12 @@ def audit_stack(
             blockers.append("container-image-unfrozen")
         elif observed_execution["image_digest"] != execution["image_digest"]:
             blockers.append("container-image-mismatch")
+        if observed_execution.get("image_source_commits") != execution.get(
+            "image_source_commits"
+        ):
+            blockers.append("container-source-binary-mismatch")
+        if observed_execution.get("runtime_mode") != execution.get("runtime_mode"):
+            blockers.append("runtime-mode-mismatch")
 
     if (
         observed_model["repository"] != model["repository"]
@@ -84,6 +92,13 @@ def audit_stack(
         for path in available_files
     ):
         blockers.append("model-weights-missing")
+    required_digests = model.get("file_sha256", {})
+    observed_digests = observed_model.get("file_sha256", {})
+    if any(
+        observed_digests.get(path) != digest
+        for path, digest in required_digests.items()
+    ):
+        blockers.append("model-content-mismatch")
 
     return {
         "schema": SCHEMA,

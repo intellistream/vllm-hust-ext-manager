@@ -16,22 +16,34 @@ immutable candidate with a point-in-time observation. It fails closed on:
 - a CANN version outside the candidate's exact requirement;
 - an incompatible accelerator family or insufficient devices;
 - an inaccessible container server, unpinned image, or different image;
+- container binaries built from different source commits than the mounted
+  runtime/plugin trees, or a different effective runtime mode;
 - an incomplete or differently versioned model snapshot.
 
-The checked 112 candidate demonstrates why the current host cannot yet produce
-the first formal-real cell. Eight Ascend 910B2 devices are visible, but the
-candidate vLLM-Ascend `main` requires CANN 9.1.0 while the host exposes 9.0.0;
-the plugin's checked upstream vLLM commit differs from the vLLM-HUST sync
-commit; Docker's client is present but its server is inaccessible; no container
-digest is frozen; and the Qwen3-0.6B cache contains only `config.json`, not the
-tokenizer and weights. Neither runtime checkout is installed in the execution
-environment. These are deployment blockers, not ECPA correctness failures.
+The refreshed 112 candidate binds exact read-only source trees, CANN 9.1, an
+accessible Docker server, eight visible Ascend 910B2 devices, a content-addressed
+local image, and every required Qwen2.5-0.5B file and digest. A one-device
+eager/native smoke completed model load, KV-cache initialization, warmup, one
+request, and shutdown. The checked smoke is separately typed as non-formal and
+non-authoritative. It mounted newer source trees over an image built from older
+runtime/plugin commits and set `VLLM_BATCH_INVARIANT=1`, disabling custom ops.
+The plugin's checked upstream vLLM commit also still differs from the
+vLLM-HUST sync commit. The preflight therefore remains blocked on binary/source
+identity, runtime mode, and verified runtime compatibility. These are
+deployment blockers, not ECPA correctness failures.
 
 A zero-blocker result has status `ready-for-registration-review`. It still has
 `formal_real_result=false` and `registration_authority=false`: it cannot enter
 `verified-adapters.json`, fill deployment-registration fields, or support a
 paper result. The exact commands and independent sources still require review,
 and the resulting stack must complete a real service launch and workload.
+
+`deployment-candidates/ascend-910b2-112.smoke.json` records the successful
+pre-admission smoke without promoting its SUT-owned diagnostic stream to
+observer truth. Its schema fixes `formal_real_result=false`,
+`registration_authority=false`, the source-override mode, batch-invariant mode,
+and disabled custom operators. It cannot populate the adapter registry or a
+paper aggregate.
 
 Recompute a candidate:
 
