@@ -15,6 +15,12 @@ typed policy bundle, external KV connector, infrastructure provider, private
 scheduler patch, and multi-process observer. The remaining entries are artifact
 generality evidence; they are not all claimed to conform to ECPA 0.1.
 
+The dated `validation-matrix-2026-09-21.json` separately records
+repository-owned tests and isolated package discovery. Each observation binds
+the exact source revision, interpreter/dependency context, evidence level, and
+limitations. Passing source tests or entry-point discovery never imply
+accelerator execution or runtime effectiveness.
+
 The [L2 contract-planner corpus](../../experiments/contract_planner/README.md)
 maps these 11 registered entries to minimal modeled contract abstractions and
 freezes a canonical resource/alias taxonomy. Its separately stored labels are

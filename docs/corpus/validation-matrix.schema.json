@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at", "claim_boundary", "repositories", "package_validations"],
+  "properties": {
+    "schema_version": {"const": "ecpa-plugin-validation-matrix/v1"},
+    "observed_at": {"type": "string", "format": "date"},
+    "claim_boundary": {"type": "string", "minLength": 1},
+    "repositories": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/repository"}},
+    "package_validations": {"type": "array", "items": {"$ref": "#/$defs/package_validation"}}
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "skipped"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "subtests_passed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "corpus_class", "source_commit", "python", "command", "status", "counts", "evidence_level", "limitations"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+        "corpus_class": {"enum": ["registered", "adaptation-candidate", "manager"]},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "python": {"type": "string", "minLength": 1},
+        "command": {"type": "string", "minLength": 1},
+        "status": {"enum": ["passed", "failed-remediated"]},
+        "counts": {"$ref": "#/$defs/counts"},
+        "evidence_level": {"enum": ["repository-tests", "manager-tests"]},
+        "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "remediation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["commit", "pull_request", "counts"],
+          "properties": {
+            "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "pull_request": {"type": "string", "format": "uri"},
+            "counts": {"$ref": "#/$defs/counts"}
+          }
+        }
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "failed-remediated"}}}, "then": {"required": ["remediation"]}, "else": {"not": {"required": ["remediation"]}}}]
+    },
+    "package_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "wheel_sha256", "status", "evidence_level", "limitations"],
+      "properties": {
+        "bundle_id": {"type": "string", "minLength": 1},
+        "wheel_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status": {"const": "passed"},
+        "evidence_level": {"const": "wheel-install-entry-point-discovery"},
+        "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}

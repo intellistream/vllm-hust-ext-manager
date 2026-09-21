@@ -1,0 +1,99 @@
+{
+  "schema_version": "ecpa-plugin-validation-matrix/v1",
+  "observed_at": "2026-09-21",
+  "claim_boundary": "Repository-owned CPU/source tests and isolated package discovery only. These observations do not establish accelerator execution, workload-level effectiveness, matched formal-real results, or current production deployment.",
+  "repositories": [
+    {
+      "repository": "vLLM-HUST/vllm-hust-bidkv", "corpus_class": "registered",
+      "source_commit": "a0cba97d9abdc99908e46616db622f0e0099127f",
+      "python": "3.11 isolated venv with inherited host packages", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 386, "failed": 0, "skipped": 24}, "evidence_level": "repository-tests",
+      "limitations": ["No accelerator or serving endpoint was exercised."]
+    },
+    {
+      "repository": "Qixin-Gaoke/kv-admission-plugin", "corpus_class": "registered",
+      "source_commit": "b19003b3bb81648c0fff5f037aa10c0fcabf2f1f",
+      "python": "3.11 isolated venv; workload pin 76e24c85bcab76ecfabb831c9444002b6efffd58", "command": "python -m pytest -q tests", "status": "failed-remediated",
+      "counts": {"passed": 83, "failed": 1, "skipped": 0}, "evidence_level": "repository-tests",
+      "limitations": ["Main had a stale lexical paper-scope assertion; no serving endpoint was exercised."],
+      "remediation": {"commit": "af38a24ca0323e7ef9380b87d3f8bed77fc4ffe9", "pull_request": "https://github.com/Qixin-Gaoke/kv-admission-plugin/pull/11", "counts": {"passed": 84, "failed": 0, "skipped": 0}}
+    },
+    {
+      "repository": "intellistream/vllm-request-lifecycle-profiler-plugin", "corpus_class": "registered",
+      "source_commit": "e32a0e91027ae7a2b96bf48d2dcb7db1b3c42c87",
+      "python": "3.11 isolated venv; OASST1 pin fdf72ae0827c1cda404aff25b6603abec9e3399b", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 234, "failed": 0, "skipped": 9}, "evidence_level": "repository-tests",
+      "limitations": ["Skipped tests and CPU fixtures do not establish the NPU runtime hook path."]
+    },
+    {
+      "repository": "Qixin-Gaoke/kv-prefix-sharing-plugin", "corpus_class": "registered",
+      "source_commit": "ea82808a95ec4b33ea8e026afbc3689781cba87c", "python": "3.11 isolated venv; pinned host submodule", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 53, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No serving endpoint was exercised."]
+    },
+    {
+      "repository": "Qixin-Gaoke/tiered-kv-cache-plugin", "corpus_class": "registered",
+      "source_commit": "d65bbebe4c5217f9cbfa72947ffc6c1b8554d96f", "python": "3.11 isolated venv; pinned host and workload submodules", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 103, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["Fourteen deprecation warnings; no accelerator tier transfer ran."]
+    },
+    {
+      "repository": "Qixin-Gaoke/platform-backend-plugin", "corpus_class": "registered",
+      "source_commit": "2a7b9634721ae706b300e422a636e506af303b73", "python": "3.11 isolated venv; pinned vLLM Ascend host", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 82, "failed": 0, "skipped": 0, "subtests_passed": 8}, "evidence_level": "repository-tests", "limitations": ["No NPU backend dispatch was executed."]
+    },
+    {
+      "repository": "Qixin-Gaoke/state-scheduler-plugin", "corpus_class": "registered",
+      "source_commit": "65e81fa6d1ba3eefc343f3c648ad99f0c4e93e4f", "python": "3.11 isolated venv; vendor/vllm d414d3d34b709812de5aa119bc2c6da9e7bc8b0e", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 51, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No live scheduler traffic was exercised."]
+    },
+    {
+      "repository": "Qixin-Gaoke/vllm-token-budget-governor-plugin", "corpus_class": "registered",
+      "source_commit": "6cd046d63cb311454e6f36bacdc1587131990475", "python": "3.11 isolated venv; pinned workload source", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 100, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No serving endpoint was exercised."]
+    },
+    {
+      "repository": "intellistream/quality-bounded-inference-plugin", "corpus_class": "registered",
+      "source_commit": "3c833eac9157faee1dea6130819a2905e61da9cc", "python": "3.12.14 clean isolated venv; pinned workload and exact host archive", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 1060, "failed": 0, "skipped": 1}, "evidence_level": "repository-tests", "limitations": ["Formal receipt tests require Python 3.12; no official benchmark endpoint was invoked."]
+    },
+    {
+      "repository": "intellistream/memory-evolution-plugin", "corpus_class": "adaptation-candidate",
+      "source_commit": "9e78fe5ac29b0432b58ff2147096f9595f0e3922", "python": "3.11 isolated venv; pinned workload source", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 59, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No ECPA contract or accelerator transition was exercised."]
+    },
+    {
+      "repository": "intellistream/vllm-agent-state-tiering", "corpus_class": "adaptation-candidate",
+      "source_commit": "64e006965f917d6fbd440017743fdc6b035cd64f", "python": "3.11 isolated venv; workload pin ceef92d52e0c49f26ba1efc6706edd1f6df5d913", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 58, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No ECPA contract or live agent-state transfer was exercised."]
+    },
+    {
+      "repository": "intellistream/adapter-serving-plugin", "corpus_class": "adaptation-candidate",
+      "source_commit": "a90b60f108778719ef451a9417e2f4c1e60a0caa", "python": "3.11 isolated venv", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 8, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No ECPA contract or model adapter serving ran."]
+    },
+    {
+      "repository": "Qixin-Gaoke/compilation-plugin", "corpus_class": "adaptation-candidate",
+      "source_commit": "7a918ae5d3b9ad5d7d0e7b218ccfbfb15034b348", "python": "3.11 isolated venv; pinned host and fetched evidence commits", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 98, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No ECPA contract or device compilation ran."]
+    },
+    {
+      "repository": "Qixin-Gaoke/attention-kernel-plugin", "corpus_class": "adaptation-candidate",
+      "source_commit": "b04ccc4973711553cf9b1dcb047977634141fd01", "python": "3.11 isolated venv; vLLM Ascend a16331964ea0f96bbb2c90324deb736fc663cd7c", "command": "python -m pytest -q tests", "status": "passed",
+      "counts": {"passed": 34, "failed": 0, "skipped": 0}, "evidence_level": "repository-tests", "limitations": ["No ECPA contract or NPU kernel ran."]
+    },
+    {
+      "repository": "intellistream/vllm-hust-ext-manager", "corpus_class": "manager",
+      "source_commit": "31d764b1cdcbc1937663a21ca2627b2945f6e629", "python": "3.12.14 clean isolated venv with installed manager wheel", "command": "PYTHONPATH=src python -m pytest -q", "status": "passed",
+      "counts": {"passed": 531, "failed": 0, "skipped": 0}, "evidence_level": "manager-tests", "limitations": ["Process probes and fixtures are not a matched formal-real accelerator campaign."]
+    }
+  ],
+  "package_validations": [
+    {
+      "bundle_id": "org.vllm-hust.mooncake-provider", "wheel_sha256": "da9b10ff7681c7a1fde30f45148ac45f2dc11b319240548275b9b5761ddc3dd1", "status": "passed", "evidence_level": "wheel-install-entry-point-discovery",
+      "limitations": ["No Mooncake service or KV data path was started."]
+    },
+    {
+      "bundle_id": "org.vllm-hust.production-stack-provider", "wheel_sha256": "840942b8a221110b767707a03438edc42a515e60aee793d4f7a5cb427780bc92", "status": "passed", "evidence_level": "wheel-install-entry-point-discovery",
+      "limitations": ["No Kubernetes cluster, chart apply, controller, or router was started."]
+    }
+  ]
+}
