@@ -37,7 +37,7 @@
           "scenarios": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
           "arms": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
           "repetitions": {"type": "integer", "minimum": 1},
-          "status": {"enum": ["modeled-evaluated", "planned", "pre-admission"]},
+          "status": {"enum": ["modeled-evaluated", "planned", "pre-admission", "admitted"]},
           "supports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^CLM-[A-Z0-9-]+$"}},
           "evidence_artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
         },

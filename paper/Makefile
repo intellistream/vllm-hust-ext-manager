@@ -20,6 +20,8 @@ EVIDENCE_INPUTS := \
 	../experiments/false_effective/artifacts/reference-summary.json \
 	../experiments/false_effective/first-formal-real-study.json \
 	../experiments/false_effective/first-formal-real-study.schema.json \
+	../experiments/false_effective/first-formal-real-deployment.json \
+	../experiments/false_effective/first-formal-real-deployment.schema.json \
 	../experiments/false_effective/harness.py \
 	../experiments/false_effective/scenarios.json \
 	../experiments/false_effective/protocol.json \

@@ -82,6 +82,9 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     first_study = load_json(
         root, "experiments/false_effective/first-formal-real-study.json"
     )
+    deployment = load_json(
+        root, "experiments/false_effective/first-formal-real-deployment.json"
+    )
 
     for artifact, schema in (
         (plugins, "docs/corpus/plugins.schema.json"),
@@ -97,6 +100,10 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         (
             first_study,
             "experiments/false_effective/first-formal-real-study.schema.json",
+        ),
+        (
+            deployment,
+            "experiments/false_effective/first-formal-real-deployment.schema.json",
         ),
     ):
         validate_schema(root, artifact, schema)
@@ -127,6 +134,11 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         claims_matrix, "ecpa-claims-to-experiments/v1", "research claim graph"
     )
     require_schema(first_study, "ecpa-first-formal-real-study/v1", "first formal study")
+    require_schema(
+        deployment,
+        "ecpa-formal-real-deployment-registration/v1",
+        "first formal deployment registration",
+    )
 
     plugin_rows = plugins.get("plugins")
     source_rows = snapshots.get("sources")
@@ -305,9 +317,10 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
     first_study_starts = require_count(
         first_study.get("planned_starts"), "first study starts"
     )
+    study_status = first_study.get("status")
     if (
-        first_study.get("status") != "pre-admission"
-        or first_study.get("admissible") is not False
+        study_status not in {"pre-admission", "admitted", "running", "complete"}
+        or (study_status == "pre-admission") != (first_study.get("admissible") is False)
         or first_study.get("scenario") != "partial-worker-coverage"
         or first_study.get("arms") != arms
         or first_study.get("repetitions") != minimum_starts
@@ -315,6 +328,47 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         or first_study_starts != len(arms) * minimum_starts
     ):
         raise ValueError("first formal study differs from the frozen protocol")
+    deployment_arms = deployment.get("arm_registrations")
+    deployment_sources = deployment.get("source_registrations")
+    deployment_blockers = deployment.get("blockers")
+    common_deployment_invalid = (
+        deployment.get("study_id") != first_study.get("study_id")
+        or deployment.get("producer_candidate") != first_study.get("producer_candidate")
+        or not isinstance(deployment_arms, list)
+        or [row.get("arm") for row in deployment_arms] != arms
+        or not isinstance(deployment_sources, list)
+        or len(deployment_sources) != 5
+        or not isinstance(deployment_blockers, list)
+        or len(deployment_blockers) != len(set(deployment_blockers))
+    )
+    unregistered_invalid = deployment.get("registration_state") == "unregistered" and (
+        deployment.get("admissible") is not False
+        or deployment.get("producer_admission_receipt") is not None
+        or any(
+            value is not None
+            for value in deployment.get("deployment_identity", {}).values()
+        )
+        or any(row.get("registration") is not None for row in deployment_arms)
+        or any(row.get("registration") is not None for row in deployment_sources)
+        or any(deployment.get("reviews", {}).values())
+        or set(deployment_blockers) != set(first_study.get("blockers", []))
+        or study_status != "pre-admission"
+    )
+    registered_invalid = deployment.get("registration_state") == "registered" and (
+        deployment.get("admissible") is not True
+        or not isinstance(deployment.get("producer_admission_receipt"), dict)
+        or any(
+            value is None
+            for value in deployment.get("deployment_identity", {}).values()
+        )
+        or any(row.get("registration") is None for row in deployment_arms)
+        or any(row.get("registration") is None for row in deployment_sources)
+        or not all(deployment.get("reviews", {}).values())
+        or deployment_blockers
+        or study_status == "pre-admission"
+    )
+    if common_deployment_invalid or unregistered_invalid or registered_invalid:
+        raise ValueError("first formal deployment registration is not fail closed")
     reference_starts = require_count(reference.get("starts"), "reference starts")
     reference_scenarios = reference.get("scenarios")
     if (
@@ -365,6 +419,10 @@ def collect_summary(root: Path = ROOT) -> dict[str, int | str]:
         "schedule_rows": len(schedule),
         "research_claims": len(claim_rows),
         "first_study_starts": first_study_starts,
+        "deployment_blockers": len(deployment_blockers),
+        "registered_deployment_arms": sum(
+            row["registration"] is not None for row in deployment_arms
+        ),
     }
 
 
@@ -389,6 +447,8 @@ def render(summary: dict[str, int | str]) -> str:
         ("ECPAScheduleRows", "schedule_rows"),
         ("ECPAResearchClaims", "research_claims"),
         ("ECPAFirstStudyStarts", "first_study_starts"),
+        ("ECPADeploymentBlockers", "deployment_blockers"),
+        ("ECPARegisteredDeploymentArms", "registered_deployment_arms"),
     )
     lines = [
         "% Generated by paper/scripts/generate_evidence_summary.py; do not edit.",
