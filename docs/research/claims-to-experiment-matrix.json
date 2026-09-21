@@ -1,0 +1,102 @@
+{
+  "schema": "ecpa-claims-to-experiments/v1",
+  "scope": "vllm-hust-only",
+  "claims": [
+    {
+      "id": "CLM-CONTRACT-COMPOSITION",
+      "paper_hypothesis": "H2",
+      "contribution": "contract-model",
+      "statement": "The contract planner distinguishes admissible and conflicting extension compositions against a frozen ownership oracle without blanket rejection.",
+      "falsifier": "Reject precision or recall falls below 0.95, an expected error class differs, or admit recall is zero.",
+      "evidence_class": "modeled-static",
+      "status": "modeled-evaluated",
+      "experiments": ["EXP-STATIC-COMPOSITION"],
+      "authority_sources": ["independent-static-oracle"]
+    },
+    {
+      "id": "CLM-FALSE-EFFECTIVE-DETECTION",
+      "paper_hypothesis": "H1",
+      "contribution": "host-evidence",
+      "statement": "ECPA rejects externally visible effectiveness when required host-owned process coverage or fresh lifecycle evidence is incomplete.",
+      "falsifier": "Any tested ECPA start claims effective while a required target lacks fresh host-owned invocation evidence, or required-event coverage falls below 0.99.",
+      "evidence_class": "formal-real",
+      "status": "pre-admission",
+      "experiments": ["EXP-FE-PARTIAL-WORKER", "EXP-FE-IDENTITY-FRESHNESS"],
+      "authority_sources": ["runner", "lifecycle-source", "vllm-hust-host", "process-monitor"]
+    },
+    {
+      "id": "CLM-TRANSACTIONAL-RECOVERY",
+      "paper_hypothesis": "H3",
+      "contribution": "transactional-runtime",
+      "statement": "Activation, exposure, replacement, and rollback preserve a bounded fail-closed state under the preregistered failures.",
+      "falsifier": "An unsupported tuple serves as effective, the predecessor plan is lost, or fewer than 95 percent of injected failures meet the declared recovery objective or bounded operator action.",
+      "evidence_class": "formal-real",
+      "status": "planned",
+      "experiments": ["EXP-TRANSACTIONAL-RECOVERY"],
+      "authority_sources": ["runner", "lifecycle-source", "vllm-hust-host", "process-monitor"]
+    },
+    {
+      "id": "CLM-BOUNDED-COST",
+      "paper_hypothesis": "H4",
+      "contribution": "bounded-cost",
+      "statement": "ECPA adds bounded startup and steady-state cost relative to the matched manual-integration arm.",
+      "falsifier": "Median startup overhead exceeds 5 percent and 250 milliseconds, throughput regresses by more than 1 percent, or p99 latency regresses by more than 2 percent in a supported formal cell.",
+      "evidence_class": "formal-real",
+      "status": "planned",
+      "experiments": ["EXP-MATCHED-PERFORMANCE"],
+      "authority_sources": ["runner", "workload-client", "process-monitor"]
+    }
+  ],
+  "experiments": [
+    {
+      "id": "EXP-STATIC-COMPOSITION",
+      "kind": "modeled-static",
+      "scenarios": [],
+      "arms": [],
+      "repetitions": 1,
+      "status": "modeled-evaluated",
+      "supports": ["CLM-CONTRACT-COMPOSITION"],
+      "evidence_artifacts": ["experiments/contract_planner/cases.json", "experiments/contract_planner/oracle.json", "experiments/contract_planner/results/metrics.json"]
+    },
+    {
+      "id": "EXP-FE-PARTIAL-WORKER",
+      "kind": "formal-comparison",
+      "scenarios": ["partial-worker-coverage"],
+      "arms": ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+      "repetitions": 3,
+      "status": "pre-admission",
+      "supports": ["CLM-FALSE-EFFECTIVE-DETECTION"],
+      "evidence_artifacts": ["experiments/false_effective/first-formal-real-study.json", "experiments/false_effective/protocol.json", "experiments/false_effective/verified-adapters.json"]
+    },
+    {
+      "id": "EXP-FE-IDENTITY-FRESHNESS",
+      "kind": "formal-comparison",
+      "scenarios": ["namespace-mismatch", "worker-replacement", "stale-evidence"],
+      "arms": ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+      "repetitions": 3,
+      "status": "planned",
+      "supports": ["CLM-FALSE-EFFECTIVE-DETECTION"],
+      "evidence_artifacts": ["experiments/false_effective/scenarios.json", "experiments/false_effective/protocol.json"]
+    },
+    {
+      "id": "EXP-TRANSACTIONAL-RECOVERY",
+      "kind": "formal-recovery",
+      "scenarios": ["manager-crash", "external-lease-loss", "rollback-failure"],
+      "arms": ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+      "repetitions": 3,
+      "status": "planned",
+      "supports": ["CLM-TRANSACTIONAL-RECOVERY"],
+      "evidence_artifacts": ["experiments/false_effective/scenarios.json", "experiments/false_effective/protocol.json"]
+    },
+    {
+      "id": "EXP-MATCHED-PERFORMANCE",
+      "kind": "formal-performance",
+      "scenarios": ["compatible-resource-pair", "conditional-resource-pair"],
+      "arms": ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+      "repetitions": 3,
+      "status": "planned",
+      "supports": ["CLM-BOUNDED-COST"],
+      "evidence_artifacts": ["experiments/false_effective/scenarios.json", "experiments/false_effective/protocol.json"]
+    }
+  ]
+}

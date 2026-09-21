@@ -555,8 +555,14 @@ oracle.  Aggregation is stratified by scenario and arm with the matched
 repetition as the paired unit; failure and missingness remain explicit.  A
 fail-safe closure is reported as a rollback class, not counted as restored
 rollback success.
-The evaluation is organized around four falsifiable hypotheses aligned with
-issues M0--M3.  \textbf{H1:} in preregistered failure cells, \system has zero
+The checked claim graph maps \ECPAResearchClaims{} falsifiable claims to their
+counterexamples, authority-owned facts, and non-substitutable experiments.
+The first formal comparison is the partial-worker-coverage scenario across all
+\ECPAFormalArms{} arms and \ECPAFirstStudyStarts{} independent starts.  It
+remains pre-admission while the producer, deployment identity, commands, and
+adapter registry are not all frozen; preregistration is not a result.
+The hypotheses are aligned with issues M0--M3.  \textbf{H1:} in preregistered
+failure cells, \system has zero
 false-effective outcomes and at least 99\% required-event coverage.
 \textbf{H2:} conflict precision and recall each reach 0.95 against an
 independent oracle, without rejecting all compositions.  \textbf{H3:} every

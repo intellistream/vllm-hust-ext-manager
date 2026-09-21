@@ -8,6 +8,13 @@ This plan evaluates the architecture in
 installation, command success, or the number of integrations as evidence of
 runtime effectiveness.
 
+The machine-checked claim graph is
+[`research/claims-to-experiment-matrix.json`](research/claims-to-experiment-matrix.json).
+Its first formal comparison is the three-arm partial-worker-coverage study in
+[`../experiments/false_effective/first-formal-real-study.json`](../experiments/false_effective/first-formal-real-study.json).
+That study is a preregistration, not a result, until every admission blocker is
+removed and all nine starts pass the formal validator.
+
 The current evaluation is a deep **vLLM-HUST-only system study**. It seeks
 external validity across real plugin categories, parent/engine/worker scopes,
 versions/topologies, providers, and failures within that runtime. A second

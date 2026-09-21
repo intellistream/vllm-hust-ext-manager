@@ -1,0 +1,68 @@
+{
+  "schema": "ecpa-first-formal-real-study/v1",
+  "study_id": "partial-worker-coverage-three-arm-v1",
+  "experiment_id": "EXP-FE-PARTIAL-WORKER",
+  "status": "pre-admission",
+  "admissible": false,
+  "scenario": "partial-worker-coverage",
+  "comparison_unit": "scenario-by-repetition-across-three-arms",
+  "arms": ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+  "repetitions": 3,
+  "schedule": [
+    ["vanilla-vllm-entry-points", "manual-integration", "ecpa"],
+    ["manual-integration", "ecpa", "vanilla-vllm-entry-points"],
+    ["ecpa", "vanilla-vllm-entry-points", "manual-integration"]
+  ],
+  "planned_starts": 9,
+  "producer_candidate": {
+    "repository": "vLLM-HUST/vllm-hust",
+    "pull_request": 27,
+    "reviewed_head": "c9b6bbff27fc8241ba37abf037560cf2875317a2",
+    "reviewed_tree": "f00d6c0ffef2afd94548a3cfaecf61f65593d0a7",
+    "base": "badce8df2ac489ab55bbbd19e5eb9eea56986f65",
+    "observed_state": "open",
+    "merge_commit": null,
+    "human_line_review": false,
+    "observed_at": "2026-09-21T09:05:00+08:00"
+  },
+  "blockers": ["producer-not-merged", "human-line-review-absent", "adapter-registry-empty", "deployment-identity-unfrozen", "commands-not-deployment-reviewed"],
+  "fixed_identity": {
+    "runtime_commit": null,
+    "manager_commit": null,
+    "model": null,
+    "workload_request_sha256": null,
+    "hardware": null,
+    "topology": null,
+    "container_digest": null,
+    "fault_descriptor_sha256": null,
+    "plugin_entry_point": null,
+    "warm_state": null
+  },
+  "phase_authorities": [
+    {"phase": "service-ready", "source_subcommand": "readiness-http", "authority": "lifecycle-source", "proves": "The exact loopback service endpoint returned the registered status within the bounded probe.", "does_not_prove": "Plugin invocation, process coverage, or policy effect."},
+    {"phase": "workload-complete", "source_subcommand": "workload-http", "authority": "lifecycle-source", "proves": "The registered canonical request produced a non-empty OpenAI choices response.", "does_not_prove": "Which plugin or policy influenced the response."},
+    {"phase": "fault-injected", "source_subcommand": "partial-coverage-quarantine", "authority": "lifecycle-source", "proves": "Exactly one bound worker evidence journal was transactionally quarantined while a peer remained.", "does_not_prove": "Worker death, plugin deactivation, or Plan mutation."},
+    {"phase": "observer-captured", "source_subcommand": "journal-capture", "authority": "vllm-hust-host", "proves": "The frozen host journal contains Plan-, launch-, controller-, process-, and invocation-bound runtime events.", "does_not_prove": "Lifecycle phases owned by readiness, workload, fault, or shutdown sources."},
+    {"phase": "service-shutdown", "source_subcommand": "shutdown-process", "authority": "process-monitor", "proves": "The exact PID, start ticks, and argv identity exited.", "does_not_prove": "Successful rollback or preservation of an external service."}
+  ],
+  "required_host_observables": ["service-ready", "workload-complete", "fault-injected", "observer-captured", "service-shutdown", "activation-path", "effective-claim", "plugin-invoked", "coverage"],
+  "truth": {
+    "activation_possible_after_fault": false,
+    "effectiveness_requires_complete_process_coverage": true,
+    "baseline_outcome_assumed": false
+  },
+  "outcomes": ["false_effective_by_arm", "required_event_coverage_by_arm", "failure_detection_latency_ms", "incomplete_exposure_window_ms", "raw_failure_count_by_arm"],
+  "acceptance": {
+    "complete_starts_per_arm": 3,
+    "comparison_binding_equal_across_arms": true,
+    "effectiveness_requires_process_coverage": 1,
+    "h1_falsifier": "ecpa-claims-effective-with-incomplete-coverage-or-required-event-coverage-below-0.99",
+    "paper_result_gate": "all-nine-starts-validator-approved"
+  },
+  "non_claims": [
+    "This preregistration is not a formal-real result.",
+    "The evidence-quarantine fault does not show that a worker stopped executing the plugin.",
+    "A completed partial-worker-coverage study does not establish rollback or performance claims.",
+    "The study does not establish cross-runtime generality or an industry standard."
+  ]
+}

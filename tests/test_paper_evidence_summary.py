@@ -15,6 +15,8 @@ INPUTS = (
     "docs/corpus/plugins.schema.json",
     "docs/corpus/source-snapshots.json",
     "docs/corpus/source-snapshots.schema.json",
+    "docs/research/claims-to-experiment-matrix.json",
+    "docs/research/claims-to-experiment-matrix.schema.json",
     "experiments/contract_planner/cases.json",
     "experiments/contract_planner/cases.schema.json",
     "experiments/contract_planner/decision.schema.json",
@@ -26,6 +28,8 @@ INPUTS = (
     "experiments/contract_planner/results/metrics.json",
     "experiments/false_effective/artifacts/formal-aggregate-summary.json",
     "experiments/false_effective/artifacts/reference-summary.json",
+    "experiments/false_effective/first-formal-real-study.json",
+    "experiments/false_effective/first-formal-real-study.schema.json",
     "experiments/false_effective/scenarios.json",
     "experiments/false_effective/protocol.json",
     "experiments/false_effective/verified-adapters.json",
@@ -80,6 +84,8 @@ def test_checked_summary_matches_all_authoritative_inputs() -> None:
         "formal_arms": 3,
         "minimum_starts": 3,
         "schedule_rows": 3,
+        "research_claims": 4,
+        "first_study_starts": 9,
     }
     assert (
         generator.render(summary)
