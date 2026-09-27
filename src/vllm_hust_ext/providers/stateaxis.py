@@ -89,12 +89,7 @@ class StateAxisProvider:
                     ),
                 ),
                 {
-                    "stateaxis_json_options": {
-                        "--additional-config": {
-                            "stateaxis_mod": binding,
-                            "experiment_mode": True,
-                        }
-                    },
+                    "stateaxis_additional_config": {"experiment_mode": True},
                     "stateaxis_mod": binding,
                     "user_config": configuration,
                 },

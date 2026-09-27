@@ -391,15 +391,12 @@ def _merge_provider_plan(command: list[str], plan: ProviderPlan) -> list[str]:
             kv_transfer_config,
         )
     if plan.provider == "stateaxis":
-        options = plan.generated_config.get("stateaxis_json_options", {})
-        if not isinstance(options, dict) or set(options) != {"--additional-config"}:
-            raise ValueError(
-                "StateAxis provider requires exactly one --additional-config object"
-            )
-        value = options["--additional-config"]
-        if not isinstance(value, dict):
-            raise ValueError("StateAxis --additional-config must be a JSON object")
-        return _merge_json_option(command, "--additional-config", value)
+        additional = plan.generated_config.get("stateaxis_additional_config", {})
+        if not isinstance(additional, dict) or set(additional) != {"experiment_mode"}:
+            raise ValueError("StateAxis provider requires explicit experiment_mode")
+        if additional["experiment_mode"] is not True:
+            raise ValueError("StateAxis experimental launch must set experiment_mode")
+        return _merge_command_config(command, additional)
     if plan.provider != "vllm":
         raise ValueError(f"{plan.provider} extensions use plan/render/check, not run")
     json_options = plan.generated_config.get("vllm_json_options", {})
