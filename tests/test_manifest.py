@@ -115,3 +115,42 @@ def test_import_only_manifest_is_discoverable_but_not_activatable() -> None:
 
     assert blocker is not None
     assert "descriptor-only" in blocker
+
+
+@pytest.mark.parametrize("status", ["import_only", "legacy_unregistered"])
+def test_inactive_entry_point_is_not_activatable(status: str) -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["implementation"] = [
+        {
+            "type": "python_entry_point",
+            "group": "vllm.legacy_plugin",
+            "name": "example",
+            "status": status,
+        }
+    ]
+
+    blocker = activation_blocker(parse_manifest(payload))
+
+    assert blocker is not None
+    assert status in blocker
+
+
+def test_unqualified_registered_entry_point_remains_activatable() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["implementation"] = [
+        {
+            "type": "python_entry_point",
+            "group": "vllm.general_plugins",
+            "name": "example",
+        }
+    ]
+
+    assert activation_blocker(parse_manifest(payload)) is None

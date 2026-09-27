@@ -532,20 +532,21 @@ def load_manifest(path: Path) -> BundleManifest:
 def activation_blocker(manifest: BundleManifest) -> str | None:
     """Explain why a descriptor-only Python extension cannot be enabled."""
 
-    module_statuses = [
-        str(dict(carrier.attributes).get("status"))
-        for carrier in getattr(manifest, "implementation", ())
-        if carrier.type == "python_module"
-    ]
+    carriers = tuple(getattr(manifest, "implementation", ()))
+    statuses = [dict(carrier.attributes).get("status") for carrier in carriers]
     has_active_carrier = any(
-        carrier.type != "python_module"
-        or dict(carrier.attributes).get("status") == "active"
-        for carrier in getattr(manifest, "implementation", ())
+        status == "active" or (status is None and carrier.type != "python_module")
+        for carrier, status in zip(carriers, statuses, strict=True)
     )
-    if module_statuses and not has_active_carrier:
-        statuses = ", ".join(sorted(set(module_statuses)))
+    declared_inactive = [
+        str(status)
+        for status in statuses
+        if status in {"import_only", "legacy_unregistered"}
+    ]
+    if declared_inactive and not has_active_carrier:
+        status_names = ", ".join(sorted(set(declared_inactive)))
         return (
             "extension is descriptor-only and cannot be enabled "
-            f"(implementation status: {statuses})"
+            f"(implementation status: {status_names})"
         )
     return None
