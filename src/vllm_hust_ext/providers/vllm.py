@@ -22,6 +22,9 @@ _JSON_LAUNCH_OPTIONS = {
     "batch_admission_policy_config": "--batch-admission-policy-config",
     "speculative_config": "--speculative-config",
 }
+_BOOLEAN_LAUNCH_OPTIONS = {
+    "scheduler_reserve_output_budget": "--scheduler-reserve-output-budget",
+}
 _RUNTIME_QUALIFICATION_KEY = "_manager_runtime_qualification"
 
 
@@ -113,13 +116,22 @@ class VllmProvider:
         launch_options = configuration.get("launch_options", {})
         if not isinstance(launch_options, dict):
             raise ValueError("launch_options must be an object")
-        unknown_options = launch_options.keys() - _JSON_LAUNCH_OPTIONS.keys()
+        unknown_options = launch_options.keys() - (
+            _JSON_LAUNCH_OPTIONS.keys() | _BOOLEAN_LAUNCH_OPTIONS.keys()
+        )
         if unknown_options:
             raise ValueError(
                 f"unsupported vLLM launch_options: {sorted(unknown_options)}"
             )
         json_options: dict[str, dict[str, Any]] = {}
+        vllm_flags: list[str] = []
         for name, value in launch_options.items():
+            if name in _BOOLEAN_LAUNCH_OPTIONS:
+                if not isinstance(value, bool):
+                    raise ValueError(f"launch_options.{name} must be a boolean")
+                if value:
+                    vllm_flags.append(_BOOLEAN_LAUNCH_OPTIONS[name])
+                continue
             if not isinstance(value, dict):
                 raise ValueError(f"launch_options.{name} must be an object")
             json_options[_JSON_LAUNCH_OPTIONS[name]] = value
@@ -132,6 +144,8 @@ class VllmProvider:
             "user_config": configuration,
             "vllm_json_options": json_options,
         }
+        if vllm_flags:
+            generated["vllm_flags"] = vllm_flags
         preemption_components = [
             component
             for component in manifest.components
@@ -142,11 +156,11 @@ class VllmProvider:
                 raise ValueError(
                     "exactly one vllm.preemption-policy.v1 component is required"
                 )
-            generated["vllm_options"] = {
-                "--preemption-policy": _qualname_from_implementation_ref(
+            generated.setdefault("vllm_options", {})["--preemption-policy"] = (
+                _qualname_from_implementation_ref(
                     preemption_components[0].implementation_ref
                 )
-            }
+            )
         admission_components = [
             component
             for component in manifest.components

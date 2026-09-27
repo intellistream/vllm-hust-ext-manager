@@ -90,6 +90,19 @@ def _manifest_path(entry_point: EntryPoint) -> Path:
     return match if isinstance(match, Path) else Path(distribution.locate_file(match))
 
 
+def _is_editable(entry_point: EntryPoint) -> bool:
+    if entry_point.dist is None:
+        return False
+    direct_url_text = entry_point.dist.read_text("direct_url.json")
+    if not direct_url_text:
+        return False
+    try:
+        direct_url = json.loads(direct_url_text)
+    except json.JSONDecodeError as error:
+        raise DiscoveryError("editable direct_url.json is invalid") from error
+    return direct_url.get("dir_info", {}).get("editable") is True
+
+
 def discover_bundles(
     selected: Iterable[str] | None = None,
     *,
@@ -107,9 +120,33 @@ def discover_bundles(
     for entry_point in discovered:
         if wanted_set is None or entry_point.name in wanted_set:
             candidates.setdefault(entry_point.name, []).append(entry_point)
-    duplicates = {name: items for name, items in candidates.items() if len(items) != 1}
-    if duplicates:
-        raise DiscoveryError(f"duplicate Bundle registrations: {sorted(duplicates)}")
+    for bundle_id, items in candidates.items():
+        if len(items) == 1:
+            continue
+        manifests: dict[bytes, list[EntryPoint]] = {}
+        for registration in items:
+            try:
+                content = _manifest_path(registration).read_bytes()
+            except (DiscoveryError, OSError) as error:
+                raise DiscoveryError(
+                    f"duplicate Bundle registration {bundle_id!r} cannot be verified"
+                ) from error
+            manifests.setdefault(content, []).append(registration)
+        if len(manifests) != 1:
+            raise DiscoveryError(f"duplicate Bundle registrations: {[bundle_id]}")
+        # A wheel plus an editable install can publish the same static Bundle
+        # descriptor. Treat that as one registration, while still rejecting
+        # any disagreement in descriptor bytes. Prefer the wheel path so the
+        # selected distribution remains independent of a source checkout.
+        candidates[bundle_id] = [
+            sorted(
+                items,
+                key=lambda item: (
+                    _is_editable(item),
+                    item.dist.metadata.get("Name", "") if item.dist else "",
+                ),
+            )[0]
+        ]
     if wanted_set is not None:
         missing = wanted_set - candidates.keys()
         if missing:

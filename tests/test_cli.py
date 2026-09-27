@@ -230,6 +230,31 @@ def test_vllm_provider_merges_declared_preemption_policy() -> None:
     assert command[-2:] == ["--preemption-policy", implementation]
 
 
+def test_vllm_provider_merges_declared_boolean_flag() -> None:
+    plan = ProviderPlan(
+        "org.vllm-hust.dla",
+        "vllm",
+        (),
+        {"vllm_flags": ["--scheduler-reserve-output-budget"]},
+    )
+
+    command = _merge_provider_plan(["vllm", "serve", "model"], plan)
+
+    assert command[-1] == "--scheduler-reserve-output-budget"
+
+
+def test_vllm_provider_rejects_unknown_boolean_flag() -> None:
+    plan = ProviderPlan(
+        "org.vllm-hust.example",
+        "vllm",
+        (),
+        {"vllm_flags": ["--enforce-eager"]},
+    )
+
+    with pytest.raises(ValueError, match="unsupported provider flag"):
+        _merge_provider_plan(["vllm", "serve", "model"], plan)
+
+
 def test_vllm_provider_rejects_conflicting_preemption_policy() -> None:
     plan = ProviderPlan(
         "org.vllm-hust.bidkv",
