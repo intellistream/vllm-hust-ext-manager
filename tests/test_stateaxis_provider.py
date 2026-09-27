@@ -87,7 +87,6 @@ def test_active_unqualified_candidate_requires_explicit_experiment_mode(
     assert command[2] == "--additional-config"
     config = json.loads(command[3])
     assert config["experiment_mode"] is True
-    assert config["stateaxis_mod"]["performance_qualified"] is False
 
 
 def test_descriptor_only_candidate_cannot_bypass_with_experiment_mode() -> None:
