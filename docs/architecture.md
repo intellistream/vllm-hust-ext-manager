@@ -9,7 +9,7 @@ vLLM.
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Core | discovery, manifest validation, compatibility evidence, saved configuration, enablement intent, state projection, conflict rejection | plugin loading, shared services, drivers, KV data, Kubernetes resources |
-| vLLM Provider | vLLM launch configuration and delegation to vLLM entry points | vLLM process supervision |
+| vLLM Provider | vLLM launch configuration, delegation to vLLM entry points, and supervision of the process tree started by `run` | processes or services not launched by `run` |
 | Mooncake Provider | official connector configuration, transport compatibility, service health, and connector-operation evidence | Mooncake service start/stop/upgrade and internal C++ factories |
 | Production Stack Provider | Helm values, render plan, server-dry-run inputs, rollout checks, and structured real-model Router failure/recovery evidence | Helm apply/uninstall, CRD mutation, controller deployment, model-service lifecycle and cluster credentials |
 

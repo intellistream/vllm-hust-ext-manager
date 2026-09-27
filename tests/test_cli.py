@@ -408,14 +408,20 @@ def test_run_materializes_native_manifest_for_vllm_process(
     monkeypatch.delenv("VLLM_EXTENSION_MANIFESTS", raising=False)
     monkeypatch.delenv("VLLM_EXTENSION_BUNDLES", raising=False)
 
-    def call(command: list[str], *, env: dict[str, str]) -> int:
+    def supervise(
+        command: list[str],
+        *,
+        env: dict[str, str],
+        shutdown_grace_seconds: float,
+    ) -> int:
         paths = env["VLLM_EXTENSION_MANIFESTS"].split(os.pathsep)
         assert len(paths) == 1
         assert json.loads(Path(paths[0]).read_text(encoding="utf-8")) == native_manifest
         assert env["VLLM_EXTENSION_BUNDLES"] == extension_id
+        assert shutdown_grace_seconds == 10
         return 17
 
-    monkeypatch.setattr(cli.subprocess, "call", call)
+    monkeypatch.setattr(cli, "supervise", supervise)
 
     assert cli._run_command(SimpleNamespace(command=["true"], dry_run=False)) == 17
 

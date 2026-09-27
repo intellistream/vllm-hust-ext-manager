@@ -248,6 +248,84 @@ def test_mooncake_plan_reuses_official_connector_without_owning_service() -> Non
     assert all(not action.mutating for action in plan.actions)
 
 
+def test_ascend_store_plan_preserves_connector_options() -> None:
+    configuration = {
+        "connector": "AscendStoreConnector",
+        "kv_load_failure_policy": "fail",
+        "device_backend": "ascend",
+        "transport_protocol": "ascend",
+        "kv_connector_extra_config": {"backend": "mooncake", "use_layerwise": False},
+    }
+    plan = MooncakeProvider().plan(
+        manifest("mooncake-v0.2.json"), configuration, enabled=True
+    )
+    assert plan.generated_config == {
+        "kv_transfer_config": {
+            "kv_connector": "AscendStoreConnector",
+            "kv_role": "kv_both",
+            "kv_load_failure_policy": "fail",
+            "kv_connector_extra_config": configuration["kv_connector_extra_config"],
+        }
+    }
+    assert all(not action.mutating for action in plan.actions)
+    for field in ("device_backend", "transport_protocol", "kv_connector_extra_config"):
+        invalid = dict(configuration)
+        invalid.pop(field)
+        with pytest.raises(ValueError, match="AscendStoreConnector requires"):
+            MooncakeProvider().plan(
+                manifest("mooncake-v0.2.json"), invalid, enabled=True
+            )
+
+    for policy in ("fail", "recompute"):
+        configured = dict(configuration, kv_load_failure_policy=policy)
+        result = MooncakeProvider().plan(
+            manifest("mooncake-v0.2.json"), configured, enabled=True
+        )
+        assert (
+            result.generated_config["kv_transfer_config"]["kv_load_failure_policy"]
+            == policy
+        )
+    with pytest.raises(ValueError, match="unsupported KV load failure policy"):
+        MooncakeProvider().plan(
+            manifest("mooncake-v0.2.json"),
+            dict(configuration, kv_load_failure_policy="ignore"),
+            enabled=True,
+        )
+
+
+def test_ascend_store_requires_host_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = {
+        "connector": "AscendStoreConnector",
+        "device_backend": "ascend",
+        "transport_protocol": "ascend",
+        "kv_connector_extra_config": {"backend": "mooncake"},
+    }
+
+    def missing(distribution: str) -> str:
+        raise PackageNotFoundError(distribution)
+
+    monkeypatch.setattr("vllm_hust_ext.providers.mooncake.version", missing)
+    compatible, configured, evidence = (
+        MooncakeProvider()._validate_runtime_configuration(
+            configuration, "mooncake-transfer-engine-npu"
+        )
+    )
+    assert not compatible and not configured
+    assert evidence == ("AscendStoreConnector requires vllm-ascend",)
+    monkeypatch.setattr(
+        "vllm_hust_ext.providers.mooncake.version", lambda _: "0.25.1rc1"
+    )
+    compatible, configured, evidence = (
+        MooncakeProvider()._validate_runtime_configuration(
+            configuration, "mooncake-transfer-engine-npu"
+        )
+    )
+    assert compatible and configured
+    assert "detected vllm-ascend 0.25.1rc1" in evidence
+
+
 def test_mooncake_unreachable_is_degraded_not_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

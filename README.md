@@ -96,6 +96,16 @@ vllm-hust-ext extension enable org.vllm-hust.bidkv
 vllm-hust-ext run -- vllm serve MODEL
 ```
 
+`run` owns the process tree it launches. On POSIX it places the serving command
+in a separate session, forwards `SIGTERM`, `SIGINT`, and `SIGHUP` to the whole
+launch group, waits up to ten seconds, then escalates to `SIGKILL`. It also
+terminates descendants that survive their direct parent, so a stopped Manager
+does not intentionally leave API or worker processes behind. The grace period
+can be set before `--`, for example
+`vllm-hust-ext run --shutdown-grace-seconds 30 -- vllm serve MODEL`.
+This is a process-lifecycle guarantee, not proof that a particular accelerator
+driver has released device memory; deployments must verify that separately.
+
 Only one enabled extension may claim vLLM's `--kv-transfer-config` in a single
 process. The Manager rejects conflicting connector plans instead of silently
 choosing one. Package removal remains separate from runtime intent: `forget`

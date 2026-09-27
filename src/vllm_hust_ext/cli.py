@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict
@@ -22,6 +21,10 @@ from vllm_hust_ext.core import (
 )
 from vllm_hust_ext.discovery import InstalledBundle, discover_bundles
 from vllm_hust_ext.manifest import activation_blocker
+from vllm_hust_ext.process_supervisor import (
+    DEFAULT_SHUTDOWN_GRACE_SECONDS,
+    supervise,
+)
 from vllm_hust_ext.providers.base import ProviderPlan
 
 
@@ -326,8 +329,15 @@ def _run_command(args: argparse.Namespace) -> int:
         )
     environment = os.environ.copy()
     environment.update(activation)
+    shutdown_grace_seconds = getattr(
+        args, "shutdown_grace_seconds", DEFAULT_SHUTDOWN_GRACE_SECONDS
+    )
     if not native_manifests:
-        return subprocess.call(command, env=environment)
+        return supervise(
+            command,
+            env=environment,
+            shutdown_grace_seconds=shutdown_grace_seconds,
+        )
     with tempfile.TemporaryDirectory(prefix="vllm-hust-ext-") as directory:
         manifest_paths = []
         for index, (_bundle_id, native_manifest) in enumerate(native_manifests):
@@ -341,7 +351,11 @@ def _run_command(args: argparse.Namespace) -> int:
         environment["VLLM_EXTENSION_BUNDLES"] = ",".join(
             bundle_id for bundle_id, _ in native_manifests
         )
-        return subprocess.call(command, env=environment)
+        return supervise(
+            command,
+            env=environment,
+            shutdown_grace_seconds=shutdown_grace_seconds,
+        )
 
 
 def _merge_provider_plan(command: list[str], plan: ProviderPlan) -> list[str]:
@@ -470,6 +484,12 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_inspect.add_argument("extension_id")
     run_parser = subcommands.add_parser("run")
     run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument(
+        "--shutdown-grace-seconds",
+        type=float,
+        default=DEFAULT_SHUTDOWN_GRACE_SECONDS,
+        help="seconds to wait before killing a launched process tree (default: 10)",
+    )
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
 
