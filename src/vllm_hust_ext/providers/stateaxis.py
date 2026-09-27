@@ -55,14 +55,53 @@ class StateAxisProvider:
     def plan(self, manifest: BundleManifest, configuration: dict[str, Any], *, enabled: bool) -> ProviderPlan:
         binding = _mod_binding(manifest)
         blocker = activation_blocker(manifest)
-        if blocker is not None or not binding["performance_qualified"]:
-            reasons = [reason for reason in (blocker, None if binding["performance_qualified"] else "StateAxis mod has no performance qualification") if reason]
+        experiment_mode = configuration.get("experiment_mode") is True
+        if blocker is not None or (
+            not binding["performance_qualified"] and not experiment_mode
+        ):
+            reasons = [
+                reason
+                for reason in (
+                    blocker,
+                    None
+                    if binding["performance_qualified"]
+                    else "StateAxis mod has no performance qualification",
+                )
+                if reason
+            ]
             return ProviderPlan(
                 manifest.bundle_id,
                 self.name,
                 (PlanAction("inspect_only", binding["mod_id"], manifest.lifecycle_owner, details={"enabled": False, "manifest_sha256": binding["manifest_sha256"]}),),
                 {"stateaxis_mod": binding, "user_config": configuration},
                 tuple(reasons),
+            )
+        if experiment_mode and not binding["performance_qualified"]:
+            return ProviderPlan(
+                manifest.bundle_id,
+                self.name,
+                (
+                    PlanAction(
+                        "configure_experiment_launch",
+                        "stateaxis",
+                        manifest.lifecycle_owner,
+                        details={"enabled": enabled, "performance_qualified": False},
+                    ),
+                ),
+                {
+                    "stateaxis_json_options": {
+                        "--additional-config": {
+                            "stateaxis_mod": binding,
+                            "experiment_mode": True,
+                        }
+                    },
+                    "stateaxis_mod": binding,
+                    "user_config": configuration,
+                },
+                (
+                    "experimental launch is not performance qualification; "
+                    "preserve results with an experimental evidence label",
+                ),
             )
         qualification = configuration.get("runtime_qualification")
         if not isinstance(qualification, dict) or qualification.get("status") != "passed":
@@ -89,9 +128,20 @@ class StateAxisProvider:
             compatible = False
         blocker = activation_blocker(manifest)
         qualified = binding["performance_qualified"] is True
-        if blocker or not qualified:
+        experiment_mode = configuration.get("experiment_mode") is True
+        if blocker or (not qualified and not experiment_mode):
             reasons = tuple(reason for reason in (blocker, None if qualified else "performance qualification is absent") if reason)
             return ProviderCheck(compatible, False, degraded=True, evidence=evidence + reasons)
+        if experiment_mode and not qualified:
+            return ProviderCheck(
+                compatible,
+                verified is True,
+                degraded=True,
+                evidence=evidence
+                + (
+                    "experimental activation is configured without performance qualification",
+                ),
+            )
         qualification = configuration.get("runtime_qualification")
         configured = verified is True and isinstance(qualification, dict) and qualification.get("status") == "passed"
         if not configured:

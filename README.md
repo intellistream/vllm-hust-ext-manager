@@ -103,6 +103,12 @@ terminates descendants that survive their direct parent, so a stopped Manager
 does not intentionally leave API or worker processes behind. The grace period
 can be set before `--`, for example
 `vllm-hust-ext run --shutdown-grace-seconds 30 -- vllm serve MODEL`.
+
+StateAxis candidates separate experimental activation from performance
+qualification. An active carrier may run unqualified only when its extension
+configuration sets `experiment_mode: true`; the rendered plan remains degraded
+and labels the launch experimental. Descriptor-only carriers still fail closed,
+and production activation still requires the bound qualification record.
 This is a process-lifecycle guarantee, not proof that a particular accelerator
 driver has released device memory; deployments must verify that separately.
 

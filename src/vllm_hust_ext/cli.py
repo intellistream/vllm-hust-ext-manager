@@ -281,12 +281,20 @@ def _run_command(args: argparse.Namespace) -> int:
                 f"health is not verified ({service_ids}); " + "; ".join(status.evidence)
             )
         if (
-            bundle.manifest.host.provider == "vllm"
+            bundle.manifest.host.provider in {"vllm", "stateaxis"}
             and bundle.manifest.runtime.isolation == "trusted_in_process"
             and LifecycleState.COMPATIBLE not in status.states
         ):
             raise ValueError(
                 f"refusing to launch unverified trusted in-process extension "
+                f"{bundle.bundle_id!r}: " + "; ".join(status.evidence)
+            )
+        if (
+            bundle.manifest.host.provider == "stateaxis"
+            and LifecycleState.CONFIGURED not in status.states
+        ):
+            raise ValueError(
+                f"refusing to launch unconfigured StateAxis extension "
                 f"{bundle.bundle_id!r}: " + "; ".join(status.evidence)
             )
     activation = _activation_environment(bundles)
@@ -382,6 +390,16 @@ def _merge_provider_plan(command: list[str], plan: ProviderPlan) -> list[str]:
             "--kv-transfer-config",
             kv_transfer_config,
         )
+    if plan.provider == "stateaxis":
+        options = plan.generated_config.get("stateaxis_json_options", {})
+        if not isinstance(options, dict) or set(options) != {"--additional-config"}:
+            raise ValueError(
+                "StateAxis provider requires exactly one --additional-config object"
+            )
+        value = options["--additional-config"]
+        if not isinstance(value, dict):
+            raise ValueError("StateAxis --additional-config must be a JSON object")
+        return _merge_json_option(command, "--additional-config", value)
     if plan.provider != "vllm":
         raise ValueError(f"{plan.provider} extensions use plan/render/check, not run")
     json_options = plan.generated_config.get("vllm_json_options", {})
@@ -390,6 +408,7 @@ def _merge_provider_plan(command: list[str], plan: ProviderPlan) -> list[str]:
     result = command
     for option, value in json_options.items():
         if option not in {
+            "--additional-config",
             "--batch-admission-policy-config",
             "--speculative-config",
         } or not isinstance(value, dict):
