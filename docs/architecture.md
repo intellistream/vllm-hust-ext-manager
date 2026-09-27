@@ -10,6 +10,7 @@ vLLM.
 | --- | --- | --- |
 | Core | discovery, manifest validation, compatibility evidence, saved configuration, enablement intent, state projection, conflict rejection | plugin loading, shared services, drivers, KV data, Kubernetes resources |
 | vLLM Provider | vLLM launch configuration, delegation to vLLM entry points, and supervision of the process tree started by `run` | processes or services not launched by `run` |
+| StateAxis Provider | Hash-bound StateAxis mod plans; explicit experimental launch for active, unqualified carriers; qualified launch only with matching runtime evidence | descriptor-only candidates, implicit qualification, or production enablement from an experimental result |
 | Mooncake Provider | official connector configuration, transport compatibility, service health, and connector-operation evidence | Mooncake service start/stop/upgrade and internal C++ factories |
 | Production Stack Provider | Helm values, render plan, server-dry-run inputs, rollout checks, and structured real-model Router failure/recovery evidence | Helm apply/uninstall, CRD mutation, controller deployment, model-service lifecycle and cluster credentials |
 

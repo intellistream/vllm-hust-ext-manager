@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from vllm_hust_ext.manifest import parse_manifest
+from vllm_hust_ext.cli import _merge_provider_plan
 from vllm_hust_ext.providers import provider_for
 from vllm_hust_ext.providers.stateaxis import StateAxisProvider
 
@@ -56,3 +57,43 @@ def test_check_rejects_manifest_digest_mismatch(tmp_path: Path) -> None:
     check = StateAxisProvider().check(stateaxis_manifest("0" * 64), {"host_version": "0.3.0.dev23", "research_manifest_path": str(research_manifest)})
     assert check.compatible is False
     assert any("digest mismatch" in item for item in check.evidence)
+
+
+def test_active_unqualified_candidate_requires_explicit_experiment_mode(
+    tmp_path: Path,
+) -> None:
+    research_manifest = tmp_path / "mod.json"
+    research_manifest.write_text("{}\n")
+    digest = hashlib.sha256(research_manifest.read_bytes()).hexdigest()
+    manifest = stateaxis_manifest(digest, status="active")
+    base = {
+        "host_version": "0.3.0.dev23",
+        "research_manifest_path": str(research_manifest),
+    }
+
+    blocked = StateAxisProvider().plan(manifest, base, enabled=True)
+    assert blocked.actions[0].operation == "inspect_only"
+
+    experimental = {**base, "experiment_mode": True}
+    check = StateAxisProvider().check(manifest, experimental)
+    assert check.compatible is True
+    assert check.configured is True
+    assert check.degraded is True
+    plan = StateAxisProvider().plan(manifest, experimental, enabled=True)
+    assert plan.actions[0].operation == "configure_experiment_launch"
+    assert plan.actions[0].details["performance_qualified"] is False
+    command = _merge_provider_plan(["stateaxis", "serve"], plan)
+    assert command[:2] == ["stateaxis", "serve"]
+    assert command[2] == "--additional-config"
+    config = json.loads(command[3])
+    assert config["experiment_mode"] is True
+    assert config["stateaxis_mod"]["performance_qualified"] is False
+
+
+def test_descriptor_only_candidate_cannot_bypass_with_experiment_mode() -> None:
+    manifest = stateaxis_manifest("0" * 64)
+    plan = StateAxisProvider().plan(
+        manifest, {"experiment_mode": True}, enabled=True
+    )
+    assert plan.actions[0].operation == "inspect_only"
+    assert any("descriptor-only" in warning for warning in plan.warnings)
