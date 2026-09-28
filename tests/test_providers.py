@@ -10,6 +10,7 @@ from urllib.error import URLError
 
 import pytest
 
+from vllm_hust_ext import capabilities
 from vllm_hust_ext.config import ExtensionConfig
 from vllm_hust_ext.core import (
     LifecycleState,
@@ -17,7 +18,12 @@ from vllm_hust_ext.core import (
     reject_conflicting_plans,
     status_for,
 )
-from vllm_hust_ext.manifest import ActivationEntryPoint, BundleManifest, parse_manifest
+from vllm_hust_ext.manifest import (
+    ActivationEntryPoint,
+    BundleManifest,
+    ResourceClaim,
+    parse_manifest,
+)
 from vllm_hust_ext.providers import vllm as vllm_provider
 from vllm_hust_ext.providers.base import ProviderPlan
 from vllm_hust_ext.providers.mooncake import MooncakeProvider
@@ -109,11 +115,14 @@ def test_pipeline_microbatch_uses_batch_admission_policy_contract() -> None:
 def test_vllm_detects_scheduler_policy_only_from_host_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = SimpleNamespace(value="vllm.scheduler.policy.v1")
     module = SimpleNamespace(
-        DomainContract=SimpleNamespace(SCHEDULER_POLICY_V1=contract)
+        get_extension_capabilities=lambda: {
+            "schema_version": "vllm.extension-capabilities/v1",
+            "host_api_version": "1.0",
+            "protocols": {"vllm.scheduler.policy": "1.0"},
+        }
     )
-    monkeypatch.setattr(vllm_provider, "import_module", lambda _name: module)
+    monkeypatch.setattr(capabilities, "import_module", lambda _name: module)
 
     assert vllm_provider._detect_protocol_versions() == {"vllm.scheduler.policy": "1.0"}
 
@@ -126,7 +135,7 @@ def test_vllm_detects_preemption_policy_from_versioned_module(
             return SimpleNamespace(PREEMPTION_POLICY_API_VERSION="1.0")
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {
         "vllm.preemption-policy": "1.0"
@@ -141,7 +150,7 @@ def test_vllm_detects_batch_admission_policy_from_versioned_module(
             return SimpleNamespace(BATCH_ADMISSION_POLICY_API_VERSION="1.1")
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {
         "vllm.batch-admission-policy": "1.1"
@@ -158,7 +167,7 @@ def test_vllm_detects_request_and_kv_materialization_contracts(
             return SimpleNamespace(KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION="1.0")
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {
         "vllm.request-processing-hook": "1.0",
@@ -200,9 +209,71 @@ def test_vllm_does_not_report_unknown_plugin_api_versions(
             )
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {}
+
+
+def test_vllm_registry_malformed_snapshot_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = SimpleNamespace(
+        get_extension_capabilities=lambda: {
+            "schema_version": "vllm.extension-capabilities/v99",
+            "host_api_version": "1.0",
+            "protocols": {"vllm.preemption-policy": "1.0"},
+        }
+    )
+    monkeypatch.setattr(capabilities, "import_module", lambda _name: module)
+
+    result = capabilities.detect_vllm_capabilities()
+
+    assert result.protocol_versions == {}
+    assert "unsupported host capability schema" in result.evidence[0]
+
+
+def test_vllm_registry_dependency_failure_does_not_use_legacy_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_dependency(_name: str) -> SimpleNamespace:
+        raise ModuleNotFoundError("No module named 'torch'", name="torch")
+
+    monkeypatch.setattr(capabilities, "import_module", missing_dependency)
+
+    result = capabilities.detect_vllm_capabilities()
+
+    assert result.protocol_versions == {}
+    assert result.evidence == ("host capability registry import failed: missing torch",)
+
+
+def test_resource_claims_reject_two_exclusive_scheduler_owners() -> None:
+    first = ProviderPlan(
+        "org.example.first",
+        "vllm",
+        (),
+        resource_claims=(
+            ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive"),
+        ),
+    )
+    second = ProviderPlan(
+        "org.example.second",
+        "vllm",
+        (),
+        resource_claims=(
+            ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="exclusive versus exclusive"):
+        reject_conflicting_plans((first, second))
+
+
+def test_resource_claims_allow_shared_observers() -> None:
+    claim = ResourceClaim("vllm.runtime.observer", "vllm-process", "shared")
+    first = ProviderPlan("org.example.first", "vllm", (), resource_claims=(claim,))
+    second = ProviderPlan("org.example.second", "vllm", (), resource_claims=(claim,))
+
+    reject_conflicting_plans((first, second))
 
 
 def test_vllm_provider_uses_manifest_host_distribution_for_version(

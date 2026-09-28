@@ -7,6 +7,10 @@ import pytest
 from vllm_hust_ext import discovery
 
 
+def test_discovery_knows_the_03_manifest_filename() -> None:
+    assert discovery.MANIFEST_FILENAMES[0] == "vllm-hust-extension-v0.3.json"
+
+
 class Distribution:
     def __init__(self, name: str, *, editable: bool) -> None:
         self.metadata = {"Name": name}

@@ -27,6 +27,17 @@ cross-extension name ownership conflicts, and computes a stable order. This is
 launch intent, not evidence that plugin code ran; only a process-owned observer
 may add `runtime_effective`.
 
+Manifest 0.3 adds typed resource claims for composition. Core rejects two
+plans when either one claims the same scoped resource exclusively. This models
+scheduler, KV connector, process-carrier, port, and device ownership without
+hard-coding MOD names. Shared observer claims may coexist. Providers cannot
+invent claims that were absent from the installed manifest.
+
+vLLM-HUST exposes one host-owned capability snapshot containing its host API
+and protocol versions. The vLLM Provider consumes that snapshot rather than
+growing one import probe per MOD. Legacy probes remain a migration path only
+when the registry is absent; a present but malformed registry fails closed.
+
 ## State projection
 
 State is evidence-based rather than one enabled flag:
