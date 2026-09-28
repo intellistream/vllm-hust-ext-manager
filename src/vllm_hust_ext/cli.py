@@ -84,6 +84,23 @@ def _activation_config(bundles: Sequence[InstalledBundle]) -> dict[str, object]:
     return merged
 
 
+def _validate_process_ownership(bundles: Sequence[InstalledBundle]) -> None:
+    """Permit only one ECPA carrier to own a StateAxis process tree."""
+
+    owners = [
+        bundle.bundle_id
+        for bundle in bundles
+        if bundle.manifest.host.provider == "stateaxis"
+        and bundle.manifest.runtime.process_scope == "stateaxis_processes"
+        and bundle.manifest.runtime.isolation == "trusted_in_process"
+    ]
+    if len(owners) > 1:
+        raise ValueError(
+            "only one StateAxis ECPA carrier may own a process tree; "
+            f"disable all but one of: {sorted(owners)}"
+        )
+
+
 def _merge_command_config(
     command: list[str], activation: dict[str, object]
 ) -> list[str]:
@@ -153,6 +170,8 @@ def _extension_command(args: argparse.Namespace) -> int:
         blocker = activation_blocker(bundle.manifest)
         if blocker is not None:
             raise ValueError(f"cannot enable {args.bundle_id!r}: {blocker}")
+        prospective = tuple(sorted(enabled | {args.bundle_id}))
+        _validate_process_ownership(discover_bundles(prospective))
         current = config.extension(args.bundle_id)
         save_config(
             config.with_extension(
@@ -258,6 +277,7 @@ def _catalog_command(args: argparse.Namespace) -> int:
 def _run_command(args: argparse.Namespace) -> int:
     config = load_config()
     bundles = discover_bundles(config.enabled) if config.enabled else ()
+    _validate_process_ownership(bundles)
     for bundle in bundles:
         blocker = activation_blocker(bundle.manifest)
         if blocker is not None:
