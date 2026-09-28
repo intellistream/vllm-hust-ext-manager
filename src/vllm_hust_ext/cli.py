@@ -28,6 +28,7 @@ from vllm_hust_ext.process_supervisor import (
 )
 from vllm_hust_ext.providers.base import ProviderPlan
 from vllm_hust_ext.providers.vllm import declared_vllm_plugin_names
+from vllm_hust_ext.runtime_evidence import launch_environment
 
 _VLLM_BUILTIN_PLUGIN = "ascend"
 
@@ -446,6 +447,8 @@ def _run_command(args: argparse.Namespace) -> int:
         )
     environment = os.environ.copy()
     environment.update(activation)
+    if bundles:
+        environment.update(launch_environment(bundles))
     shutdown_grace_seconds = getattr(
         args, "shutdown_grace_seconds", DEFAULT_SHUTDOWN_GRACE_SECONDS
     )
