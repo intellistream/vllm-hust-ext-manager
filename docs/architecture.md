@@ -19,6 +19,14 @@ registrations use `vllm_hust.extension_bundles`. A Provider may delegate to an
 official `vllm.*` entry point, but vLLM-HUST does not invent new entry-point
 groups in the upstream namespace.
 
+For vLLM in-process plugins, a manifest may declare installed entry points in
+`vllm.general_plugins` and `vllm.platform_plugins`. Discovery verifies that the
+declaring distribution actually publishes each entry point. At launch, Core
+merges their names with the user's `VLLM_PLUGINS`, retains `ascend`, rejects
+cross-extension name ownership conflicts, and computes a stable order. This is
+launch intent, not evidence that plugin code ran; only a process-owned observer
+may add `runtime_effective`.
+
 ## State projection
 
 State is evidence-based rather than one enabled flag:
@@ -45,3 +53,10 @@ The initial Provider protocol intentionally has only `plan`, `render`, and
 `check`. A plan containing a mutating action is rejected by Core. Apply,
 delete, driver changes, KV deletion, and production-cluster mutation require a
 separate operator-owned workflow and explicit authorization.
+
+`run` supervises only the process tree it creates. Stop/release means signalling
+that Manager-owned launch and waiting for its children to exit. Disabling an
+in-process plugin affects the next host start; rollback is disable plus a clean
+host restart. Package uninstall is performed by the Python package operator
+only after disable and `forget`. None of these actions authorizes stopping an
+external KV service or mutating Kubernetes resources.

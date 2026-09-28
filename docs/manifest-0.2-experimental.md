@@ -22,9 +22,21 @@ Every manifest declares:
   its endpoint, and whether it is optional; and
 - optional typed components and activation declarations.
 
+`activation.entry_points` contains exact `{group, name}` pairs. For installed
+Python bundles, every declared pair must be present in the same distribution's
+metadata. The Manager projects only `vllm.general_plugins` and
+`vllm.platform_plugins` into vLLM's allowlist; other registered groups remain
+inspectable but are not activated by this mechanism. Two enabled bundles may
+not own the same projected name.
+
 The old Bundle v1 shape remains readable only as an experimental migration
 input. It must not be advertised as stable and receives no forward
 compatibility promise.
+
+Saved Manager configuration currently uses schema 2. Schema 1's `enabled`
+array is read as an input migration and is rewritten as schema 2 on the next
+state change. Unknown configuration and manifest schema versions fail closed;
+there is no automatic downgrade migration.
 
 An external-service carrier describes the official implementation surface; it
 does not transfer lifecycle ownership to the Manager. For example, an external

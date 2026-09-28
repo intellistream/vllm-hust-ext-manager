@@ -58,7 +58,11 @@ def _manifest_path(entry_point: EntryPoint) -> Path:
         for filename in MANIFEST_FILENAMES
     )
     files = distribution.files or ()
-    matches = [file for file in files if PurePosixPath(str(file)) in relative]
+    matches = [
+        Path(str(distribution.locate_file(file)))
+        for file in files
+        if PurePosixPath(str(file)) in relative
+    ]
     if not matches:
         direct_url_text = distribution.read_text("direct_url.json")
         if direct_url_text:
@@ -86,8 +90,7 @@ def _manifest_path(entry_point: EntryPoint) -> Path:
         raise DiscoveryError(
             f"{entry_point.name!r} must contain exactly one Bundle v1 manifest"
         )
-    match = matches[0]
-    return match if isinstance(match, Path) else Path(distribution.locate_file(match))
+    return matches[0]
 
 
 def _is_editable(entry_point: EntryPoint) -> bool:
@@ -143,7 +146,7 @@ def discover_bundles(
                 items,
                 key=lambda item: (
                     _is_editable(item),
-                    item.dist.metadata.get("Name", "") if item.dist else "",
+                    item.dist.metadata["Name"] or "" if item.dist else "",
                 ),
             )[0]
         ]
@@ -165,7 +168,7 @@ def discover_bundles(
         distribution = registration.dist
         if distribution is None:
             raise DiscoveryError(f"{bundle_id!r} has no distribution metadata")
-        name = distribution.metadata.get("Name")
+        name = distribution.metadata["Name"]
         if not isinstance(name, str) or not name:
             raise DiscoveryError(f"{bundle_id!r} has no distribution name")
         try:
@@ -183,9 +186,24 @@ def discover_bundles(
             entry_point
             for entry_point in every_entry_point
             if entry_point.dist is not None
-            and entry_point.dist.metadata.get("Name") == name
+            and entry_point.dist.metadata["Name"] == name
             and entry_point.group != ENTRY_POINT_GROUP
         )
+        declared = {
+            (entry_point.group, entry_point.name)
+            for entry_point in manifest.activation.entry_points
+        }
+        installed = {(entry_point.group, entry_point.name) for entry_point in related}
+        missing_entry_points = declared - installed
+        if missing_entry_points:
+            rendered = [
+                f"{group}:{entry_name}"
+                for group, entry_name in sorted(missing_entry_points)
+            ]
+            raise DiscoveryError(
+                f"{bundle_id!r} declares uninstalled activation entry points: "
+                f"{rendered}"
+            )
         loaded[bundle_id] = InstalledBundle(
             bundle_id,
             name,

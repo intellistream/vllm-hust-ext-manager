@@ -480,7 +480,7 @@ class ProductionStackProvider:
                 else ()
             )
         )
-        router_evidence = ()
+        router_evidence: tuple[str, ...] = ()
         if isinstance(router_data_plane_evidence, dict):
             router_evidence = (
                 "router data plane evidence: "

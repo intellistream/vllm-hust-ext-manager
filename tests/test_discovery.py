@@ -40,7 +40,10 @@ def test_identical_wheel_and_editable_registrations_select_wheel(
     monkeypatch.setattr(
         discovery,
         "load_manifest",
-        lambda _path: SimpleNamespace(bundle_id="org.vllm-hust.example"),
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=()),
+        ),
     )
     bundles = discovery.discover_bundles(
         registrations=(editable, wheel), all_entry_points=()
@@ -67,3 +70,57 @@ def test_different_duplicate_descriptors_remain_ambiguous(
 
     with pytest.raises(discovery.DiscoveryError, match="duplicate Bundle"):
         discovery.discover_bundles(registrations=(wheel, editable), all_entry_points=())
+
+
+def test_declared_activation_entry_point_must_be_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.general_plugins", name="example")
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    with pytest.raises(discovery.DiscoveryError, match="uninstalled.*example"):
+        discovery.discover_bundles(
+            registrations=(bundle_registration,), all_entry_points=()
+        )
+
+
+def test_declared_activation_entry_point_matches_distribution_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.platform_plugins", name="platform")
+    installed = SimpleNamespace(
+        group=declared.group,
+        name=declared.name,
+        dist=distribution,
+    )
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    bundles = discovery.discover_bundles(
+        registrations=(bundle_registration,), all_entry_points=(installed,)
+    )
+
+    assert bundles[0].entry_points == (installed,)

@@ -17,7 +17,7 @@ from vllm_hust_ext.core import (
     reject_conflicting_plans,
     status_for,
 )
-from vllm_hust_ext.manifest import BundleManifest, parse_manifest
+from vllm_hust_ext.manifest import ActivationEntryPoint, BundleManifest, parse_manifest
 from vllm_hust_ext.providers import vllm as vllm_provider
 from vllm_hust_ext.providers.base import ProviderPlan
 from vllm_hust_ext.providers.mooncake import MooncakeProvider
@@ -164,6 +164,45 @@ def test_vllm_detects_request_and_kv_materialization_contracts(
         "vllm.request-processing-hook": "1.0",
         "vllm.kv-materialization-runtime-control": "1.0",
     }
+
+
+def test_vllm_plan_projects_general_and_platform_plugin_names() -> None:
+    value = manifest("bidkv-v0.2.json")
+    value = replace(
+        value,
+        activation=replace(
+            value.activation,
+            entry_points=(
+                ActivationEntryPoint("vllm.general_plugins", "arrival_control"),
+                ActivationEntryPoint("vllm.platform_plugins", "custom_platform"),
+            ),
+        ),
+    )
+
+    plan = VllmProvider().plan(value, {}, enabled=True)
+
+    assert plan.generated_config["vllm_plugins"] == [
+        "arrival_control",
+        "custom_platform",
+    ]
+
+
+@pytest.mark.parametrize("unsupported", ["2.0", "not-a-version", object()])
+def test_vllm_does_not_report_unknown_plugin_api_versions(
+    monkeypatch: pytest.MonkeyPatch, unsupported: object
+) -> None:
+    def imported(name: str) -> SimpleNamespace:
+        if name == "vllm.plugins.request_processing":
+            return SimpleNamespace(REQUEST_PROCESSING_HOOK_API_VERSION=unsupported)
+        if name == "vllm.v1.core.kv_materialization":
+            return SimpleNamespace(
+                KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION=unsupported
+            )
+        raise ImportError(name)
+
+    monkeypatch.setattr(vllm_provider, "import_module", imported)
+
+    assert vllm_provider._detect_protocol_versions() == {}
 
 
 def test_vllm_provider_uses_manifest_host_distribution_for_version(
