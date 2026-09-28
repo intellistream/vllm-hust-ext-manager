@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -106,7 +106,9 @@ def plan_for(
     )
     if any(action.mutating for action in plan.actions):
         raise ValueError("provider plan contains a forbidden implicit mutation")
-    return plan
+    if plan.resource_claims and plan.resource_claims != bundle.manifest.resource_claims:
+        raise ValueError("provider plan cannot invent resource claims")
+    return replace(plan, resource_claims=bundle.manifest.resource_claims)
 
 
 def render_plan(
@@ -117,17 +119,32 @@ def render_plan(
 
 
 def reject_conflicting_plans(plans: tuple[ProviderPlan, ...]) -> None:
+    resources: dict[tuple[str, str], tuple[str, str]] = {}
+    for plan in plans:
+        for claim in plan.resource_claims:
+            resource_key = (claim.scope, claim.resource)
+            previous = resources.get(resource_key)
+            if previous is not None and (
+                previous[1] == "exclusive" or claim.mode == "exclusive"
+            ):
+                raise ValueError(
+                    f"extensions {previous[0]!r} and {plan.extension_id!r} "
+                    f"conflict on {claim.scope}:{claim.resource} "
+                    f"({previous[1]} versus {claim.mode})"
+                )
+            resources[resource_key] = (plan.extension_id, claim.mode)
+
     claims: dict[tuple[str, str], tuple[str, Any]] = {}
     for plan in plans:
         for key, value in plan.generated_config.items():
-            claim = (plan.provider, key)
-            previous = claims.get(claim)
+            config_key = (plan.provider, key)
+            previous = claims.get(config_key)
             if previous is not None and previous[1] != value:
                 raise ValueError(
                     f"extensions {previous[0]!r} and {plan.extension_id!r} "
                     f"conflict on {plan.provider}.{key}"
                 )
-            claims[claim] = (plan.extension_id, value)
+            claims[config_key] = (plan.extension_id, value)
 
 
 def plan_dict(plan: ProviderPlan) -> dict[str, Any]:

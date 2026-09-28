@@ -65,15 +65,18 @@ failures while inference remained available, and recovery restored save/load
 without restarting vLLM. Alpha remains frozen for the remaining online
 restart/rollback and support-matrix gates.
 
-> **Compatibility freeze:** Manifest `0.2-experimental` and the former Bundle
-> v1 prototype are not stable APIs. No alpha package will be published until
-> the vLLM, KV-system, and control-plane end-to-end gates pass.
+> **Compatibility freeze:** Manifests `0.2-experimental` and
+> `0.3-experimental`, plus the former Bundle v1 prototype, are not stable APIs.
+> No alpha package will be published until the vLLM, KV-system, and
+> control-plane end-to-end gates pass.
 
 The pinned pass/fail combinations and lifecycle rollback owners are summarized
 in [`docs/support-matrix.md`](docs/support-matrix.md). A passing point does not
 implicitly validate the rest of an experimental version range.
 Configuration migration and rollback rules are documented in
 [`docs/versioning-and-migration.md`](docs/versioning-and-migration.md).
+Capability-registry discovery and composition resource claims are documented
+in [`docs/manifest-0.3-experimental.md`](docs/manifest-0.3-experimental.md).
 The pinned KV-materialization clean-wheel procedure and its evidence boundary
 are documented in
 [`docs/kv-materialization-runbook.md`](docs/kv-materialization-runbook.md).

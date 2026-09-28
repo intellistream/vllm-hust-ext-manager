@@ -14,6 +14,20 @@ the manifest, Provider, host-hook, or catalog contracts.
   copy of the previous configuration before migration; rollback is restoring
   that copy while no Manager command is writing it.
 
+## Manifest 0.2 to 0.3
+
+Manifest `0.3-experimental` is additive at the data-model level but requires an
+explicit schema change because resource ownership affects admission. A 0.2
+manifest is still readable and has no resource claims. It cannot declare
+`resource_claims` until its author audits ownership and changes the manifest
+version. There is no automatic inference from flags, environment variables, or
+implementation names.
+
+Downgrading a 0.3 manifest to 0.2 discards conflict information and is not
+automatic. Operators must disable the extension, replace the package, inspect
+the 0.2 plan, and re-enable it explicitly. Saved enable intent does not bypass
+this migration check.
+
 ## Runtime rollback
 
 For an in-process vLLM plugin, disable the extension and restart the

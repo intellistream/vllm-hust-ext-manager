@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from dataclasses import asdict
-from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from packaging.version import InvalidVersion, Version
-
+from vllm_hust_ext.capabilities import detect_vllm_capabilities
 from vllm_hust_ext.manifest import BundleManifest, activation_blocker
 from vllm_hust_ext.providers.base import (
     PlanAction,
@@ -31,18 +29,6 @@ _RUNTIME_QUALIFICATION_KEY = "_manager_runtime_qualification"
 VLLM_PLUGIN_ENTRY_POINT_GROUPS = frozenset(
     {"vllm.general_plugins", "vllm.platform_plugins"}
 )
-
-
-def _v1_api_version(value: object) -> str | None:
-    """Accept only well-formed v1 host contracts; all other values fail closed."""
-
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = Version(value)
-    except InvalidVersion:
-        return None
-    return value if parsed.major == 1 else None
 
 
 def declared_vllm_plugin_names(manifest: BundleManifest) -> tuple[str, ...]:
@@ -67,52 +53,7 @@ def _qualname_from_implementation_ref(implementation_ref: str) -> str:
 
 def _detect_protocol_versions() -> dict[str, str]:
     """Report only contracts exported by the installed vLLM host."""
-    detected: dict[str, str] = {}
-    try:
-        contracts = import_module("vllm.plugins.contracts")
-        scheduler_policy = contracts.DomainContract.SCHEDULER_POLICY_V1
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if scheduler_policy.value == "vllm.scheduler.policy.v1":
-            detected["vllm.scheduler.policy"] = "1.0"
-    try:
-        preemption = import_module("vllm.v1.core.sched.preemption")
-        preemption_version = preemption.PREEMPTION_POLICY_API_VERSION
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if preemption_version == "1.0":
-            detected["vllm.preemption-policy"] = preemption_version
-    try:
-        admission = import_module("vllm.v1.core.sched.batch_admission")
-        admission_version = admission.BATCH_ADMISSION_POLICY_API_VERSION
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if supported := _v1_api_version(admission_version):
-            detected["vllm.batch-admission-policy"] = supported
-    try:
-        request_processing = import_module("vllm.plugins.request_processing")
-        request_processing_version = (
-            request_processing.REQUEST_PROCESSING_HOOK_API_VERSION
-        )
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if supported := _v1_api_version(request_processing_version):
-            detected["vllm.request-processing-hook"] = supported
-    try:
-        kv_materialization = import_module("vllm.v1.core.kv_materialization")
-        kv_materialization_version = (
-            kv_materialization.KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION
-        )
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if supported := _v1_api_version(kv_materialization_version):
-            detected["vllm.kv-materialization-runtime-control"] = supported
-    return detected
+    return detect_vllm_capabilities().protocol_versions
 
 
 class VllmProvider:
@@ -291,15 +232,17 @@ class VllmProvider:
         detected_version = None
         with suppress(PackageNotFoundError):
             detected_version = version(manifest.host.name)
+        capabilities = detect_vllm_capabilities()
         compatible, evidence = assess_compatibility(
             manifest,
             configuration,
             detected_host_version=detected_version,
-            default_api_version="1.0",
+            default_api_version=capabilities.host_api_version or "1.0",
             # A matching vLLM distribution version does not prove that a
             # fork-only or draft extension protocol is actually present.
-            default_protocol_versions=_detect_protocol_versions(),
+            default_protocol_versions=capabilities.protocol_versions,
         )
+        evidence = capabilities.evidence + evidence
         required_profile = dict(manifest.activation.additional_config).get(
             _RUNTIME_QUALIFICATION_KEY
         )

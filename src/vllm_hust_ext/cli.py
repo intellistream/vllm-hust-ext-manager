@@ -16,6 +16,7 @@ from vllm_hust_ext.core import (
     LifecycleState,
     plan_dict,
     plan_for,
+    reject_conflicting_plans,
     render_plan,
     status_for,
 )
@@ -75,6 +76,9 @@ def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object
         ],
         "requires_services": [
             asdict(service) for service in bundle.manifest.requires_services
+        ],
+        "resource_claims": [
+            asdict(claim) for claim in getattr(bundle.manifest, "resource_claims", ())
         ],
         "activation_ready": blocker is None,
         "activation_blocker": blocker,
@@ -159,6 +163,21 @@ def _validate_process_ownership(bundles: Sequence[InstalledBundle]) -> None:
         )
 
 
+def _validate_resource_ownership(bundles: Sequence[InstalledBundle]) -> None:
+    """Reject manifest-declared ownership conflicts without activating providers."""
+
+    plans = tuple(
+        ProviderPlan(
+            bundle.bundle_id,
+            bundle.manifest.host.provider,
+            (),
+            resource_claims=tuple(getattr(bundle.manifest, "resource_claims", ())),
+        )
+        for bundle in bundles
+    )
+    reject_conflicting_plans(plans)
+
+
 def _merge_command_config(
     command: list[str], activation: dict[str, object]
 ) -> list[str]:
@@ -229,7 +248,9 @@ def _extension_command(args: argparse.Namespace) -> int:
         if blocker is not None:
             raise ValueError(f"cannot enable {args.bundle_id!r}: {blocker}")
         prospective = tuple(sorted(enabled | {args.bundle_id}))
-        _validate_process_ownership(discover_bundles(prospective))
+        prospective_bundles = discover_bundles(prospective)
+        _validate_process_ownership(prospective_bundles)
+        _validate_resource_ownership(prospective_bundles)
         current = config.extension(args.bundle_id)
         save_config(
             config.with_extension(
@@ -292,6 +313,7 @@ def _extension_command(args: argparse.Namespace) -> int:
         plans = [
             plan_for(bundle, config.extension(bundle.bundle_id)) for bundle in bundles
         ]
+        reject_conflicting_plans(tuple(plans))
         print(
             json.dumps(
                 _activation_environment(bundles, plans), indent=2, sort_keys=True
@@ -393,6 +415,8 @@ def _run_command(args: argparse.Namespace) -> int:
         extension = config.extension(bundle.bundle_id)
         plan = plan_for(bundle, extension)
         plans.append(plan)
+    reject_conflicting_plans(tuple(plans))
+    for plan in plans:
         command = _merge_provider_plan(command, plan)
     activation = _activation_environment(bundles, plans)
     native_manifests = [

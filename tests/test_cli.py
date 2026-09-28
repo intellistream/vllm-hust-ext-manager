@@ -20,6 +20,7 @@ from vllm_hust_ext.manifest import (
     HostSpec,
     ImplementationCarrier,
     RequiredService,
+    ResourceClaim,
     RuntimeSpec,
 )
 from vllm_hust_ext.providers.base import PlanAction, ProviderPlan
@@ -523,6 +524,43 @@ def test_enable_refuses_second_stateaxis_process_owner(
     monkeypatch.setattr(cli, "save_config", lambda *_args: pytest.fail("must not save"))
 
     with pytest.raises(ValueError, match="only one StateAxis ECPA carrier"):
+        cli._extension_command(SimpleNamespace(action="enable", bundle_id=second))
+
+
+def test_enable_refuses_conflicting_manifest_resource_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "org.example.first-scheduler"
+    second = "org.example.second-scheduler"
+    claim = ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive")
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="vllm"),
+                runtime=SimpleNamespace(
+                    process_scope="scheduler",
+                    isolation="trusted_in_process",
+                ),
+                implementation=(),
+                resource_claims=(claim,),
+            ),
+        )
+        for extension_id in (first, second)
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig({first: ExtensionConfig(enabled=True)}),
+    )
+
+    def discover(selected):
+        return tuple(bundle for bundle in bundles if bundle.bundle_id in selected)
+
+    monkeypatch.setattr(cli, "discover_bundles", discover)
+    monkeypatch.setattr(cli, "save_config", lambda *_args: pytest.fail("must not save"))
+
+    with pytest.raises(ValueError, match="vllm-process:vllm.scheduler.policy"):
         cli._extension_command(SimpleNamespace(action="enable", bundle_id=second))
 
 
