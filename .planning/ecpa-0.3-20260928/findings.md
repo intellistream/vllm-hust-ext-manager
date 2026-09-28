@@ -12,3 +12,9 @@
 - Website catalog maturity and Manager activation qualification remain separate
   evidence domains; this iteration does not convert catalog presence into
   activation eligibility.
+- Loader discovery, import, resolution, and callable registration cannot prove
+  runtime effectiveness. The accepted evidence is a bound host KV observer
+  receipt from an exact PID/start identity that is still alive; retained audit
+  events stop projecting `runtime_effective` after process exit.
+- The final clean-wheel path required no NPU. It proves packaging, host
+  contracts, observer delivery, supervision, and rollback behavior only.
