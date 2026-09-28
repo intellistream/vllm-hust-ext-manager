@@ -85,10 +85,29 @@ def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object
     }
 
 
-def _activation_environment(bundles: Sequence[InstalledBundle]) -> dict[str, str]:
+def _activation_environment(
+    bundles: Sequence[InstalledBundle],
+    plans: Sequence[ProviderPlan] = (),
+) -> dict[str, str]:
+    planned = {
+        plan.extension_id: plan.generated_config.get("environment", {})
+        for plan in plans
+    }
     environment: dict[str, str] = {}
     for bundle in bundles:
-        for key, value in bundle.manifest.activation.environment:
+        bundle_environment = planned.get(
+            bundle.bundle_id, dict(bundle.manifest.activation.environment)
+        )
+        if not isinstance(bundle_environment, dict):
+            raise ValueError(
+                f"provider for {bundle.bundle_id!r} returned an invalid environment"
+            )
+        for key, value in bundle_environment.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError(
+                    f"provider for {bundle.bundle_id!r} returned a non-string "
+                    "environment entry"
+                )
             if key in environment and environment[key] != value:
                 raise ValueError(
                     f"enabled Bundles disagree on environment variable {key}"
@@ -270,7 +289,15 @@ def _extension_command(args: argparse.Namespace) -> int:
         return 0
     if args.action == "env":
         bundles = discover_bundles(config.enabled) if config.enabled else ()
-        print(json.dumps(_activation_environment(bundles), indent=2, sort_keys=True))
+        plans = [
+            plan_for(bundle, config.extension(bundle.bundle_id))
+            for bundle in bundles
+        ]
+        print(
+            json.dumps(
+                _activation_environment(bundles, plans), indent=2, sort_keys=True
+            )
+        )
         return 0
     raise AssertionError(args.action)
 
@@ -356,7 +383,6 @@ def _run_command(args: argparse.Namespace) -> int:
                 f"refusing to launch unconfigured StateAxis extension "
                 f"{bundle.bundle_id!r}: " + "; ".join(status.evidence)
             )
-    activation = _activation_environment(bundles)
     command = list(args.command or ["vllm"])
     if command and command[0] == "--":
         command = command[1:]
@@ -369,6 +395,7 @@ def _run_command(args: argparse.Namespace) -> int:
         plan = plan_for(bundle, extension)
         plans.append(plan)
         command = _merge_provider_plan(command, plan)
+    activation = _activation_environment(bundles, plans)
     native_manifests = [
         (plan.extension_id, plan.generated_config["native_extension_manifest"])
         for plan in plans

@@ -259,6 +259,27 @@ def test_vllm_provider_renders_configured_speculative_config() -> None:
     assert "native_extension_manifest" not in plan.generated_config
 
 
+def test_vllm_provider_allows_only_declared_environment_overrides() -> None:
+    value = manifest("bidkv-v0.2.json")
+
+    plan = VllmProvider().plan(
+        value,
+        {"environment": {"BIDKV_UTILITY_STRATEGY": "lru"}},
+        enabled=True,
+    )
+
+    assert plan.generated_config["environment"] == {
+        "BIDKV_UTILITY_ENABLE": "1",
+        "BIDKV_UTILITY_STRATEGY": "lru",
+    }
+    with pytest.raises(ValueError, match="must be declared"):
+        VllmProvider().plan(
+            value,
+            {"environment": {"UNDECLARED_SECRET": "value"}},
+            enabled=True,
+        )
+
+
 def test_vllm_provider_keeps_import_only_descriptor_inert() -> None:
     value = manifest("bidkv-v0.2.json")
     carrier = value.implementation[0]

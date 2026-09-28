@@ -185,10 +185,24 @@ class VllmProvider:
                 raise ValueError(f"launch_options.{name} must be an object")
             json_options[_JSON_LAUNCH_OPTIONS[name]] = value
 
+        declared_environment = dict(manifest.activation.environment)
+        environment_overrides = configuration.get("environment", {})
+        if not isinstance(environment_overrides, dict):
+            raise ValueError("environment must be an object")
+        unknown_environment = environment_overrides.keys() - declared_environment.keys()
+        if unknown_environment:
+            raise ValueError(
+                "environment overrides must be declared by the manifest: "
+                f"{sorted(unknown_environment)}"
+            )
+        if not all(isinstance(value, str) for value in environment_overrides.values()):
+            raise ValueError("environment override values must be strings")
+        declared_environment.update(environment_overrides)
+
         additional_config = dict(manifest.activation.additional_config)
         additional_config.pop(_RUNTIME_QUALIFICATION_KEY, None)
         generated: dict[str, Any] = {
-            "environment": dict(manifest.activation.environment),
+            "environment": declared_environment,
             "additional_config": additional_config,
             "user_config": configuration,
             "vllm_json_options": json_options,
