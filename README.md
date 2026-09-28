@@ -109,6 +109,9 @@ qualification. An active carrier may run unqualified only when its extension
 configuration sets `experiment_mode: true`; the rendered plan remains degraded
 and labels the launch experimental. Descriptor-only carriers still fail closed,
 and production activation still requires the bound qualification record.
+Only one trusted in-process StateAxis carrier may be enabled for a process tree;
+the Manager rejects a second owner at enable time and rechecks the invariant at
+launch time.
 This is a process-lifecycle guarantee, not proof that a particular accelerator
 driver has released device memory; deployments must verify that separately.
 

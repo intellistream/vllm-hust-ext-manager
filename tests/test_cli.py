@@ -358,6 +358,77 @@ def test_run_refuses_unverified_in_process_scheduler_policy(
         cli._run_command(SimpleNamespace(command=["vllm"], dry_run=True))
 
 
+def test_run_refuses_multiple_stateaxis_process_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extension_ids = (
+        "org.stateaxis.hybrid-branch-coherence",
+        "org.stateaxis.no-harm-preparation",
+    )
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="stateaxis"),
+                runtime=SimpleNamespace(
+                    process_scope="stateaxis_processes",
+                    isolation="trusted_in_process",
+                ),
+            ),
+        )
+        for extension_id in extension_ids
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig(
+            {
+                extension_id: ExtensionConfig(enabled=True)
+                for extension_id in extension_ids
+            }
+        ),
+    )
+    monkeypatch.setattr(cli, "discover_bundles", lambda *_args: bundles)
+
+    with pytest.raises(ValueError, match="only one StateAxis ECPA carrier"):
+        cli._run_command(SimpleNamespace(command=["stateaxis"], dry_run=True))
+
+
+def test_enable_refuses_second_stateaxis_process_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "org.stateaxis.hybrid-branch-coherence"
+    second = "org.stateaxis.no-harm-preparation"
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="stateaxis"),
+                runtime=SimpleNamespace(
+                    process_scope="stateaxis_processes",
+                    isolation="trusted_in_process",
+                ),
+                implementation=(),
+            ),
+        )
+        for extension_id in (first, second)
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig({first: ExtensionConfig(enabled=True)}),
+    )
+
+    def discover(selected):
+        return tuple(bundle for bundle in bundles if bundle.bundle_id in selected)
+
+    monkeypatch.setattr(cli, "discover_bundles", discover)
+    monkeypatch.setattr(cli, "save_config", lambda *_args: pytest.fail("must not save"))
+
+    with pytest.raises(ValueError, match="only one StateAxis ECPA carrier"):
+        cli._extension_command(SimpleNamespace(action="enable", bundle_id=second))
+
+
 def test_run_accepts_scheduler_policy_only_after_compatibility_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
