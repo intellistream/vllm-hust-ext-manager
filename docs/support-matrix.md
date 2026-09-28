@@ -13,7 +13,7 @@ manifest range.
 | MooncakeStoreConnector / Ascend | vLLM 0.23 + vLLM Ascend + NPU wheel 0.3.11.post1, nine-key save/load and outage/recovery on NPU 4 | Matrix beyond the pinned `ascend` transport and `load_async=true` combination |
 | Production Stack control plane | Commit `1b87c11a`, chart 0.1.12, Helm 4.2.4, Kubernetes 1.34.11: render, dry-run, lifecycle rollback, controller, Router and HPA evidence | Additional Kubernetes/Helm versions and permission-denial matrix |
 | Production Stack real-model Router | arm64 source build routed an absent backend as HTTP 500, then existing GLM-4-32B as HTTP 200/`ROUTER_OK` without restarting vLLM; commit `7611dfa` was built, smoke-tested and published to GHCR by GitHub-hosted runners, then pulled and entrypoint-tested on arm64 server 91 | Additional Kubernetes/Helm versions and permission-denial matrix; amd64 and self-hosted infrastructure are not required |
-| KV materialization native plugin contract | Manager activation and host/plugin branches remain under convergence in extension-manager PR #5, vLLM-HUST PR #20, and arrival-control PR #23. Repository tests are not native NPU runtime evidence. | Merge the current host contract, install the real plugin from a clean wheel, prove process-owned `runtime_effective`, then pass stop/disable/rollback/uninstall without residual resources |
+| KV materialization native plugin contract | Manager `a78dc3b`, vLLM-HUST `6baa026f`, and arrival-control `6d318434`: 105 plugin tests, host request/KV contract suites, Python 3.10/3.12 wheel CI, clean-wheel discover/check/enable/plan/render, supervised host-process observer receipt, and disable/next-start rollback/forget/uninstall all passed without residual Manager-owned processes. | Native-current NPU execution, injected observer/host failure degradation, and a broader host/version matrix. The 0.23 Ascend run remains compatibility-adapter evidence only. |
 
 ## Rollback ownership
 
@@ -24,6 +24,8 @@ manifest range.
 - Kubernetes operators own Helm history, apply, rollback, and uninstall.
   Manager only plans, renders, dry-run checks and projects evidence.
 
-Alpha remains **NO-GO** until the remaining version, permission, upstream-review
-and performance gates are complete. No old 0.23 result qualifies the new Sage
-Mate baseline, and enabled intent is not runtime-effectiveness evidence.
+Alpha remains **NO-GO** until the remaining version, permission, native-NPU,
+failure-degradation, upstream-review, and performance gates are complete. No
+old 0.23 result qualifies the current native host, and enabled intent, an
+environment variable, or successful import is not runtime-effectiveness
+evidence.

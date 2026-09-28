@@ -290,8 +290,7 @@ def _extension_command(args: argparse.Namespace) -> int:
     if args.action == "env":
         bundles = discover_bundles(config.enabled) if config.enabled else ()
         plans = [
-            plan_for(bundle, config.extension(bundle.bundle_id))
-            for bundle in bundles
+            plan_for(bundle, config.extension(bundle.bundle_id)) for bundle in bundles
         ]
         print(
             json.dumps(
