@@ -13,7 +13,7 @@
 - KV plugin PR #23 head: `ea59bd3d1218d871fe7406dc1c480d04d13e9d63`.
 - Extension Manager PR #5 changes only README, CLI activation environment, vLLM protocol detection, and focused tests. It predates merged lifecycle/provider work and must not be merged blind.
 
-## Pending evidence
+## Initial pending evidence
 
 - PR #5 is open, mergeable, and had no CI. Its five-file diff did not implement
   process supervision, duplicate-install handling, StateAxis, or exclusive
@@ -33,4 +33,41 @@
 - Clean-wheel audit exposed stale `vllm_hust_ext.__version__=0.1.0` while package
   metadata is `0.2.0.dev0`; corrected to keep version reporting truthful.
 - No NPU tests were run; Manager contract work did not require device access.
-- Host and plugin dependency-chain validation.
+- Host and plugin dependency-chain validation was pending at initial audit.
+
+## Final convergence evidence
+
+- Extension Manager PR #15 replaced old PR #5; PR #5 was closed with a link to
+  the replacement. PR #15 passed Python 3.10/3.12 CI, Ruff, strict mypy, wheel,
+  101 tests, and clean-wheel CLI validation. It merged as
+  `a78dc3b66a908c588a7ee562edb6a250fa86c9ba`. Later Manager main
+  `9c487b02d088f2cbe95cd8f0ce1024c93d9dcc64` also includes PR #16's declared
+  activation-environment conflict checks.
+- vLLM-HUST PR #20 preserved main's request-scoped KV hints, Qwen3.5 path,
+  prefix replay, and scheduler behavior while adding typed request-processing
+  and KV-materialization API v1.0 contracts. Focused results: 6 request-hook
+  tests and 10 KV-runtime tests passed; Ruff, format, SPDX, Python 3.12 mypy,
+  Buildkite tethering, and remote pre-commit passed. PR #20 merged as
+  `6baa026f602fd221dc7db64362730305048a8b87`.
+- Arrival-control PR #23 preserved merged PR #25's correlation/session behavior,
+  replaced its temporary current-layout monkey patch with the native v1.0 host
+  contracts, updated the Manager pin to `a78dc3b...` and host submodule to
+  `6baa026f...`, and merged as
+  `6d31843458bf7c75322f60c5715ae598c6ed4cde`.
+- Plugin validation: 105 repository tests passed; 37 focused tests passed before
+  final CI hardening; targeted Ruff and format passed; sdist/wheel built; remote
+  Python 3.10 and 3.12 wheel jobs passed.
+- Clean-wheel validation used Manager and plugin wheels plus the pinned host's
+  dependency-free carrier build. Manager discovered and checked host version
+  `0.29.1.post1.dev1+g75aaa9b4b.empty` and both protocol APIs at `1.0`.
+  User `VLLM_PLUGINS=user_plugin,ascend,user_plugin` rendered deterministically
+  as `user_plugin,ascend,kv_materialization`.
+- A Manager-supervised clean-wheel process resolved the installed plugin entry
+  point, applied the pinned host request processor, and received a host-process
+  observer receipt. Host core tests separately verify that lookup/commit
+  receipts are emitted after actual cache outcomes. Disable removed activation
+  from the next launch; forget and wheel uninstall removed Manager/package
+  state. No port, NPU, or child process was left behind.
+- No new NPU test was run. The historical 2026-09-10 Ascend result qualifies
+  only the vLLM 0.23 compatibility adapter, not the merged native API v1.0 host.
+  Compatibility freeze remains in force.

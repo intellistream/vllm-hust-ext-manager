@@ -74,6 +74,9 @@ in [`docs/support-matrix.md`](docs/support-matrix.md). A passing point does not
 implicitly validate the rest of an experimental version range.
 Configuration migration and rollback rules are documented in
 [`docs/versioning-and-migration.md`](docs/versioning-and-migration.md).
+The pinned KV-materialization clean-wheel procedure and its evidence boundary
+are documented in
+[`docs/kv-materialization-runbook.md`](docs/kv-materialization-runbook.md).
 
 ```bash
 pip install vllm-hust-ext
