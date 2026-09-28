@@ -10,6 +10,7 @@ from vllm_hust_ext.config import ExtensionConfig
 from vllm_hust_ext.discovery import InstalledBundle
 from vllm_hust_ext.providers import provider_for
 from vllm_hust_ext.providers.base import ProviderPlan, RenderArtifact
+from vllm_hust_ext.runtime_evidence import runtime_effective_evidence
 
 
 class LifecycleState(str, Enum):
@@ -73,6 +74,10 @@ def status_for(
         states.append(LifecycleState.CONFIGURED)
     if extension.enabled:
         states.append(LifecycleState.ENABLED)
+        runtime_evidence = runtime_effective_evidence(bundle)
+        if runtime_evidence is not None:
+            states.append(LifecycleState.RUNTIME_EFFECTIVE)
+            check = replace(check, evidence=check.evidence + (runtime_evidence,))
     if check.reachable is True:
         states.append(LifecycleState.REACHABLE)
     if check.healthy is True:

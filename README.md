@@ -143,10 +143,12 @@ in unrelated groups are not projected into vLLM's plugin allowlist.
 
 Lifecycle states are independent: `installed`, `configured`, and `enabled`
 describe artifacts and saved launch intent. `runtime_effective` requires a
-process-owned observer to prove that the selected implementation was invoked
-by the running engine. This Manager does not infer runtime effectiveness from
-static discovery or an environment variable, so ordinary status output omits
-that state until an external runtime observer supplies evidence.
+process-owned observer to prove that the selected implementation handled real
+runtime work. For Manager-supervised launches, the Manager creates a fresh
+plan/launch binding and accepts the host's strict evidence stream. Status adds
+`runtime_effective` only while the reporting process identity is still live;
+it never infers the state from discovery, enablement, an environment variable,
+or successful plugin import.
 
 Descriptors whose only Python implementation is marked `import_only` or
 `legacy_unregistered` remain inspectable but cannot be enabled. Inspection

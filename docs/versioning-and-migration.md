@@ -34,7 +34,9 @@ For an in-process vLLM plugin, disable the extension and restart the
 Manager-owned host process. Then verify the plugin observer no longer reports
 invocations before forgetting state or uninstalling the distribution. A
 successful import, an environment variable, or saved enabled intent is never
-`runtime_effective` evidence.
+`runtime_effective` evidence. Bound observer receipts remain in an audit log,
+but status stops projecting the state as soon as the exact reporting PID/start
+identity is no longer live.
 
 External KV services and Kubernetes workloads keep their existing operator
 lifecycle. Manager disable, forget, and package uninstall do not stop, roll

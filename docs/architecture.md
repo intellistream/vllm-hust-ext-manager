@@ -25,7 +25,10 @@ declaring distribution actually publishes each entry point. At launch, Core
 merges their names with the user's `VLLM_PLUGINS`, retains `ascend`, rejects
 cross-extension name ownership conflicts, and computes a stable order. This is
 launch intent, not evidence that plugin code ran; only a process-owned observer
-may add `runtime_effective`.
+may add `runtime_effective`. A supervised launch receives Manager-owned plan
+and launch IDs plus a strict evidence sink. Core accepts only bound
+`runtime_effective` events whose PID/start identity still names a live process;
+loader discovery, resolution, and invocation events remain insufficient.
 
 Manifest 0.3 adds typed resource claims for composition. Core rejects two
 plans when either one claims the same scoped resource exclusively. This models
