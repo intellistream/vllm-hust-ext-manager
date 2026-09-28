@@ -16,3 +16,6 @@
   Manager-owned processes.
 - [x] Updated support claims and kept compatibility freeze for remaining
   native-NPU, failure-degradation, and broader support-matrix gates.
+- [x] Merged ECPA 0.3 capability/resource contracts (Manager #18, host #44),
+  live-only observer evidence (Manager #19, host #45), and the real plugin
+  migration (#27); verified exact remote main commits and dual-Python CI.

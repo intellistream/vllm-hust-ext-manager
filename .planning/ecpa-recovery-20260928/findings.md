@@ -71,3 +71,18 @@
 - No new NPU test was run. The historical 2026-09-10 Ascend result qualifies
   only the vLLM 0.23 compatibility adapter, not the merged native API v1.0 host.
   Compatibility freeze remains in force.
+
+## ECPA 0.3 follow-through
+
+- Manager PRs #18 and #19 merged as `2694cb11400b324e3a926a5e76b54a6a8710d0a3`
+  and `2dffcf7fdea3cad36bc24c0c4174394bcc06d796`.
+- Host PRs #44 and #45 merged as `e7dbd66251812282e5834a8532be9f830c991e0e`
+  and `e521b42ed004692eea5ee2f1f8ff2f4d0245b7b1`.
+- Arrival-control PR #27 merged as
+  `15172b7c8630cf5fa8f33ae0d2c275df5ced7272` with Manager/host pins, Manifest
+  0.3 resource claims, and isolated host-contract tests.
+- The exact clean-wheel lifecycle included a live host-owned runtime observer
+  receipt. `runtime_effective` was visible only while its PID/start identity
+  remained alive, disappeared after supervised SIGINT cleanup, and was followed
+  by successful disable, forget, and uninstall. This is not NPU or performance
+  qualification.
