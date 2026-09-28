@@ -9,6 +9,8 @@ from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 from vllm_hust_ext.manifest import BundleManifest, activation_blocker
 from vllm_hust_ext.providers.base import (
     PlanAction,
@@ -26,6 +28,33 @@ _BOOLEAN_LAUNCH_OPTIONS = {
     "scheduler_reserve_output_budget": "--scheduler-reserve-output-budget",
 }
 _RUNTIME_QUALIFICATION_KEY = "_manager_runtime_qualification"
+VLLM_PLUGIN_ENTRY_POINT_GROUPS = frozenset(
+    {"vllm.general_plugins", "vllm.platform_plugins"}
+)
+
+
+def _v1_api_version(value: object) -> str | None:
+    """Accept only well-formed v1 host contracts; all other values fail closed."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = Version(value)
+    except InvalidVersion:
+        return None
+    return value if parsed.major == 1 else None
+
+
+def declared_vllm_plugin_names(manifest: BundleManifest) -> tuple[str, ...]:
+    """Project only official vLLM activation groups in declaration order."""
+
+    return tuple(
+        dict.fromkeys(
+            entry_point.name
+            for entry_point in manifest.activation.entry_points
+            if entry_point.group in VLLM_PLUGIN_ENTRY_POINT_GROUPS
+        )
+    )
 
 
 def _qualname_from_implementation_ref(implementation_ref: str) -> str:
@@ -61,8 +90,28 @@ def _detect_protocol_versions() -> dict[str, str]:
     except (AttributeError, ImportError):
         pass
     else:
-        if admission_version.startswith("1."):
-            detected["vllm.batch-admission-policy"] = admission_version
+        if supported := _v1_api_version(admission_version):
+            detected["vllm.batch-admission-policy"] = supported
+    try:
+        request_processing = import_module("vllm.plugins.request_processing")
+        request_processing_version = (
+            request_processing.REQUEST_PROCESSING_HOOK_API_VERSION
+        )
+    except (AttributeError, ImportError):
+        pass
+    else:
+        if supported := _v1_api_version(request_processing_version):
+            detected["vllm.request-processing-hook"] = supported
+    try:
+        kv_materialization = import_module("vllm.v1.core.kv_materialization")
+        kv_materialization_version = (
+            kv_materialization.KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION
+        )
+    except (AttributeError, ImportError):
+        pass
+    else:
+        if supported := _v1_api_version(kv_materialization_version):
+            detected["vllm.kv-materialization-runtime-control"] = supported
     return detected
 
 
@@ -138,12 +187,15 @@ class VllmProvider:
 
         additional_config = dict(manifest.activation.additional_config)
         additional_config.pop(_RUNTIME_QUALIFICATION_KEY, None)
-        generated = {
+        generated: dict[str, Any] = {
             "environment": dict(manifest.activation.environment),
             "additional_config": additional_config,
             "user_config": configuration,
             "vllm_json_options": json_options,
         }
+        plugin_names = declared_vllm_plugin_names(manifest)
+        if plugin_names:
+            generated["vllm_plugins"] = list(plugin_names)
         if vllm_flags:
             generated["vllm_flags"] = vllm_flags
         preemption_components = [
@@ -178,7 +230,7 @@ class VllmProvider:
             )
         if native_manifest is not None:
             generated["native_extension_manifest"] = native_manifest
-        warnings = ()
+        warnings: tuple[str, ...] = ()
         if manifest.kind == "scheduler_policy" and manifest.protocols:
             warnings = (
                 "in-process scheduler activation requires explicit host and "

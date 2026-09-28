@@ -26,6 +26,34 @@ from vllm_hust_ext.process_supervisor import (
     supervise,
 )
 from vllm_hust_ext.providers.base import ProviderPlan
+from vllm_hust_ext.providers.vllm import declared_vllm_plugin_names
+
+_VLLM_BUILTIN_PLUGIN = "ascend"
+
+
+def _comma_separated_names(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _declared_vllm_plugins(
+    bundles: Sequence[InstalledBundle],
+) -> tuple[str, ...]:
+    """Return deterministic plugin names and reject cross-bundle ambiguity."""
+
+    owners: dict[str, str] = {}
+    names: list[str] = []
+    for bundle in sorted(bundles, key=lambda item: item.bundle_id):
+        for plugin_name in declared_vllm_plugin_names(bundle.manifest):
+            owner = owners.get(plugin_name)
+            if owner is not None and owner != bundle.bundle_id:
+                raise ValueError(
+                    f"enabled Bundles {owner!r} and {bundle.bundle_id!r} "
+                    f"both declare vLLM plugin name {plugin_name!r}"
+                )
+            if owner is None:
+                owners[plugin_name] = bundle.bundle_id
+                names.append(plugin_name)
+    return tuple(names)
 
 
 def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object]:
@@ -66,6 +94,17 @@ def _activation_environment(bundles: Sequence[InstalledBundle]) -> dict[str, str
                     f"enabled Bundles disagree on environment variable {key}"
                 )
             environment[key] = value
+
+    activated_plugins = _declared_vllm_plugins(bundles)
+    if activated_plugins:
+        plugin_names = _comma_separated_names(os.getenv("VLLM_PLUGINS"))
+        plugin_names.extend(
+            _comma_separated_names(environment.pop("VLLM_PLUGINS", None))
+        )
+        if _VLLM_BUILTIN_PLUGIN not in plugin_names:
+            plugin_names.append(_VLLM_BUILTIN_PLUGIN)
+        plugin_names.extend(activated_plugins)
+        environment["VLLM_PLUGINS"] = ",".join(dict.fromkeys(plugin_names))
     environment["VLLMHUST_EXT_ENABLED_BUNDLES"] = ",".join(
         bundle.bundle_id for bundle in bundles
     )
@@ -192,10 +231,10 @@ def _extension_command(args: argparse.Namespace) -> int:
         print(f"disabled {args.bundle_id}")
         return 0
     if args.action == "forget":
-        current = config.extensions.get(args.bundle_id)
-        if current is None:
+        stored = config.extensions.get(args.bundle_id)
+        if stored is None:
             raise ValueError(f"extension {args.bundle_id!r} has no stored state")
-        if current.enabled:
+        if stored.enabled:
             raise ValueError(
                 f"disable {args.bundle_id!r} before forgetting its stored state"
             )
@@ -492,9 +531,17 @@ def _merge_json_option(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="vllm-hust-ext")
+    parser = argparse.ArgumentParser(
+        prog="vllm-hust-ext",
+        description=(
+            "Inspect extension compatibility and launch explicitly enabled host "
+            "plugins without taking ownership of external services."
+        ),
+    )
     subcommands = parser.add_subparsers(dest="command_name", required=True)
-    extension = subcommands.add_parser("extension")
+    extension = subcommands.add_parser(
+        "extension", help="inspect and manage saved extension intent"
+    )
     extension_subcommands = extension.add_subparsers(dest="action", required=True)
     list_parser = extension_subcommands.add_parser("list")
     list_parser.add_argument("--json", action="store_true")
@@ -509,13 +556,19 @@ def build_parser() -> argparse.ArgumentParser:
         "plan",
         "render",
     ):
-        action_parser = extension_subcommands.add_parser(action)
+        action_parser = extension_subcommands.add_parser(
+            action, help=f"{action} one installed extension"
+        )
         action_parser.add_argument("bundle_id")
     configure_parser = extension_subcommands.add_parser("configure")
     configure_parser.add_argument("bundle_id")
     configure_parser.add_argument("--file", required=True)
-    extension_subcommands.add_parser("env")
-    catalog = subcommands.add_parser("catalog")
+    extension_subcommands.add_parser(
+        "env", help="render launch environment for enabled extensions"
+    )
+    catalog = subcommands.add_parser(
+        "catalog", help="validate the Workstation Mod Center metadata feed"
+    )
     catalog_subcommands = catalog.add_subparsers(dest="action", required=True)
     catalog_validate = catalog_subcommands.add_parser("validate")
     catalog_validate.add_argument("file")
@@ -526,7 +579,9 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_inspect = catalog_subcommands.add_parser("inspect")
     catalog_inspect.add_argument("file")
     catalog_inspect.add_argument("extension_id")
-    run_parser = subcommands.add_parser("run")
+    run_parser = subcommands.add_parser(
+        "run", help="launch and supervise a host command with enabled extensions"
+    )
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument(
         "--shutdown-grace-seconds",

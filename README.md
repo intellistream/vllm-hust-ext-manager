@@ -72,6 +72,8 @@ restart/rollback and support-matrix gates.
 The pinned pass/fail combinations and lifecycle rollback owners are summarized
 in [`docs/support-matrix.md`](docs/support-matrix.md). A passing point does not
 implicitly validate the rest of an experimental version range.
+Configuration migration and rollback rules are documented in
+[`docs/versioning-and-migration.md`](docs/versioning-and-migration.md).
 
 ```bash
 pip install vllm-hust-ext
@@ -125,6 +127,13 @@ Installing an extension distribution only makes it discoverable. Enabling is
 explicit and stored in the user configuration. Discovery reads installed
 distribution metadata and the static bundle manifest without importing its
 implementation modules.
+
+For enabled in-process vLLM extensions, activation entries in the official
+`vllm.general_plugins` or `vllm.platform_plugins` groups are merged into
+`VLLM_PLUGINS` at launch. Existing selections are preserved, the built-in
+`ascend` plugin remains selected, and duplicate names are removed in a stable
+order. Two enabled extensions may not claim the same plugin name; entry points
+in unrelated groups are not projected into vLLM's plugin allowlist.
 
 Lifecycle states are independent: `installed`, `configured`, and `enabled`
 describe artifacts and saved launch intent. `runtime_effective` requires a

@@ -6,7 +6,7 @@ import os
 import signal
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from types import FrameType
 
@@ -20,7 +20,7 @@ def _managed_signals() -> tuple[signal.Signals, ...]:
     return tuple(getattr(signal, name) for name in names if hasattr(signal, name))
 
 
-def _signal_launch_tree(process: subprocess.Popen[object], signum: int) -> None:
+def _signal_launch_tree(process: subprocess.Popen[bytes], signum: int) -> None:
     """Signal the launch tree without ever signalling the Manager itself."""
 
     if os.name == "posix":
@@ -33,7 +33,7 @@ def _signal_launch_tree(process: subprocess.Popen[object], signum: int) -> None:
         process.terminate()
 
 
-def _launch_tree_exists(process: subprocess.Popen[object]) -> bool:
+def _launch_tree_exists(process: subprocess.Popen[bytes]) -> bool:
     if os.name != "posix":
         return process.poll() is None
     try:
@@ -45,7 +45,7 @@ def _launch_tree_exists(process: subprocess.Popen[object]) -> bool:
     return True
 
 
-def _wait_for_launch_tree(process: subprocess.Popen[object], deadline: float) -> bool:
+def _wait_for_launch_tree(process: subprocess.Popen[bytes], deadline: float) -> bool:
     while _launch_tree_exists(process):
         if time.monotonic() >= deadline:
             return False
@@ -53,7 +53,7 @@ def _wait_for_launch_tree(process: subprocess.Popen[object], deadline: float) ->
     return True
 
 
-def _cleanup_survivors(process: subprocess.Popen[object], deadline: float) -> None:
+def _cleanup_survivors(process: subprocess.Popen[bytes], deadline: float) -> None:
     """Stop descendants that outlive the direct child."""
 
     if not _launch_tree_exists(process):
@@ -81,10 +81,13 @@ def supervise(
     if shutdown_grace_seconds < 0:
         raise ValueError("shutdown grace period must not be negative")
 
-    child: subprocess.Popen[object] | None = None
+    child: subprocess.Popen[bytes] | None = None
     received: list[int] = []
     signal_started_at: list[float] = []
-    previous_handlers: dict[signal.Signals, object] = {}
+    previous_handlers: dict[
+        signal.Signals,
+        Callable[[int, FrameType | None], object] | int | None,
+    ] = {}
 
     def forward(signum: int, _frame: FrameType | None) -> None:
         first_signal = not received
@@ -101,10 +104,11 @@ def supervise(
         signal.signal(managed_signal, forward)
 
     try:
-        popen_options: dict[str, object] = {"env": dict(env)}
-        if os.name == "posix":
-            popen_options["start_new_session"] = True
-        child = subprocess.Popen(command, **popen_options)
+        child = subprocess.Popen(
+            command,
+            env=dict(env),
+            start_new_session=os.name == "posix",
+        )
         if received:
             _signal_launch_tree(child, received[0])
 
