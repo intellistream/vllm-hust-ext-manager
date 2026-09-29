@@ -86,3 +86,15 @@
   remained alive, disappeared after supervised SIGINT cleanup, and was followed
   by successful disable, forget, and uninstall. This is not NPU or performance
   qualification.
+
+# Follow-up discovery-isolation finding (2026-09-29)
+
+- A malformed installed Bundle registration was able to make `extension list`
+  fail before it showed any healthy Bundle. This was an ECPA inventory defect:
+  disabled third-party metadata must not deny visibility into unrelated MODs.
+- Strict resolution remains correct for inspect/check/enable/plan/render/run;
+  the repair is intentionally limited to list inventory and preserves fail-closed
+  activation.
+- A clean-wheel mixed installation of CLM and Pegaflow reproduced the boundary:
+  CLM remained visible while Pegaflow was reported with its cross-distribution
+  activation-entry-point error.

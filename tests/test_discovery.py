@@ -128,3 +128,53 @@ def test_declared_activation_entry_point_matches_distribution_metadata(
     )
 
     assert bundles[0].entry_points == (installed,)
+
+
+def test_inventory_quarantines_invalid_bundle_without_hiding_valid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    valid_path = tmp_path / "valid.json"
+    invalid_path = tmp_path / "invalid.json"
+    valid_path.write_text("valid")
+    invalid_path.write_text("invalid")
+    valid_distribution = Distribution("valid-dist", editable=False)
+    invalid_distribution = Distribution("invalid-dist", editable=False)
+    valid = SimpleNamespace(
+        name="org.vllm-hust.valid",
+        value="valid.manifests",
+        group=discovery.ENTRY_POINT_GROUP,
+        dist=valid_distribution,
+    )
+    invalid = SimpleNamespace(
+        name="org.vllm-hust.invalid",
+        value="invalid.manifests",
+        group=discovery.ENTRY_POINT_GROUP,
+        dist=invalid_distribution,
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_manifest_path",
+        lambda item: valid_path if item is valid else invalid_path,
+    )
+
+    def load(path):
+        if path == invalid_path:
+            raise discovery.ManifestError("broken descriptor")
+        return SimpleNamespace(
+            bundle_id="org.vllm-hust.valid",
+            activation=SimpleNamespace(entry_points=()),
+        )
+
+    monkeypatch.setattr(discovery, "load_manifest", load)
+
+    bundles, diagnostics = discovery.discover_bundle_inventory(
+        registrations=(invalid, valid), all_entry_points=()
+    )
+
+    assert [bundle.bundle_id for bundle in bundles] == ["org.vllm-hust.valid"]
+    assert diagnostics == (
+        discovery.DiscoveryDiagnostic(
+            "org.vllm-hust.invalid",
+            "'org.vllm-hust.invalid' manifest is invalid: broken descriptor",
+        ),
+    )

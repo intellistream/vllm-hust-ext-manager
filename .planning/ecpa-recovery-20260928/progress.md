@@ -19,3 +19,5 @@
 - [x] Merged ECPA 0.3 capability/resource contracts (Manager #18, host #44),
   live-only observer evidence (Manager #19, host #45), and the real plugin
   migration (#27); verified exact remote main commits and dual-Python CI.
+- [x] Isolated invalid Bundle registrations in `extension list` while preserving
+  strict selected operations, with unit and mixed clean-wheel regression tests.
