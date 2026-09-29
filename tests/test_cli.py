@@ -14,6 +14,7 @@ from vllm_hust_ext.cli import (
 )
 from vllm_hust_ext.config import ExtensionConfig, UserConfig
 from vllm_hust_ext.core import LifecycleState
+from vllm_hust_ext.discovery import DiscoveryDiagnostic
 from vllm_hust_ext.manifest import (
     ActivationEntryPoint,
     BundleActivation,
@@ -41,6 +42,62 @@ def test_activation_does_not_replace_vllm_plugin_allowlist() -> None:
         "VLLMHUST_EXT_ENABLED_BUNDLES": "org.vllm-hust.bidkv",
     }
     assert "VLLM_PLUGINS" not in environment
+
+
+def test_list_reports_invalid_bundle_without_hiding_valid_bundle(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    valid = SimpleNamespace(bundle_id="org.vllm-hust.valid")
+    monkeypatch.setattr(cli, "load_config", UserConfig)
+    monkeypatch.setattr(
+        cli,
+        "discover_bundle_inventory",
+        lambda: (
+            (valid,),
+            (DiscoveryDiagnostic("org.vllm-hust.invalid", "manifest is invalid"),),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_bundle_dict",
+        lambda _bundle, _enabled: {
+            "bundle_id": "org.vllm-hust.valid",
+            "bundle_version": "1.0",
+            "enabled": False,
+        },
+    )
+
+    result = cli._extension_command(SimpleNamespace(action="list", json=False))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "org.vllm-hust.valid 1.0 disabled\n"
+    assert captured.err == ("org.vllm-hust.invalid invalid manifest is invalid\n")
+
+
+def test_json_list_includes_structured_invalid_bundle_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", UserConfig)
+    monkeypatch.setattr(
+        cli,
+        "discover_bundle_inventory",
+        lambda: (
+            (),
+            (DiscoveryDiagnostic("org.vllm-hust.invalid", "broken descriptor"),),
+        ),
+    )
+
+    result = cli._extension_command(SimpleNamespace(action="list", json=True))
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {
+            "bundle_id": "org.vllm-hust.invalid",
+            "discovery_error": "broken descriptor",
+            "valid": False,
+        }
+    ]
 
 
 def test_activation_merges_vllm_plugin_entry_points_with_allowlist(

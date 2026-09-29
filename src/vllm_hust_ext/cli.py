@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict
@@ -20,7 +21,11 @@ from vllm_hust_ext.core import (
     render_plan,
     status_for,
 )
-from vllm_hust_ext.discovery import InstalledBundle, discover_bundles
+from vllm_hust_ext.discovery import (
+    InstalledBundle,
+    discover_bundle_inventory,
+    discover_bundles,
+)
 from vllm_hust_ext.manifest import activation_blocker
 from vllm_hust_ext.process_supervisor import (
     DEFAULT_SHUTDOWN_GRACE_SECONDS,
@@ -230,14 +235,27 @@ def _extension_command(args: argparse.Namespace) -> int:
     config = load_config()
     enabled = set(config.enabled)
     if args.action == "list":
-        bundles = discover_bundles()
+        bundles, diagnostics = discover_bundle_inventory()
         payload = [_bundle_dict(bundle, enabled) for bundle in bundles]
         if args.json:
+            payload.extend(
+                {
+                    "bundle_id": diagnostic.bundle_id,
+                    "discovery_error": diagnostic.error,
+                    "valid": False,
+                }
+                for diagnostic in diagnostics
+            )
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             for item in payload:
                 state = "enabled" if item["enabled"] else "disabled"
                 print(f"{item['bundle_id']} {item['bundle_version']} {state}")
+            for diagnostic in diagnostics:
+                print(
+                    f"{diagnostic.bundle_id} invalid {diagnostic.error}",
+                    file=sys.stderr,
+                )
         return 0
     if args.action in {"inspect", "validate"}:
         bundle = discover_bundles((args.bundle_id,))[0]

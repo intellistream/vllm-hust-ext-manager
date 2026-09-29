@@ -30,7 +30,7 @@ they produced these results:
 | --- | --- | --- |
 | Discovered and activation-ready | `vllm-ascend-split-batch-hust` (`fia-demask`, `split-batch-full-graph`, `zerocost-wiring`), `vllm-ascend-hust-LatchMoE`, `vllm-ascend-hust-diffspec`, `vllm-ascend-kvcompress-hust`, `vllm-ascend-quantized-kv-cache-hust`, `vllm-hust-bidkv`, `vllm-hust-vSpec`, `vllm-hust-kv-materialization-arrival-control`, `vllm-hust-legacy017-perf`, `vllm-hust-opset`, `vllm-hust-pipeline-microbatch`, and `vllm-hust-clm-lifecycle` after its ECPA 0.3 migration | Fourteen bundles can express activation intent. This does not mean the current host accepts them. |
 | Discovered but intentionally inspect-only | `vllm-ascend-adaptive-quantized-kv-hust`, `vllm-ascend-simllm-hust`, `vllm-ascend-split-batch-hust` (`rope-fix`), `vllm-hust-activation-sparsity`, `vllm-ascend-layered-prefill-hust`, `vllm-ascend-mapped-kv-offload-hust`, `vllm-ascend-pyramidkv-hust`, `vllm-ascend-quant-hust` runtime extension, `vllm-hust-stateharbor`, `vllm-hust-unified-comm`, `vllm-hust-dla`, `vllm-hust-kv-transfer-observability`, `vllm-hust-qos-scheduler`, and `vllm-hust-scheduler-policy-lab` | Fourteen bundles declare `import_only` or `legacy_unregistered` implementations and correctly fail closed. |
-| Invalid distribution split | `pegaflow-hust` provider bundle | The provider wheel declares `vllm.general_plugins:pegaflow`, but that entry point is owned by the separate `pegaflow-llm-npu` wheel. Static discovery rejects the claim instead of trusting a different distribution. |
+| Invalid distribution split | `pegaflow-hust` provider bundle | The provider wheel declares `vllm.general_plugins:pegaflow`, but that entry point is owned by the separate `pegaflow-llm-npu` wheel. Static discovery rejects the claim instead of trusting a different distribution. Inventory reports this Bundle as invalid without hiding healthy Bundles; selected operations remain strict. |
 | Repaired during the audit | `vllm-hust-clm-lifecycle` PR #1 / main `e6c01ffd` | Migrated the legacy descriptor and incorrect `vllm.extension_bundles` group to ECPA 0.3 with general-plugin activation, protocol, permission, environment, and shared observer claims. Python 3.10/3.12/3.14 CI passed. The current host lacks `vllm.request-lifecycle`, so `run` still fails closed. |
 
 Against host main `e521b42e` and the installed vLLM/vLLM-Ascend 0.23
@@ -51,6 +51,13 @@ also lack a packaged ECPA Bundle on their audited main branches. Hardware
 platform packages such as `vllm-ascend-hust` remain host prerequisites;
 retaining the built-in `ascend` plugin is not evidence that ECPA owns the
 platform lifecycle.
+
+The MOD-side follow-ups are tracked in `ascend-distributed-metadata#1`,
+`quality-bounded-inference-plugin#3`, `vllm-hust-request-lifecycle-profiler#29`,
+and organization issue `.github#42` for Tricard (whose repository issue tracker
+is disabled). Existing pluginization issues track `vllm-hust-knorm#1`,
+`vllm-hust-kv-tiering#1`, `vllm-hust-prefix-router#1`, and
+`vllm-hust-slicegpt#1`; the ECPA acceptance evidence was added to each.
 
 This audit is packaging and contract evidence only. It is not native NPU,
 functional-correctness, runtime-effectiveness, or performance evidence.

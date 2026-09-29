@@ -37,6 +37,14 @@ class InstalledBundle:
     entry_points: tuple[EntryPoint, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryDiagnostic:
+    """One installed registration that could not be admitted as a Bundle."""
+
+    bundle_id: str
+    error: str
+
+
 def _flatten_entry_points(value: object) -> tuple[EntryPoint, ...]:
     """Normalize importlib.metadata results across Python 3.10 and 3.12+."""
 
@@ -215,3 +223,41 @@ def discover_bundles(
         )
     order = wanted if wanted is not None else tuple(sorted(loaded))
     return tuple(loaded[bundle_id] for bundle_id in order)
+
+
+def discover_bundle_inventory(
+    *,
+    registrations: Sequence[EntryPoint] | None = None,
+    all_entry_points: Sequence[EntryPoint] | None = None,
+) -> tuple[tuple[InstalledBundle, ...], tuple[DiscoveryDiagnostic, ...]]:
+    """Discover every registration while quarantining failures by Bundle id.
+
+    Inventory is intentionally tolerant so one broken, disabled distribution
+    cannot hide unrelated installed Bundles. Targeted operations and launch
+    continue to call :func:`discover_bundles` and therefore remain strict.
+    """
+
+    discovered = (
+        tuple(entry_points(group=ENTRY_POINT_GROUP))
+        if registrations is None
+        else tuple(registrations)
+    )
+    every_entry_point = (
+        _flatten_entry_points(entry_points())
+        if all_entry_points is None
+        else tuple(all_entry_points)
+    )
+    bundles: list[InstalledBundle] = []
+    diagnostics: list[DiscoveryDiagnostic] = []
+    for bundle_id in sorted({registration.name for registration in discovered}):
+        try:
+            bundles.extend(
+                discover_bundles(
+                    (bundle_id,),
+                    registrations=discovered,
+                    all_entry_points=every_entry_point,
+                )
+            )
+        except (DiscoveryError, OSError) as error:
+            diagnostics.append(DiscoveryDiagnostic(bundle_id, str(error)))
+    return tuple(bundles), tuple(diagnostics)

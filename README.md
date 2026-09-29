@@ -90,6 +90,11 @@ vllm-hust-ext extension status org.vllm-hust.bidkv
 vllm-hust-ext extension check org.vllm-hust.bidkv
 ```
 
+`extension list` validates registrations independently. A malformed installed
+Bundle is reported as `invalid` (or as a structured `discovery_error` with
+`--json`) without hiding unrelated valid Bundles. Targeted operations,
+enablement, and `run` remain strict and never skip an invalid selected Bundle.
+
 BidKV 0.2 targets vLLM-HUST `0.28.1rc1.dev319` through the typed
 `vllm.preemption-policy` API v1. The main BidKV distribution does not register
 the removed private `vllm.victim_selector` entry point and does not monkey
