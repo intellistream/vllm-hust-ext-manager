@@ -52,6 +52,13 @@ platform packages such as `vllm-ascend-hust` remain host prerequisites;
 retaining the built-in `ascend` plugin is not evidence that ECPA owns the
 platform lifecycle.
 
+The MOD-side follow-ups are tracked in `ascend-distributed-metadata#1`,
+`quality-bounded-inference-plugin#3`, `vllm-hust-request-lifecycle-profiler#29`,
+and organization issue `.github#42` for Tricard (whose repository issue tracker
+is disabled). Existing pluginization issues track `vllm-hust-knorm#1`,
+`vllm-hust-kv-tiering#1`, `vllm-hust-prefix-router#1`, and
+`vllm-hust-slicegpt#1`; the ECPA acceptance evidence was added to each.
+
 This audit is packaging and contract evidence only. It is not native NPU,
 functional-correctness, runtime-effectiveness, or performance evidence.
 
