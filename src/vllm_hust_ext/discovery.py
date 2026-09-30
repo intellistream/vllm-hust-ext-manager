@@ -115,6 +115,58 @@ def _is_editable(entry_point: EntryPoint) -> bool:
     return direct_url.get("dir_info", {}).get("editable") is True
 
 
+def _entry_point_target_is_packaged(entry_point: EntryPoint) -> bool:
+    """Check entry-point module ownership without importing third-party code."""
+
+    distribution = entry_point.dist
+    if distribution is None:
+        return False
+    module = entry_point.value.partition(":")[0].strip()
+    if not _MODULE_PATH.fullmatch(module):
+        return False
+    module_path = PurePosixPath(*module.split("."))
+
+    def matches(path: PurePosixPath) -> bool:
+        if path == module_path.with_suffix(".py"):
+            return True
+        if path == module_path / "__init__.py":
+            return True
+        return (
+            path.parent == module_path.parent
+            and path.name.startswith(f"{module_path.name}.")
+            and path.suffix.lower() in {".pyd", ".so"}
+        )
+
+    if any(matches(PurePosixPath(str(path))) for path in distribution.files or ()):
+        return True
+    direct_url_text = distribution.read_text("direct_url.json")
+    if not direct_url_text:
+        return False
+    try:
+        direct_url = json.loads(direct_url_text)
+    except json.JSONDecodeError as error:
+        raise DiscoveryError("editable direct_url.json is invalid") from error
+    parsed = urlparse(direct_url.get("url", ""))
+    if (
+        direct_url.get("dir_info", {}).get("editable") is not True
+        or parsed.scheme != "file"
+        or parsed.netloc not in ("", "localhost")
+    ):
+        return False
+    path = unquote(parsed.path)
+    if os.name == "nt" and re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    root = Path(path)
+    return any(
+        candidate.is_file()
+        for source_root in (root, root / "src")
+        for candidate in (
+            source_root / module_path.with_suffix(".py"),
+            source_root / module_path / "__init__.py",
+        )
+    )
+
+
 def discover_bundles(
     selected: Iterable[str] | None = None,
     *,
@@ -212,6 +264,25 @@ def discover_bundles(
             raise DiscoveryError(
                 f"{bundle_id!r} declares uninstalled activation entry points: "
                 f"{rendered}"
+            )
+        dangling_entry_points = [
+            entry_point
+            for entry_point in related
+            if (entry_point.group, entry_point.name) in declared
+            and not _entry_point_target_is_packaged(entry_point)
+        ]
+        if dangling_entry_points:
+            rendered = [
+                f"{entry_point.group}:{entry_point.name} -> "
+                f"{entry_point.value.partition(':')[0]}"
+                for entry_point in sorted(
+                    dangling_entry_points,
+                    key=lambda item: (item.group, item.name),
+                )
+            ]
+            raise DiscoveryError(
+                f"{bundle_id!r} declares activation entry-point targets not "
+                f"packaged by its distribution: {rendered}"
             )
         loaded[bundle_id] = InstalledBundle(
             bundle_id,

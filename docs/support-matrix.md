@@ -62,6 +62,20 @@ is disabled). Existing pluginization issues track `vllm-hust-knorm#1`,
 This audit is packaging and contract evidence only. It is not native NPU,
 functional-correctness, runtime-effectiveness, or performance evidence.
 
+### Re-audit update (2026-09-30)
+
+| Candidate | New evidence | Remaining owner gate |
+| --- | --- | --- |
+| KNorm PR #4 (`b9429de`) | Clean wheel and ECPA list/inspect/check/plan/render passed; 78 tests passed and one skipped. | Migrate manifest 0.2 to 0.3, declare the installed general-plugin activation entry point and resource conflicts, then resolve worker synchronization and native qualification. |
+| KV Tiering PR #3 (`7ba646a`) | Wheel, list, and inspect passed. | Provider import executes a hard `vllm` import; clean tests also lack declared `torch`, `numpy`, and `vllm`. Add import isolation/dependencies/CI and a 0.3 protocol/resource contract. |
+| Prefix Router PR #2 (`2594ae6`) | Clean wheel and ECPA list/inspect/check/plan/render passed; 49 tests passed. | It truthfully remains an external, user-owned, `import_only` service. Add a 0.3 service/resource contract without transferring operator lifecycle to ECPA. |
+| Pegaflow main (`64ef9d0`) | Provider wheel builds, but its activation entry point targets `pegaflow.vllm_plugin`, which is absent from that wheel. | Package the implementation in the declaring distribution or move Bundle ownership; metadata duplication alone is invalid. |
+
+ADM, Quality Bounded Inference, Tricard CLM, Request Lifecycle Profiler, and
+SliceGPT still have no packaged ECPA Bundle. Their existing owner issues were
+updated with the exact audited main commits. No native NPU or performance run
+was performed in this re-audit.
+
 ## Rollback ownership
 
 - In-process vLLM policies and connectors roll back on the next vLLM process

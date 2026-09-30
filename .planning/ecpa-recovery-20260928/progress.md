@@ -24,3 +24,7 @@
 - [x] Routed confirmed MOD packaging gaps to repository issues, reusing existing
   pluginization issues and using the organization tracker where Tricard disables
   repository issues.
+- [x] Re-audited the tracked MOD repositories and isolated selected external
+  Provider loading so one broken Provider cannot deny unrelated ECPA operations;
+  also reject activation entry points whose target module is absent from the
+  declaring wheel/editable distribution.

@@ -98,3 +98,18 @@
 - A clean-wheel mixed installation of CLM and Pegaflow reproduced the boundary:
   CLM remained visible while Pegaflow was reported with its cross-distribution
   activation-entry-point error.
+
+# Provider-isolation re-audit finding (2026-09-30)
+
+- KV Tiering PR #3 publishes a third-party Provider whose factory import requires
+  `vllm`. In a clean Manager environment, eager loading of every Provider made
+  that missing optional host dependency crash checks for unrelated Bundles.
+- Provider lookup now loads only the selected external factory. A mixed
+  clean-wheel install proved Prefix Router check still works while KV Tiering is
+  reported incompatible with a precise `ModuleNotFoundError` diagnostic.
+- The Mod still owns its import boundary, ECPA 0.3 manifest migration, protocol
+  and resource declarations, and native-host validation.
+- Pegaflow main moved its activation entry-point record into the Provider wheel,
+  but the target `pegaflow.vllm_plugin` module is still absent from that wheel.
+  Static target ownership validation now rejects this dangling record without
+  importing or executing plugin code.
