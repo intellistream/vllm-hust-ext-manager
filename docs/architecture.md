@@ -19,6 +19,11 @@ registrations use `vllm_hust.extension_bundles`. A Provider may delegate to an
 official `vllm.*` entry point, but vLLM-HUST does not invent new entry-point
 groups in the upstream namespace.
 
+Provider resolution loads only the factory selected by the Bundle. A broken or
+host-dependent third-party Provider therefore cannot break checks and plans for
+unrelated Bundles. Failure to import the selected Provider is reported as an
+explicit incompatibility or planning error, without a Python traceback.
+
 Inventory discovery isolates validation failures by Bundle id so a broken,
 disabled distribution cannot deny visibility into every other installed MOD.
 The invalid registration remains visible as a diagnostic. This tolerance is
@@ -27,7 +32,9 @@ resolve their selected Bundle set strictly and fail closed.
 
 For vLLM in-process plugins, a manifest may declare installed entry points in
 `vllm.general_plugins` and `vllm.platform_plugins`. Discovery verifies that the
-declaring distribution actually publishes each entry point. At launch, Core
+declaring distribution publishes both each entry-point record and its target
+module. This check uses wheel/editable file metadata and never imports plugin
+code. At launch, Core
 merges their names with the user's `VLLM_PLUGINS`, retains `ascend`, rejects
 cross-extension name ownership conflicts, and computes a stable order. This is
 launch intent, not evidence that plugin code ran; only a process-owned observer

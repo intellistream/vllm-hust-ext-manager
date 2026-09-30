@@ -11,6 +11,7 @@ from urllib.error import URLError
 import pytest
 
 from vllm_hust_ext import capabilities
+from vllm_hust_ext import providers as provider_registry
 from vllm_hust_ext.config import ExtensionConfig
 from vllm_hust_ext.core import (
     LifecycleState,
@@ -44,6 +45,47 @@ def bundle(value: BundleManifest) -> SimpleNamespace:
 
 class _HTTPResponse(BytesIO):
     status = 200
+
+
+def test_provider_for_does_not_load_unrelated_external_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = SimpleNamespace(
+        name="broken",
+        load=lambda: (_ for _ in ()).throw(ModuleNotFoundError("optional host")),
+    )
+    healthy_provider = SimpleNamespace(name="healthy")
+    healthy = SimpleNamespace(name="healthy", load=lambda: lambda: healthy_provider)
+    monkeypatch.setattr(
+        provider_registry,
+        "entry_points",
+        lambda *, group: (broken, healthy),
+    )
+
+    assert provider_registry.provider_for("healthy") is healthy_provider
+    assert isinstance(provider_registry.provider_for("vllm"), VllmProvider)
+
+
+def test_provider_for_reports_selected_external_provider_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = SimpleNamespace(
+        name="broken",
+        load=lambda: (_ for _ in ()).throw(ModuleNotFoundError("optional host")),
+    )
+    monkeypatch.setattr(
+        provider_registry,
+        "entry_points",
+        lambda *, group: (broken,),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "host provider 'broken' failed to load: ModuleNotFoundError: optional host"
+        ),
+    ):
+        provider_registry.provider_for("broken")
 
 
 def test_bidkv_is_a_vllm_owned_scheduler_policy() -> None:

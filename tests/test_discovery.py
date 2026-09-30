@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -12,10 +13,17 @@ def test_discovery_knows_the_03_manifest_filename() -> None:
 
 
 class Distribution:
-    def __init__(self, name: str, *, editable: bool) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        editable: bool,
+        files: tuple[PurePosixPath, ...] = (),
+    ) -> None:
         self.metadata = {"Name": name}
         self.version = "1.0"
         self._editable = editable
+        self.files = files
 
     def read_text(self, name: str) -> str | None:
         if name != "direct_url.json":
@@ -111,8 +119,10 @@ def test_declared_activation_entry_point_matches_distribution_metadata(
     installed = SimpleNamespace(
         group=declared.group,
         name=declared.name,
+        value="example.plugin:register",
         dist=distribution,
     )
+    distribution.files = (PurePosixPath("example/plugin.py"),)
     monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
     monkeypatch.setattr(
         discovery,
@@ -128,6 +138,36 @@ def test_declared_activation_entry_point_matches_distribution_metadata(
     )
 
     assert bundles[0].entry_points == (installed,)
+
+
+def test_declared_activation_entry_point_target_must_be_packaged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.general_plugins", name="example")
+    installed = SimpleNamespace(
+        group=declared.group,
+        name=declared.name,
+        value="missing.plugin:register",
+        dist=distribution,
+    )
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    with pytest.raises(discovery.DiscoveryError, match="targets not packaged"):
+        discovery.discover_bundles(
+            registrations=(bundle_registration,), all_entry_points=(installed,)
+        )
 
 
 def test_inventory_quarantines_invalid_bundle_without_hiding_valid(
