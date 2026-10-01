@@ -11,6 +11,9 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
 from vllm_hust_ext.catalog import load_catalog
 from vllm_hust_ext.config import ExtensionConfig, load_config, save_config
 from vllm_hust_ext.core import (
@@ -63,8 +66,35 @@ def _declared_vllm_plugins(
     return tuple(names)
 
 
-def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object]:
+def _bundle_dict(
+    bundle: InstalledBundle,
+    enabled: set[str],
+    installed_versions: dict[str, str] | None = None,
+) -> dict[str, object]:
+    installed_versions = installed_versions or {
+        bundle.bundle_id: bundle.manifest.bundle_version
+    }
+    dependencies = getattr(bundle.manifest, "requires_extensions", ())
     blocker = activation_blocker(bundle.manifest)
+    if blocker is None:
+        for dependency in dependencies:
+            installed_version = installed_versions.get(dependency.extension_id)
+            if installed_version is None:
+                blocker = (
+                    f"required extension {dependency.extension_id!r} is not installed"
+                )
+                break
+            if Version(installed_version) not in SpecifierSet(dependency.version_range):
+                blocker = (
+                    f"required extension {dependency.extension_id!r} must satisfy "
+                    f"{dependency.version_range}, found {installed_version}"
+                )
+                break
+            if dependency.extension_id not in enabled:
+                blocker = (
+                    f"required extension {dependency.extension_id!r} is not enabled"
+                )
+                break
     return {
         "bundle_id": bundle.bundle_id,
         "bundle_version": bundle.manifest.bundle_version,
@@ -82,6 +112,15 @@ def _bundle_dict(bundle: InstalledBundle, enabled: set[str]) -> dict[str, object
         ],
         "requires_services": [
             asdict(service) for service in bundle.manifest.requires_services
+        ],
+        "requires_extensions": [
+            {
+                **asdict(dependency),
+                "installed": dependency.extension_id in installed_versions,
+                "installed_version": installed_versions.get(dependency.extension_id),
+                "enabled": dependency.extension_id in enabled,
+            }
+            for dependency in dependencies
         ],
         "resource_claims": [
             asdict(claim) for claim in getattr(bundle.manifest, "resource_claims", ())
@@ -184,6 +223,70 @@ def _validate_resource_ownership(bundles: Sequence[InstalledBundle]) -> None:
     reject_conflicting_plans(plans)
 
 
+def _validate_extension_dependencies(bundles: Sequence[InstalledBundle]) -> None:
+    """Require every selected Bundle dependency to be selected and compatible."""
+
+    selected = {bundle.bundle_id: bundle for bundle in bundles}
+    edges: dict[str, tuple[str, ...]] = {}
+    for bundle in bundles:
+        edges[bundle.bundle_id] = tuple(
+            dependency.extension_id
+            for dependency in getattr(bundle.manifest, "requires_extensions", ())
+        )
+        for dependency in getattr(bundle.manifest, "requires_extensions", ()):
+            required = selected.get(dependency.extension_id)
+            if required is None:
+                raise ValueError(
+                    f"extension {bundle.bundle_id!r} requires enabled extension "
+                    f"{dependency.extension_id!r} {dependency.version_range}"
+                )
+            if Version(required.manifest.bundle_version) not in SpecifierSet(
+                dependency.version_range
+            ):
+                raise ValueError(
+                    f"extension {bundle.bundle_id!r} requires "
+                    f"{dependency.extension_id!r} {dependency.version_range}, found "
+                    f"{required.manifest.bundle_version}"
+                )
+
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit(extension_id: str) -> None:
+        if extension_id in visiting:
+            cycle = visiting[visiting.index(extension_id) :] + [extension_id]
+            raise ValueError("extension dependency cycle: " + " -> ".join(cycle))
+        if extension_id in visited:
+            return
+        visiting.append(extension_id)
+        for dependency_id in edges.get(extension_id, ()):
+            visit(dependency_id)
+        visiting.pop()
+        visited.add(extension_id)
+
+    for extension_id in sorted(edges):
+        visit(extension_id)
+
+
+def _validate_dependency_removal(
+    extension_id: str, bundles: Sequence[InstalledBundle]
+) -> None:
+    dependents = sorted(
+        bundle.bundle_id
+        for bundle in bundles
+        if bundle.bundle_id != extension_id
+        and any(
+            dependency.extension_id == extension_id
+            for dependency in getattr(bundle.manifest, "requires_extensions", ())
+        )
+    )
+    if dependents:
+        raise ValueError(
+            f"cannot disable or forget {extension_id!r}; enabled extensions depend "
+            f"on it: {dependents}"
+        )
+
+
 def _merge_command_config(
     command: list[str], activation: dict[str, object]
 ) -> list[str]:
@@ -236,7 +339,12 @@ def _extension_command(args: argparse.Namespace) -> int:
     enabled = set(config.enabled)
     if args.action == "list":
         bundles, diagnostics = discover_bundle_inventory()
-        payload = [_bundle_dict(bundle, enabled) for bundle in bundles]
+        installed_versions = {
+            bundle.bundle_id: bundle.manifest.bundle_version for bundle in bundles
+        }
+        payload = [
+            _bundle_dict(bundle, enabled, installed_versions) for bundle in bundles
+        ]
         if args.json:
             payload.extend(
                 {
@@ -259,7 +367,17 @@ def _extension_command(args: argparse.Namespace) -> int:
         return 0
     if args.action in {"inspect", "validate"}:
         bundle = discover_bundles((args.bundle_id,))[0]
-        print(json.dumps(_bundle_dict(bundle, enabled), indent=2, sort_keys=True))
+        inventory, _diagnostics = discover_bundle_inventory()
+        installed_versions = {
+            item.bundle_id: item.manifest.bundle_version for item in inventory
+        }
+        print(
+            json.dumps(
+                _bundle_dict(bundle, enabled, installed_versions),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.action == "enable":
         bundle = discover_bundles((args.bundle_id,))[0]
@@ -268,6 +386,7 @@ def _extension_command(args: argparse.Namespace) -> int:
             raise ValueError(f"cannot enable {args.bundle_id!r}: {blocker}")
         prospective = tuple(sorted(enabled | {args.bundle_id}))
         prospective_bundles = discover_bundles(prospective)
+        _validate_extension_dependencies(prospective_bundles)
         _validate_process_ownership(prospective_bundles)
         _validate_resource_ownership(prospective_bundles)
         current = config.extension(args.bundle_id)
@@ -280,6 +399,8 @@ def _extension_command(args: argparse.Namespace) -> int:
         print(f"enabled {args.bundle_id}")
         return 0
     if args.action == "disable":
+        enabled_bundles = discover_bundles(config.enabled) if config.enabled else ()
+        _validate_dependency_removal(args.bundle_id, enabled_bundles)
         current = config.extension(args.bundle_id)
         save_config(
             config.with_extension(
@@ -297,6 +418,8 @@ def _extension_command(args: argparse.Namespace) -> int:
             raise ValueError(
                 f"disable {args.bundle_id!r} before forgetting its stored state"
             )
+        enabled_bundles = discover_bundles(config.enabled) if config.enabled else ()
+        _validate_dependency_removal(args.bundle_id, enabled_bundles)
         save_config(config.without_extension(args.bundle_id))
         print(f"forgot {args.bundle_id}")
         return 0
@@ -316,6 +439,8 @@ def _extension_command(args: argparse.Namespace) -> int:
         return 0
     if args.action in {"status", "check", "plan", "render"}:
         bundle = discover_bundles((args.bundle_id,))[0]
+        selected_ids = tuple(sorted(enabled | {args.bundle_id}))
+        _validate_extension_dependencies(discover_bundles(selected_ids))
         extension = config.extension(args.bundle_id)
         if args.action in {"status", "check"}:
             print(json.dumps(status_for(bundle, extension).as_dict(), indent=2))
@@ -329,6 +454,7 @@ def _extension_command(args: argparse.Namespace) -> int:
         return 0
     if args.action == "env":
         bundles = discover_bundles(config.enabled) if config.enabled else ()
+        _validate_extension_dependencies(bundles)
         plans = [
             plan_for(bundle, config.extension(bundle.bundle_id)) for bundle in bundles
         ]
@@ -383,6 +509,7 @@ def _catalog_command(args: argparse.Namespace) -> int:
 def _run_command(args: argparse.Namespace) -> int:
     config = load_config()
     bundles = discover_bundles(config.enabled) if config.enabled else ()
+    _validate_extension_dependencies(bundles)
     _validate_process_ownership(bundles)
     for bundle in bundles:
         blocker = activation_blocker(bundle.manifest)
@@ -611,7 +738,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command_name", required=True)
     extension = subcommands.add_parser(
-        "extension", help="inspect and manage saved extension intent"
+        "extension",
+        help="inspect and manage saved extension intent",
+        description=(
+            "Inspect and manage explicit extension intent. Bundle dependencies "
+            "must be installed, version-compatible, and enabled explicitly."
+        ),
     )
     extension_subcommands = extension.add_subparsers(dest="action", required=True)
     list_parser = extension_subcommands.add_parser("list")

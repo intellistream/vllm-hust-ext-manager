@@ -113,3 +113,22 @@
   but the target `pegaflow.vllm_plugin` module is still absent from that wheel.
   Static target ownership validation now rejects this dangling record without
   importing or executing plugin code.
+
+## Full organization follow-up (2026-10-02)
+
+- All 71 organization repositories were enumerated.
+- 26 ECPA distributions (29 registrations) built clean wheels together: 28
+  valid Bundles and one known invalid Pegaflow distribution split.
+- All 28 valid Bundles passed disabled inspect/check/plan/render against
+  Manager `ff144b469ad8cf7a1109610b3a6a4e3528bc40ee`.
+- PyramidKV PR #4 exposed the missing Bundle-to-Bundle activation dependency
+  contract; Manager issue #25 tracks the ECPA-owned repair.
+- New owner tracking: BetterScale #9, FreshKV #1, and organization issue #43
+  for `llm-serving-cost-pricing-model`; PyramidKV #4, DLA #3, and vSpec #2
+  received exact-head audit evidence.
+- No NPU or externally owned service was started.
+- Dependency implementation verification: 129 pytest tests, Ruff format/check,
+  strict mypy, sdist/wheel build, and clean-wheel install passed. With all 26
+  audited distributions co-installed, 28 valid Bundles each passed
+  inspect/check/plan/render; the known Pegaflow split remained the one invalid
+  registration.

@@ -133,6 +133,12 @@ class RequiredService:
 
 
 @dataclass(frozen=True, slots=True)
+class RequiredExtension:
+    extension_id: str
+    version_range: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceClaim:
     resource: str
     scope: str
@@ -160,6 +166,7 @@ class BundleManifest:
     protocols: tuple[ProtocolSpec, ...] = ()
     implementation: tuple[ImplementationCarrier, ...] = ()
     requires_services: tuple[RequiredService, ...] = ()
+    requires_extensions: tuple[RequiredExtension, ...] = ()
     resource_claims: tuple[ResourceClaim, ...] = ()
     experimental: bool = True
 
@@ -457,6 +464,36 @@ def _parse_services(value: Any) -> tuple[RequiredService, ...]:
     return tuple(result)
 
 
+def _parse_extension_dependencies(value: Any) -> tuple[RequiredExtension, ...]:
+    if not isinstance(value, list):
+        raise ManifestError("requires_extensions must be an array")
+    result: list[RequiredExtension] = []
+    for index, raw in enumerate(value):
+        item = _object(raw, f"requires_extensions[{index}]")
+        if item.keys() != {"extension_id", "version_range"}:
+            raise ManifestError(
+                f"requires_extensions[{index}] requires extension_id and version_range"
+            )
+        extension_id = _string(
+            item["extension_id"], f"requires_extensions[{index}].extension_id"
+        )
+        if not _IDENTIFIER.fullmatch(extension_id):
+            raise ManifestError(f"requires_extensions[{index}].extension_id is invalid")
+        result.append(
+            RequiredExtension(
+                extension_id,
+                _specifier(
+                    item["version_range"],
+                    f"requires_extensions[{index}].version_range",
+                ),
+            )
+        )
+    ids = [dependency.extension_id for dependency in result]
+    if len(ids) != len(set(ids)):
+        raise ManifestError("requires_extensions must not contain duplicate IDs")
+    return tuple(result)
+
+
 def _parse_resource_claims(value: Any) -> tuple[ResourceClaim, ...]:
     if not isinstance(value, list):
         raise ManifestError("resource_claims must be an array")
@@ -492,11 +529,17 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
         "protocols",
         "implementation",
         "requires_services",
+        "requires_extensions",
         "resource_claims",
         "components",
         "activation",
     }
-    required = fields - {"components", "activation", "resource_claims"}
+    required = fields - {
+        "components",
+        "activation",
+        "requires_extensions",
+        "resource_claims",
+    }
     unknown = manifest.keys() - fields
     missing = required - manifest.keys()
     if unknown or missing:
@@ -532,6 +575,10 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
         raise ManifestError("unsupported experimental schema_version")
     if schema_version == "0.2-experimental" and "resource_claims" in manifest:
         raise ManifestError("resource_claims requires schema_version 0.3-experimental")
+    if schema_version == "0.2-experimental" and "requires_extensions" in manifest:
+        raise ManifestError(
+            "requires_extensions requires schema_version 0.3-experimental"
+        )
     return BundleManifest(
         extension_id,
         version,
@@ -546,6 +593,9 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
         protocols=_parse_protocols(manifest["protocols"]),
         implementation=_parse_implementation(manifest["implementation"]),
         requires_services=_parse_services(manifest["requires_services"]),
+        requires_extensions=_parse_extension_dependencies(
+            manifest.get("requires_extensions", [])
+        ),
         resource_claims=_parse_resource_claims(manifest.get("resource_claims", [])),
     )
 

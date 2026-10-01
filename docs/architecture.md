@@ -49,6 +49,12 @@ scheduler, KV connector, process-carrier, port, and device ownership without
 hard-coding MOD names. Shared observer claims may coexist. Providers cannot
 invent claims that were absent from the installed manifest.
 
+Manifest 0.3 also models Bundle-to-Bundle activation dependencies. Core checks
+identity, version range, explicit enable intent, and graph acyclicity before
+planning or launching. It never auto-enables a dependency, and it prevents a
+dependency from being disabled or forgotten while a dependent remains enabled.
+Dependency satisfaction is not `runtime_effective` evidence.
+
 vLLM-HUST exposes one host-owned capability snapshot containing its host API
 and protocol versions. The vLLM Provider consumes that snapshot rather than
 growing one import probe per MOD. Legacy probes remain a migration path only

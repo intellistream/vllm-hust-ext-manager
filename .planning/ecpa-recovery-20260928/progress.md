@@ -28,3 +28,13 @@
   Provider loading so one broken Provider cannot deny unrelated ECPA operations;
   also reject activation entry points whose target module is absent from the
   declaring wheel/editable distribution.
+
+## Organization-wide follow-up (2026-10-02)
+
+- [x] Enumerated and classified all 71 organization repositories.
+- [x] Built and co-installed all 26 ECPA distributions.
+- [x] Routed newly found Mod-owned gaps to owner repositories.
+- [x] Implemented and unit-tested ECPA Bundle dependency admission.
+- [x] Rebuild and rerun final clean-wheel validation.
+- [ ] Open, merge, and remotely verify the narrow Manager PR.
+- [ ] Remove temporary audit artifacts and worktree.

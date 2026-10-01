@@ -10,3 +10,11 @@ Date: 2026-09-28 (UTC)
 6. Update documentation/support claims to match evidence; preserve compatibility freeze unless every release gate is proven.
 
 Safety constraints: no unknown service/process mutation; no NPU use unless CPU/fixture/contract checks require escalation and assigned devices/processes are audited first; no modification of unrelated dirty workspaces.
+
+## Organization-wide follow-up (2026-10-02)
+
+- Base: `origin/main` at `ff144b469ad8cf7a1109610b3a6a4e3528bc40ee`.
+- Branch: `codex/ecpa-bundle-dependencies`.
+- Tracking issue: `vLLM-HUST/extension-manager#25`.
+- Add fail-closed Bundle dependency composition, rerun the full suite and
+  clean-wheel organization matrix, merge a narrow PR, and keep release frozen.
