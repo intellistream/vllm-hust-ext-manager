@@ -177,6 +177,35 @@ def test_manifest_03_accepts_typed_resource_claims() -> None:
     assert manifest.resource_claims[0].resource == ("vllm.scheduler.preemption-policy")
 
 
+def test_manifest_03_accepts_extension_dependencies() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["schema_version"] = "0.3-experimental"
+    payload["requires_extensions"] = [
+        {"extension_id": "org.vllm-hust.provider", "version_range": ">=1,<2"}
+    ]
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.requires_extensions[0].extension_id == "org.vllm-hust.provider"
+    assert manifest.requires_extensions[0].version_range == ">=1,<2"
+
+
+def test_manifest_02_rejects_extension_dependencies_without_schema_migration() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["requires_extensions"] = []
+
+    with pytest.raises(ManifestError, match="requires schema_version 0.3"):
+        parse_manifest(payload)
+
+
 def test_manifest_02_rejects_resource_claims_without_schema_migration() -> None:
     payload = json.loads(
         (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(

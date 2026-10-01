@@ -76,6 +76,30 @@ SliceGPT still have no packaged ECPA Bundle. Their existing owner issues were
 updated with the exact audited main commits. No native NPU or performance run
 was performed in this re-audit.
 
+### Full organization follow-up (2026-10-02)
+
+The audit was expanded from the previously tracked MOD set to every one of the
+71 organization repositories. All 26 ECPA distributions were installed
+together: 29 registrations were found, 28 were valid, and the known Pegaflow
+distribution split remained the sole invalid registration. All 28 valid
+Bundles passed disabled inspect/check/plan/render against Manager `ff144b46`.
+This remains packaging and contract evidence only.
+
+| Candidate | Classification and follow-up |
+| --- | --- |
+| BetterScale main `852c1066` | Explicit `--worker-cls` runtime MOD, but no ECPA Bundle; tracked by BetterScale #9. |
+| FreshKV main `738d24ad` | Engine-independent policy/runtime library with no vLLM carrier; FreshKV #1 requires either a real host carrier or an explicit library-only classification. |
+| `llm-serving-cost-pricing-model` main `4d4fafe7` | Installed general plugin but no ECPA Bundle; tracked in organization issue `.github#43` because repository issues are disabled. |
+| PyramidKV PR #4 `a40b46c2` | Wheel and ECPA commands pass, but its custom method entry point depends on the separately enabled KVCompress general plugin. Manager #25 adds fail-closed Bundle dependency semantics; the MOD still needs a 0.3 dependency/resource manifest. |
+| DLA PR #3 `da1dab54` | Wheel and ECPA commands plus package CI pass; 0.3 exclusive preemption resource ownership and native evidence remain owner gates. |
+| vSpec PR #2 `bf9ffac3` | Dirty against main and package CI fails `ruff format --check` on 12 files; not qualified. |
+
+LMCache-Ascend and hardware platform plugins remain host prerequisites or
+external lifecycle systems. TraceLoom remains an experiment/analysis harness,
+and research-only repositories are not relabeled as ECPA-managed MODs. ECPA
+does not acquire ownership of their services, devices, KV data, clusters, or
+performance claims.
+
 ## Rollback ownership
 
 - In-process vLLM policies and connectors roll back on the next vLLM process

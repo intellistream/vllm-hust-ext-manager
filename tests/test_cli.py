@@ -11,6 +11,8 @@ from vllm_hust_ext.cli import (
     _bundle_dict,
     _merge_command_config,
     _merge_provider_plan,
+    _validate_dependency_removal,
+    _validate_extension_dependencies,
 )
 from vllm_hust_ext.config import ExtensionConfig, UserConfig
 from vllm_hust_ext.core import LifecycleState
@@ -20,6 +22,7 @@ from vllm_hust_ext.manifest import (
     BundleActivation,
     HostSpec,
     ImplementationCarrier,
+    RequiredExtension,
     RequiredService,
     ResourceClaim,
     RuntimeSpec,
@@ -47,7 +50,10 @@ def test_activation_does_not_replace_vllm_plugin_allowlist() -> None:
 def test_list_reports_invalid_bundle_without_hiding_valid_bundle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    valid = SimpleNamespace(bundle_id="org.vllm-hust.valid")
+    valid = SimpleNamespace(
+        bundle_id="org.vllm-hust.valid",
+        manifest=SimpleNamespace(bundle_version="1.0"),
+    )
     monkeypatch.setattr(cli, "load_config", UserConfig)
     monkeypatch.setattr(
         cli,
@@ -60,7 +66,7 @@ def test_list_reports_invalid_bundle_without_hiding_valid_bundle(
     monkeypatch.setattr(
         cli,
         "_bundle_dict",
-        lambda _bundle, _enabled: {
+        lambda _bundle, _enabled, _versions: {
             "bundle_id": "org.vllm-hust.valid",
             "bundle_version": "1.0",
             "enabled": False,
@@ -231,6 +237,100 @@ def test_inspection_exposes_import_only_activation_blocker() -> None:
     assert value["activation_ready"] is False
     assert "descriptor-only" in str(value["activation_blocker"])
     assert value["implementation"][0]["status"] == "import_only"
+
+
+def test_inspection_fails_activation_ready_when_dependency_is_disabled() -> None:
+    bundle = SimpleNamespace(
+        bundle_id="org.example.consumer",
+        distribution_name="consumer",
+        distribution_version="1.0.0",
+        manifest_path=Path("consumer.json"),
+        manifest=SimpleNamespace(
+            bundle_version="1.0.0",
+            kind="in_process_plugin",
+            host=HostSpec("vllm", "vllm", ">=0"),
+            runtime=RuntimeSpec("python", "vllm-worker", "trusted_in_process"),
+            lifecycle_owner="vllm",
+            protocols=(),
+            implementation=(ImplementationCarrier("host_builtin", (("name", "x"),)),),
+            requires_services=(),
+            requires_extensions=(RequiredExtension("org.example.provider", ">=1,<2"),),
+            resource_claims=(),
+            experimental=True,
+            components=(),
+            activation=BundleActivation(),
+        ),
+    )
+
+    value = _bundle_dict(
+        bundle,
+        set(),
+        {"org.example.consumer": "1.0.0", "org.example.provider": "1.2.0"},
+    )
+
+    assert value["activation_ready"] is False
+    assert value["activation_blocker"] == (
+        "required extension 'org.example.provider' is not enabled"
+    )
+    assert value["requires_extensions"][0]["installed"] is True
+
+
+def _dependency_bundle(
+    bundle_id: str,
+    version: str = "1.0.0",
+    dependencies: tuple[RequiredExtension, ...] = (),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        bundle_id=bundle_id,
+        manifest=SimpleNamespace(
+            bundle_version=version,
+            requires_extensions=dependencies,
+        ),
+    )
+
+
+def test_extension_dependencies_require_enabled_compatible_bundle() -> None:
+    consumer = _dependency_bundle(
+        "org.example.consumer",
+        dependencies=(RequiredExtension("org.example.provider", ">=1,<2"),),
+    )
+
+    with pytest.raises(ValueError, match="requires enabled extension"):
+        _validate_extension_dependencies((consumer,))
+
+    with pytest.raises(ValueError, match="found 2.0.0"):
+        _validate_extension_dependencies(
+            (consumer, _dependency_bundle("org.example.provider", "2.0.0"))
+        )
+
+    _validate_extension_dependencies(
+        (consumer, _dependency_bundle("org.example.provider", "1.4.0"))
+    )
+
+
+def test_extension_dependencies_reject_cycles() -> None:
+    first = _dependency_bundle(
+        "org.example.first",
+        dependencies=(RequiredExtension("org.example.second", ">=1"),),
+    )
+    second = _dependency_bundle(
+        "org.example.second",
+        dependencies=(RequiredExtension("org.example.first", ">=1"),),
+    )
+
+    with pytest.raises(ValueError, match="dependency cycle"):
+        _validate_extension_dependencies((first, second))
+
+
+def test_enabled_dependent_blocks_dependency_removal() -> None:
+    provider = _dependency_bundle("org.example.provider")
+    consumer = _dependency_bundle(
+        "org.example.consumer",
+        dependencies=(RequiredExtension("org.example.provider", ">=1"),),
+    )
+
+    with pytest.raises(ValueError, match="org.example.consumer"):
+        _validate_dependency_removal("org.example.provider", (provider, consumer))
 
 
 def test_run_merges_existing_additional_config() -> None:

@@ -17,16 +17,17 @@ the manifest, Provider, host-hook, or catalog contracts.
 ## Manifest 0.2 to 0.3
 
 Manifest `0.3-experimental` is additive at the data-model level but requires an
-explicit schema change because resource ownership affects admission. A 0.2
-manifest is still readable and has no resource claims. It cannot declare
-`resource_claims` until its author audits ownership and changes the manifest
-version. There is no automatic inference from flags, environment variables, or
-implementation names.
+explicit schema change because resource ownership and Bundle dependencies
+affect admission. A 0.2 manifest is still readable and has neither resource
+claims nor extension dependencies. It cannot declare `resource_claims` or
+`requires_extensions` until its author audits ownership/dependencies and
+changes the manifest version. There is no automatic inference from flags,
+environment variables, package dependencies, or implementation names.
 
-Downgrading a 0.3 manifest to 0.2 discards conflict information and is not
-automatic. Operators must disable the extension, replace the package, inspect
-the 0.2 plan, and re-enable it explicitly. Saved enable intent does not bypass
-this migration check.
+Downgrading a 0.3 manifest to 0.2 discards conflict and dependency information
+and is not automatic. Operators must first disable dependents, disable the
+dependency, replace the package, inspect the 0.2 plan, and re-enable in
+dependency order. Saved enable intent does not bypass this migration check.
 
 ## Runtime rollback
 

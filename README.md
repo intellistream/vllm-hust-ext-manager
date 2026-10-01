@@ -75,7 +75,8 @@ in [`docs/support-matrix.md`](docs/support-matrix.md). A passing point does not
 implicitly validate the rest of an experimental version range.
 Configuration migration and rollback rules are documented in
 [`docs/versioning-and-migration.md`](docs/versioning-and-migration.md).
-Capability-registry discovery and composition resource claims are documented
+Capability-registry discovery, composition resource claims, and explicit
+Bundle activation dependencies are documented
 in [`docs/manifest-0.3-experimental.md`](docs/manifest-0.3-experimental.md).
 The pinned KV-materialization clean-wheel procedure and its evidence boundary
 are documented in
