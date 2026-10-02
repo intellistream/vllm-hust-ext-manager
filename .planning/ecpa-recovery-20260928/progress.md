@@ -36,5 +36,18 @@
 - [x] Routed newly found Mod-owned gaps to owner repositories.
 - [x] Implemented and unit-tested ECPA Bundle dependency admission.
 - [x] Rebuild and rerun final clean-wheel validation.
-- [ ] Open, merge, and remotely verify the narrow Manager PR.
-- [ ] Remove temporary audit artifacts and worktree.
+- [x] Open, merge, and remotely verify Manager PR #26 at
+  `031cbb13ae1dc9deebb09d55dc85a1918cd33dc0`.
+- [x] Remove temporary organization-audit artifacts and worktree.
+
+## Request-lifecycle follow-up (2026-10-02)
+
+- [x] Modernize host PR #6 on current main, publish the versioned
+  `vllm.request-lifecycle-events` capability, pass pre-commit and focused
+  scheduler tests, merge, and verify main at
+  `7620b23ab6d91230ff1c3f65f2dc4727fdec90c9`.
+- [x] Repair canonical CLM package protocol naming and default-off activation,
+  pass Python 3.10/3.12/3.14 CI plus clean-wheel lifecycle checks, merge PR #2,
+  and verify main at `efaae1052a672ba4df7f6139ad2d1eabda80abea`.
+- [x] Keep compatibility freeze: no current-head NPU, live observer receipt, or
+  performance evidence was produced by this follow-up.
