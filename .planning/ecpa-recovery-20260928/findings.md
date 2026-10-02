@@ -132,3 +132,24 @@
   audited distributions co-installed, 28 valid Bundles each passed
   inspect/check/plan/render; the known Pegaflow split remained the one invalid
   registration.
+
+## Request-lifecycle host and CLM convergence (2026-10-02)
+
+- Host PR #6 was replayed on current main instead of merging its old branch
+  blindly. It adds default-off typed finish/preemption/reclaim events and
+  publishes `vllm.request-lifecycle-events` 1.0 through the side-effect-free
+  host capability registry. Twenty-five focused tests, the changed-file
+  pre-commit suite, and remote CI passed. It merged as
+  `7620b23ab6d91230ff1c3f65f2dc4727fdec90c9`.
+- The canonical consumer is `vllm-hust-clm-lifecycle`, not the duplicate
+  Tricard example package. Its manifest incorrectly requested
+  `vllm.request-lifecycle`; PR #2 now requests the exact host protocol, pins
+  the verified 0.29 host line, and requires `VLLM_CLM_ENABLE=1`. Installation
+  alone is inert; ECPA injects the opt-in only for enabled intent.
+- CLM evidence: 23 tests, Ruff, wheel build, Python 3.10/3.12/3.14 CI, isolated
+  discover/inspect/check/plan/render/enable/env/run-dry-run/disable/forget, and
+  direct current-host registration checks passed. PR #2 merged as
+  `efaae1052a672ba4df7f6139ad2d1eabda80abea`.
+- The direct host check proves registration semantics only. No Manager-owned
+  serving process, controller, port, or NPU was started, and no
+  `runtime_effective` observer receipt or performance result was inferred.
