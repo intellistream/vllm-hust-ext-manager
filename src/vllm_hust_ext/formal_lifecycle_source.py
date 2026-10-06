@@ -104,12 +104,14 @@ def _read_request(stream: Any) -> dict[str, Any]:
         request = json.loads(body)
     except (UnicodeDecodeError, ValueError) as exc:
         raise LifecycleSourceError("lifecycle request JSON is invalid") from exc
+    fact = request.get("fact") if isinstance(request, dict) else None
     if (
         not isinstance(request, dict)
         or set(request) != REQUEST_FIELDS
         or body != canonical_bytes(request)
         or request.get("schema") != REQUEST_SCHEMA
-        or request.get("source_kind") != SOURCE_KINDS.get(request.get("fact"))
+        or not isinstance(fact, str)
+        or request.get("source_kind") != SOURCE_KINDS.get(fact)
     ):
         raise LifecycleSourceError("lifecycle request is not canonical or bound")
     for field in (

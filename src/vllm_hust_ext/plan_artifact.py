@@ -67,6 +67,7 @@ def _string(value: Any, context: str) -> str:
         raise PlanArtifactError(
             f"{context} must be a non-empty string without whitespace"
         )
+    assert isinstance(value, str)
     return value
 
 
@@ -77,12 +78,12 @@ def _integer(value: Any, context: str) -> int:
 
 
 def _sha256(value: Any, context: str) -> str:
-    value = _string(value, context)
-    if len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
+    digest = _string(value, context)
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
     ):
         raise PlanArtifactError(f"{context} must be a lowercase SHA-256 digest")
-    return value
+    return digest
 
 
 def parse_plan_artifact(raw: bytes) -> Plan:

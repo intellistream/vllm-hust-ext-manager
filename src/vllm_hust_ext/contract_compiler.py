@@ -645,7 +645,7 @@ def parse_contract(payload: Any) -> ExtensionContract:
         _authority_grants(authority["runtime"], "authority.runtime", "runtime"),
         _authority_grants(authority["external"], "authority.external", "external"),
     )
-    declared_capabilities = {
+    capabilities_by_direction = {
         "provides": {item.name for item in provides},
         "requires": {item.name for item in requires},
     }
@@ -653,7 +653,7 @@ def parse_contract(payload: Any) -> ExtensionContract:
         for grant in getattr(authority_contract, authority_kind):
             if (
                 grant.capability
-                not in declared_capabilities[grant.capability_direction]
+                not in capabilities_by_direction[grant.capability_direction]
             ):
                 raise ContractPlanningError(
                     PlanningErrorCode.AUTHORITY_VIOLATION,
@@ -702,7 +702,9 @@ def _resolve_capabilities(
         for capability in contract.provides:
             providers.setdefault(capability.name, []).append((contract, capability))
     bindings: list[CapabilityBinding] = []
-    dependencies = {contract.extension_id: set() for contract in contracts}
+    dependencies: dict[str, set[str]] = {
+        contract.extension_id: set() for contract in contracts
+    }
     for consumer in contracts:
         for requirement in consumer.requires:
             candidates = providers.get(requirement.name, [])
@@ -750,7 +752,7 @@ def _order_contracts(
     contracts: tuple[ExtensionContract, ...], dependencies: dict[str, set[str]]
 ) -> tuple[ExtensionContract, ...]:
     by_id = {contract.extension_id: contract for contract in contracts}
-    dependents = {extension_id: set() for extension_id in by_id}
+    dependents: dict[str, set[str]] = {extension_id: set() for extension_id in by_id}
     indegree = {
         extension_id: len(required) for extension_id, required in dependencies.items()
     }

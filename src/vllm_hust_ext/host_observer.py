@@ -243,11 +243,13 @@ def observe_bound_invocations(
                 "scheduler evidence has another controller identity"
             )
         entry = event["entry_point"]
-        binding = by_entry.get((entry["group"], entry["name"], entry["value"]))
-        if binding is None or event["event"] != "invoked":
+        effect_binding = by_entry.get(
+            (entry["group"], entry["name"], entry["value"])
+        )
+        if effect_binding is None or event["event"] != "invoked":
             other_records.append(_evidence_record(record))
             continue
-        obligation = obligations[binding.obligation]
+        obligation = obligations[effect_binding.obligation]
         slot = (process["host"], process["role"], process["ordinal"])
         expected_epoch = required_by_slot.get(slot)
         if (
@@ -260,7 +262,7 @@ def observe_bound_invocations(
             )
         evidence = _evidence_record(record)
         if process["process_epoch"] != expected_epoch:
-            stale_records[binding.obligation].append(evidence)
+            stale_records[effect_binding.obligation].append(evidence)
             continue
         linux = read_linux_process_identity(process["pid"], process["start_identity"])
         observed = {
@@ -271,7 +273,7 @@ def observe_bound_invocations(
             **linux,
             "assignment_source": "host",
         }
-        existing = effects[binding.obligation].get(slot)
+        existing = effects[effect_binding.obligation].get(slot)
         if existing is not None and existing != observed:
             raise HostObservationError("one target slot has multiple live identities")
         linux_key = (
@@ -284,20 +286,22 @@ def observe_bound_invocations(
             raise HostObservationError(
                 "one Linux identity covers multiple target slots"
             )
-        effects[binding.obligation][slot] = observed
-        effect_records[binding.obligation].append(evidence)
+        effects[effect_binding.obligation][slot] = observed
+        effect_records[effect_binding.obligation].append(evidence)
         if event["observation_kind"] == "scheduler_dispatch":
-            controller_bound[binding.obligation] = True
+            controller_bound[effect_binding.obligation] = True
 
     obligation_results: dict[str, dict[str, Any]] = {}
     all_effects: dict[tuple[str, str, int], dict[str, Any]] = {}
     for obligation_id in obligations:
         binding = by_obligation[obligation_id]
         plugin = plugins[binding.plugin_id]
-        observed = effects[obligation_id]
+        observed_slots = effects[obligation_id]
         targets = targets_by_obligation[obligation_id]
-        observed_processes = [observed[key] for key in sorted(observed)]
-        all_effects.update(observed)
+        observed_processes = [
+            observed_slots[key] for key in sorted(observed_slots)
+        ]
+        all_effects.update(observed_slots)
         coverage = len(observed_processes) / len(targets)
         obligation_results[obligation_id] = {
             "plugin_id": plugin.id,

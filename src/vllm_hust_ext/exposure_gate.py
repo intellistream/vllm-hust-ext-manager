@@ -11,7 +11,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 class GateState(str, Enum):
@@ -293,7 +293,7 @@ class ReferenceExposureGate:
             raise GateError("gate is not initialized")
         if row["schema_version"] != self.schema_version:
             raise GateError("unknown gate schema version")
-        return row
+        return cast(sqlite3.Row, row)
 
     def _hit(self, point: str) -> None:
         if point in self.faults:
@@ -328,7 +328,9 @@ class ReferenceExposureGate:
                 self._json(detail),
             ),
         )
-        return int(cursor.lastrowid)
+        if cursor.lastrowid is None:
+            raise GateError("gate transition insert did not produce a row ID")
+        return cursor.lastrowid
 
     def _transition(
         self,
