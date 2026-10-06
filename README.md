@@ -103,13 +103,22 @@ failures while inference remained available, and recovery restored save/load
 without restarting vLLM. Alpha remains frozen for the remaining online
 restart/rollback and support-matrix gates.
 
-> **Compatibility freeze:** Manifest `0.2-experimental` and the former Bundle
-> v1 prototype are not stable APIs. No alpha package will be published until
-> the vLLM, KV-system, and control-plane end-to-end gates pass.
+> **Compatibility freeze:** Manifests `0.2-experimental` and
+> `0.3-experimental`, plus the former Bundle v1 prototype, are not stable APIs.
+> No alpha package will be published until the vLLM, KV-system, and
+> control-plane end-to-end gates pass.
 
 The pinned pass/fail combinations and lifecycle rollback owners are summarized
 in [`docs/support-matrix.md`](docs/support-matrix.md). A passing point does not
 implicitly validate the rest of an experimental version range.
+Configuration migration and rollback rules are documented in
+[`docs/versioning-and-migration.md`](docs/versioning-and-migration.md).
+Capability-registry discovery, composition resource claims, and explicit
+Bundle activation dependencies are documented
+in [`docs/manifest-0.3-experimental.md`](docs/manifest-0.3-experimental.md).
+The pinned KV-materialization clean-wheel procedure and its evidence boundary
+are documented in
+[`docs/kv-materialization-runbook.md`](docs/kv-materialization-runbook.md).
 
 ```bash
 pip install vllm-hust-ext
@@ -119,6 +128,11 @@ vllm-hust-ext extension list
 vllm-hust-ext extension status org.vllm-hust.bidkv
 vllm-hust-ext extension check org.vllm-hust.bidkv
 ```
+
+`extension list` validates registrations independently. A malformed installed
+Bundle is reported as `invalid` (or as a structured `discovery_error` with
+`--json`) without hiding unrelated valid Bundles. Targeted operations,
+enablement, and `run` remain strict and never skip an invalid selected Bundle.
 
 BidKV 0.2 targets vLLM-HUST `0.28.1rc1.dev319` through the typed
 `vllm.preemption-policy` API v1. The main BidKV distribution does not register
@@ -134,6 +148,25 @@ vllm-hust-ext extension enable org.vllm-hust.bidkv
 vllm-hust-ext run -- vllm serve MODEL
 ```
 
+`run` owns the process tree it launches. On POSIX it places the serving command
+in a separate session, forwards `SIGTERM`, `SIGINT`, and `SIGHUP` to the whole
+launch group, waits up to ten seconds, then escalates to `SIGKILL`. It also
+terminates descendants that survive their direct parent, so a stopped Manager
+does not intentionally leave API or worker processes behind. The grace period
+can be set before `--`, for example
+`vllm-hust-ext run --shutdown-grace-seconds 30 -- vllm serve MODEL`.
+
+StateAxis candidates separate experimental activation from performance
+qualification. An active carrier may run unqualified only when its extension
+configuration sets `experiment_mode: true`; the rendered plan remains degraded
+and labels the launch experimental. Descriptor-only carriers still fail closed,
+and production activation still requires the bound qualification record.
+Only one trusted in-process StateAxis carrier may be enabled for a process tree;
+the Manager rejects a second owner at enable time and rechecks the invariant at
+launch time.
+This is a process-lifecycle guarantee, not proof that a particular accelerator
+driver has released device memory; deployments must verify that separately.
+
 Only one enabled extension may claim vLLM's `--kv-transfer-config` in a single
 process. The Manager rejects conflicting connector plans instead of silently
 choosing one. Package removal remains separate from runtime intent: `forget`
@@ -145,12 +178,21 @@ explicit and stored in the user configuration. Discovery reads installed
 distribution metadata and the static bundle manifest without importing its
 implementation modules.
 
+For enabled in-process vLLM extensions, activation entries in the official
+`vllm.general_plugins` or `vllm.platform_plugins` groups are merged into
+`VLLM_PLUGINS` at launch. Existing selections are preserved, the built-in
+`ascend` plugin remains selected, and duplicate names are removed in a stable
+order. Two enabled extensions may not claim the same plugin name; entry points
+in unrelated groups are not projected into vLLM's plugin allowlist.
+
 Lifecycle states are independent: `installed`, `configured`, and `enabled`
 describe artifacts and saved launch intent. `runtime_effective` requires a
-process-owned observer to prove that the selected implementation was invoked
-by the running engine. This Manager does not infer runtime effectiveness from
-static discovery or an environment variable, so ordinary status output omits
-that state until an external runtime observer supplies evidence.
+process-owned observer to prove that the selected implementation handled real
+runtime work. For Manager-supervised launches, the Manager creates a fresh
+plan/launch binding and accepts the host's strict evidence stream. Status adds
+`runtime_effective` only while the reporting process identity is still live;
+it never infers the state from discovery, enablement, an environment variable,
+or successful plugin import.
 
 Descriptors whose only Python implementation is marked `import_only` or
 `legacy_unregistered` remain inspectable but cannot be enabled. Inspection

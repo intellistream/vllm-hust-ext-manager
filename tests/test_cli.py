@@ -11,14 +11,20 @@ from vllm_hust_ext.cli import (
     _bundle_dict,
     _merge_command_config,
     _merge_provider_plan,
+    _validate_dependency_removal,
+    _validate_extension_dependencies,
 )
 from vllm_hust_ext.config import ExtensionConfig, UserConfig
 from vllm_hust_ext.core import LifecycleState
+from vllm_hust_ext.discovery import DiscoveryDiagnostic
 from vllm_hust_ext.manifest import (
+    ActivationEntryPoint,
     BundleActivation,
     HostSpec,
     ImplementationCarrier,
+    RequiredExtension,
     RequiredService,
+    ResourceClaim,
     RuntimeSpec,
 )
 from vllm_hust_ext.providers.base import PlanAction, ProviderPlan
@@ -39,6 +45,161 @@ def test_activation_does_not_replace_vllm_plugin_allowlist() -> None:
         "VLLMHUST_EXT_ENABLED_BUNDLES": "org.vllm-hust.bidkv",
     }
     assert "VLLM_PLUGINS" not in environment
+
+
+def test_list_reports_invalid_bundle_without_hiding_valid_bundle(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    valid = SimpleNamespace(
+        bundle_id="org.vllm-hust.valid",
+        manifest=SimpleNamespace(bundle_version="1.0"),
+    )
+    monkeypatch.setattr(cli, "load_config", UserConfig)
+    monkeypatch.setattr(
+        cli,
+        "discover_bundle_inventory",
+        lambda: (
+            (valid,),
+            (DiscoveryDiagnostic("org.vllm-hust.invalid", "manifest is invalid"),),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_bundle_dict",
+        lambda _bundle, _enabled, _versions: {
+            "bundle_id": "org.vllm-hust.valid",
+            "bundle_version": "1.0",
+            "enabled": False,
+        },
+    )
+
+    result = cli._extension_command(SimpleNamespace(action="list", json=False))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == "org.vllm-hust.valid 1.0 disabled\n"
+    assert captured.err == ("org.vllm-hust.invalid invalid manifest is invalid\n")
+
+
+def test_json_list_includes_structured_invalid_bundle_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", UserConfig)
+    monkeypatch.setattr(
+        cli,
+        "discover_bundle_inventory",
+        lambda: (
+            (),
+            (DiscoveryDiagnostic("org.vllm-hust.invalid", "broken descriptor"),),
+        ),
+    )
+
+    result = cli._extension_command(SimpleNamespace(action="list", json=True))
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {
+            "bundle_id": "org.vllm-hust.invalid",
+            "discovery_error": "broken descriptor",
+            "valid": False,
+        }
+    ]
+
+
+def test_activation_merges_vllm_plugin_entry_points_with_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_PLUGINS", "ascend,existing")
+    bundle = SimpleNamespace(
+        bundle_id="org.vllm-hust.kv-materialization-arrival-control",
+        manifest=SimpleNamespace(
+            activation=BundleActivation(
+                entry_points=(
+                    ActivationEntryPoint("vllm.general_plugins", "kv_materialization"),
+                    ActivationEntryPoint("unrelated.group", "ignored"),
+                )
+            )
+        ),
+    )
+
+    environment = _activation_environment((bundle,))
+
+    assert environment["VLLM_PLUGINS"] == "ascend,existing,kv_materialization"
+
+
+def test_activation_keeps_ascend_and_orders_bundles_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VLLM_PLUGINS", raising=False)
+
+    def bundle(bundle_id: str, group: str, name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            bundle_id=bundle_id,
+            manifest=SimpleNamespace(
+                activation=BundleActivation(
+                    entry_points=(ActivationEntryPoint(group, name),)
+                )
+            ),
+        )
+
+    general = bundle("org.example.z-general", "vllm.general_plugins", "general")
+    platform = bundle("org.example.a-platform", "vllm.platform_plugins", "platform")
+
+    first = _activation_environment((general, platform))
+    second = _activation_environment((platform, general))
+
+    assert first["VLLM_PLUGINS"] == "ascend,platform,general"
+    assert second["VLLM_PLUGINS"] == first["VLLM_PLUGINS"]
+
+
+def test_activation_rejects_plugin_name_owned_by_two_extensions() -> None:
+    def bundle(bundle_id: str, group: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            bundle_id=bundle_id,
+            manifest=SimpleNamespace(
+                activation=BundleActivation(
+                    entry_points=(ActivationEntryPoint(group, "shared"),)
+                )
+            ),
+        )
+
+    with pytest.raises(ValueError, match="both declare.*shared"):
+        _activation_environment(
+            (
+                bundle("org.example.general", "vllm.general_plugins"),
+                bundle("org.example.platform", "vllm.platform_plugins"),
+            )
+        )
+
+
+def test_disabled_extension_does_not_project_vllm_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_PLUGINS", "user-selection")
+
+    environment = _activation_environment(())
+
+    assert "VLLM_PLUGINS" not in environment
+
+
+def test_activation_deduplicates_explicit_plugin_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLLM_PLUGINS", "ascend,kv_materialization")
+    bundle = SimpleNamespace(
+        bundle_id="org.vllm-hust.kv-materialization-arrival-control",
+        manifest=SimpleNamespace(
+            activation=BundleActivation(
+                entry_points=(
+                    ActivationEntryPoint("vllm.general_plugins", "kv_materialization"),
+                )
+            )
+        ),
+    )
+
+    environment = _activation_environment((bundle,))
+
+    assert environment["VLLM_PLUGINS"] == "ascend,kv_materialization"
 
 
 def test_inspection_exposes_import_only_activation_blocker() -> None:
@@ -76,6 +237,100 @@ def test_inspection_exposes_import_only_activation_blocker() -> None:
     assert value["activation_ready"] is False
     assert "descriptor-only" in str(value["activation_blocker"])
     assert value["implementation"][0]["status"] == "import_only"
+
+
+def test_inspection_fails_activation_ready_when_dependency_is_disabled() -> None:
+    bundle = SimpleNamespace(
+        bundle_id="org.example.consumer",
+        distribution_name="consumer",
+        distribution_version="1.0.0",
+        manifest_path=Path("consumer.json"),
+        manifest=SimpleNamespace(
+            bundle_version="1.0.0",
+            kind="in_process_plugin",
+            host=HostSpec("vllm", "vllm", ">=0"),
+            runtime=RuntimeSpec("python", "vllm-worker", "trusted_in_process"),
+            lifecycle_owner="vllm",
+            protocols=(),
+            implementation=(ImplementationCarrier("host_builtin", (("name", "x"),)),),
+            requires_services=(),
+            requires_extensions=(RequiredExtension("org.example.provider", ">=1,<2"),),
+            resource_claims=(),
+            experimental=True,
+            components=(),
+            activation=BundleActivation(),
+        ),
+    )
+
+    value = _bundle_dict(
+        bundle,
+        set(),
+        {"org.example.consumer": "1.0.0", "org.example.provider": "1.2.0"},
+    )
+
+    assert value["activation_ready"] is False
+    assert value["activation_blocker"] == (
+        "required extension 'org.example.provider' is not enabled"
+    )
+    assert value["requires_extensions"][0]["installed"] is True
+
+
+def _dependency_bundle(
+    bundle_id: str,
+    version: str = "1.0.0",
+    dependencies: tuple[RequiredExtension, ...] = (),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        bundle_id=bundle_id,
+        manifest=SimpleNamespace(
+            bundle_version=version,
+            requires_extensions=dependencies,
+        ),
+    )
+
+
+def test_extension_dependencies_require_enabled_compatible_bundle() -> None:
+    consumer = _dependency_bundle(
+        "org.example.consumer",
+        dependencies=(RequiredExtension("org.example.provider", ">=1,<2"),),
+    )
+
+    with pytest.raises(ValueError, match="requires enabled extension"):
+        _validate_extension_dependencies((consumer,))
+
+    with pytest.raises(ValueError, match="found 2.0.0"):
+        _validate_extension_dependencies(
+            (consumer, _dependency_bundle("org.example.provider", "2.0.0"))
+        )
+
+    _validate_extension_dependencies(
+        (consumer, _dependency_bundle("org.example.provider", "1.4.0"))
+    )
+
+
+def test_extension_dependencies_reject_cycles() -> None:
+    first = _dependency_bundle(
+        "org.example.first",
+        dependencies=(RequiredExtension("org.example.second", ">=1"),),
+    )
+    second = _dependency_bundle(
+        "org.example.second",
+        dependencies=(RequiredExtension("org.example.first", ">=1"),),
+    )
+
+    with pytest.raises(ValueError, match="dependency cycle"):
+        _validate_extension_dependencies((first, second))
+
+
+def test_enabled_dependent_blocks_dependency_removal() -> None:
+    provider = _dependency_bundle("org.example.provider")
+    consumer = _dependency_bundle(
+        "org.example.consumer",
+        dependencies=(RequiredExtension("org.example.provider", ">=1"),),
+    )
+
+    with pytest.raises(ValueError, match="org.example.consumer"):
+        _validate_dependency_removal("org.example.provider", (provider, consumer))
 
 
 def test_run_merges_existing_additional_config() -> None:
@@ -230,6 +485,31 @@ def test_vllm_provider_merges_declared_preemption_policy() -> None:
     assert command[-2:] == ["--preemption-policy", implementation]
 
 
+def test_vllm_provider_merges_declared_boolean_flag() -> None:
+    plan = ProviderPlan(
+        "org.vllm-hust.dla",
+        "vllm",
+        (),
+        {"vllm_flags": ["--scheduler-reserve-output-budget"]},
+    )
+
+    command = _merge_provider_plan(["vllm", "serve", "model"], plan)
+
+    assert command[-1] == "--scheduler-reserve-output-budget"
+
+
+def test_vllm_provider_rejects_unknown_boolean_flag() -> None:
+    plan = ProviderPlan(
+        "org.vllm-hust.example",
+        "vllm",
+        (),
+        {"vllm_flags": ["--enforce-eager"]},
+    )
+
+    with pytest.raises(ValueError, match="unsupported provider flag"):
+        _merge_provider_plan(["vllm", "serve", "model"], plan)
+
+
 def test_vllm_provider_rejects_conflicting_preemption_policy() -> None:
     plan = ProviderPlan(
         "org.vllm-hust.bidkv",
@@ -333,6 +613,114 @@ def test_run_refuses_unverified_in_process_scheduler_policy(
         cli._run_command(SimpleNamespace(command=["vllm"], dry_run=True))
 
 
+def test_run_refuses_multiple_stateaxis_process_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extension_ids = (
+        "org.stateaxis.hybrid-branch-coherence",
+        "org.stateaxis.no-harm-preparation",
+    )
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="stateaxis"),
+                runtime=SimpleNamespace(
+                    process_scope="stateaxis_processes",
+                    isolation="trusted_in_process",
+                ),
+            ),
+        )
+        for extension_id in extension_ids
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig(
+            {
+                extension_id: ExtensionConfig(enabled=True)
+                for extension_id in extension_ids
+            }
+        ),
+    )
+    monkeypatch.setattr(cli, "discover_bundles", lambda *_args: bundles)
+
+    with pytest.raises(ValueError, match="only one StateAxis ECPA carrier"):
+        cli._run_command(SimpleNamespace(command=["stateaxis"], dry_run=True))
+
+
+def test_enable_refuses_second_stateaxis_process_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "org.stateaxis.hybrid-branch-coherence"
+    second = "org.stateaxis.no-harm-preparation"
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="stateaxis"),
+                runtime=SimpleNamespace(
+                    process_scope="stateaxis_processes",
+                    isolation="trusted_in_process",
+                ),
+                implementation=(),
+            ),
+        )
+        for extension_id in (first, second)
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig({first: ExtensionConfig(enabled=True)}),
+    )
+
+    def discover(selected):
+        return tuple(bundle for bundle in bundles if bundle.bundle_id in selected)
+
+    monkeypatch.setattr(cli, "discover_bundles", discover)
+    monkeypatch.setattr(cli, "save_config", lambda *_args: pytest.fail("must not save"))
+
+    with pytest.raises(ValueError, match="only one StateAxis ECPA carrier"):
+        cli._extension_command(SimpleNamespace(action="enable", bundle_id=second))
+
+
+def test_enable_refuses_conflicting_manifest_resource_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "org.example.first-scheduler"
+    second = "org.example.second-scheduler"
+    claim = ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive")
+    bundles = tuple(
+        SimpleNamespace(
+            bundle_id=extension_id,
+            manifest=SimpleNamespace(
+                host=SimpleNamespace(provider="vllm"),
+                runtime=SimpleNamespace(
+                    process_scope="scheduler",
+                    isolation="trusted_in_process",
+                ),
+                implementation=(),
+                resource_claims=(claim,),
+            ),
+        )
+        for extension_id in (first, second)
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig({first: ExtensionConfig(enabled=True)}),
+    )
+
+    def discover(selected):
+        return tuple(bundle for bundle in bundles if bundle.bundle_id in selected)
+
+    monkeypatch.setattr(cli, "discover_bundles", discover)
+    monkeypatch.setattr(cli, "save_config", lambda *_args: pytest.fail("must not save"))
+
+    with pytest.raises(ValueError, match="vllm-process:vllm.scheduler.policy"):
+        cli._extension_command(SimpleNamespace(action="enable", bundle_id=second))
+
+
 def test_run_accepts_scheduler_policy_only_after_compatibility_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -362,6 +750,45 @@ def test_run_accepts_scheduler_policy_only_after_compatibility_evidence(
     )
 
     assert cli._run_command(SimpleNamespace(command=["true"], dry_run=True)) == 0
+
+
+def test_run_dry_run_projects_declared_plugin_activation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    extension_id = "org.vllm-hust.arrival-control"
+    manifest = SimpleNamespace(
+        host=SimpleNamespace(provider="vllm"),
+        kind="in_process_plugin",
+        runtime=SimpleNamespace(isolation="trusted_in_process"),
+        activation=BundleActivation(
+            entry_points=(
+                ActivationEntryPoint("vllm.general_plugins", "arrival_control"),
+            )
+        ),
+    )
+    bundle = SimpleNamespace(bundle_id=extension_id, manifest=manifest)
+    monkeypatch.delenv("VLLM_PLUGINS", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: UserConfig({extension_id: ExtensionConfig(enabled=True)}),
+    )
+    monkeypatch.setattr(cli, "discover_bundles", lambda *_args: (bundle,))
+    monkeypatch.setattr(
+        cli,
+        "status_for",
+        lambda *_args: SimpleNamespace(
+            states=(LifecycleState.COMPATIBLE,), evidence=("verified",)
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "plan_for", lambda *_args: ProviderPlan(extension_id, "vllm", ())
+    )
+
+    assert cli._run_command(SimpleNamespace(command=["true"], dry_run=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["environment"]["VLLM_PLUGINS"] == "ascend,arrival_control"
 
 
 def test_run_materializes_native_manifest_for_vllm_process(
@@ -408,14 +835,20 @@ def test_run_materializes_native_manifest_for_vllm_process(
     monkeypatch.delenv("VLLM_EXTENSION_MANIFESTS", raising=False)
     monkeypatch.delenv("VLLM_EXTENSION_BUNDLES", raising=False)
 
-    def call(command: list[str], *, env: dict[str, str]) -> int:
+    def supervise(
+        command: list[str],
+        *,
+        env: dict[str, str],
+        shutdown_grace_seconds: float,
+    ) -> int:
         paths = env["VLLM_EXTENSION_MANIFESTS"].split(os.pathsep)
         assert len(paths) == 1
         assert json.loads(Path(paths[0]).read_text(encoding="utf-8")) == native_manifest
         assert env["VLLM_EXTENSION_BUNDLES"] == extension_id
+        assert shutdown_grace_seconds == 10
         return 17
 
-    monkeypatch.setattr(cli.subprocess, "call", call)
+    monkeypatch.setattr(cli, "supervise", supervise)
 
     assert cli._run_command(SimpleNamespace(command=["true"], dry_run=False)) == 17
 

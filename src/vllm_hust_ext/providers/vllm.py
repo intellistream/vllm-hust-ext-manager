@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from dataclasses import asdict
-from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from vllm_hust_ext.capabilities import detect_vllm_capabilities
 from vllm_hust_ext.manifest import BundleManifest, activation_blocker
 from vllm_hust_ext.providers.base import (
     PlanAction,
@@ -22,7 +22,25 @@ _JSON_LAUNCH_OPTIONS = {
     "batch_admission_policy_config": "--batch-admission-policy-config",
     "speculative_config": "--speculative-config",
 }
+_BOOLEAN_LAUNCH_OPTIONS = {
+    "scheduler_reserve_output_budget": "--scheduler-reserve-output-budget",
+}
 _RUNTIME_QUALIFICATION_KEY = "_manager_runtime_qualification"
+VLLM_PLUGIN_ENTRY_POINT_GROUPS = frozenset(
+    {"vllm.general_plugins", "vllm.platform_plugins"}
+)
+
+
+def declared_vllm_plugin_names(manifest: BundleManifest) -> tuple[str, ...]:
+    """Project only official vLLM activation groups in declaration order."""
+
+    return tuple(
+        dict.fromkeys(
+            entry_point.name
+            for entry_point in manifest.activation.entry_points
+            if entry_point.group in VLLM_PLUGIN_ENTRY_POINT_GROUPS
+        )
+    )
 
 
 def _qualname_from_implementation_ref(implementation_ref: str) -> str:
@@ -35,32 +53,7 @@ def _qualname_from_implementation_ref(implementation_ref: str) -> str:
 
 def _detect_protocol_versions() -> dict[str, str]:
     """Report only contracts exported by the installed vLLM host."""
-    detected: dict[str, str] = {}
-    try:
-        contracts = import_module("vllm.plugins.contracts")
-        scheduler_policy = contracts.DomainContract.SCHEDULER_POLICY_V1
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if scheduler_policy.value == "vllm.scheduler.policy.v1":
-            detected["vllm.scheduler.policy"] = "1.0"
-    try:
-        preemption = import_module("vllm.v1.core.sched.preemption")
-        preemption_version = preemption.PREEMPTION_POLICY_API_VERSION
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if preemption_version == "1.0":
-            detected["vllm.preemption-policy"] = preemption_version
-    try:
-        admission = import_module("vllm.v1.core.sched.batch_admission")
-        admission_version = admission.BATCH_ADMISSION_POLICY_API_VERSION
-    except (AttributeError, ImportError):
-        pass
-    else:
-        if admission_version.startswith("1."):
-            detected["vllm.batch-admission-policy"] = admission_version
-    return detected
+    return detect_vllm_capabilities().protocol_versions
 
 
 class VllmProvider:
@@ -113,25 +106,53 @@ class VllmProvider:
         launch_options = configuration.get("launch_options", {})
         if not isinstance(launch_options, dict):
             raise ValueError("launch_options must be an object")
-        unknown_options = launch_options.keys() - _JSON_LAUNCH_OPTIONS.keys()
+        unknown_options = launch_options.keys() - (
+            _JSON_LAUNCH_OPTIONS.keys() | _BOOLEAN_LAUNCH_OPTIONS.keys()
+        )
         if unknown_options:
             raise ValueError(
                 f"unsupported vLLM launch_options: {sorted(unknown_options)}"
             )
         json_options: dict[str, dict[str, Any]] = {}
+        vllm_flags: list[str] = []
         for name, value in launch_options.items():
+            if name in _BOOLEAN_LAUNCH_OPTIONS:
+                if not isinstance(value, bool):
+                    raise ValueError(f"launch_options.{name} must be a boolean")
+                if value:
+                    vllm_flags.append(_BOOLEAN_LAUNCH_OPTIONS[name])
+                continue
             if not isinstance(value, dict):
                 raise ValueError(f"launch_options.{name} must be an object")
             json_options[_JSON_LAUNCH_OPTIONS[name]] = value
 
+        declared_environment = dict(manifest.activation.environment)
+        environment_overrides = configuration.get("environment", {})
+        if not isinstance(environment_overrides, dict):
+            raise ValueError("environment must be an object")
+        unknown_environment = environment_overrides.keys() - declared_environment.keys()
+        if unknown_environment:
+            raise ValueError(
+                "environment overrides must be declared by the manifest: "
+                f"{sorted(unknown_environment)}"
+            )
+        if not all(isinstance(value, str) for value in environment_overrides.values()):
+            raise ValueError("environment override values must be strings")
+        declared_environment.update(environment_overrides)
+
         additional_config = dict(manifest.activation.additional_config)
         additional_config.pop(_RUNTIME_QUALIFICATION_KEY, None)
-        generated = {
-            "environment": dict(manifest.activation.environment),
+        generated: dict[str, Any] = {
+            "environment": declared_environment,
             "additional_config": additional_config,
             "user_config": configuration,
             "vllm_json_options": json_options,
         }
+        plugin_names = declared_vllm_plugin_names(manifest)
+        if plugin_names:
+            generated["vllm_plugins"] = list(plugin_names)
+        if vllm_flags:
+            generated["vllm_flags"] = vllm_flags
         preemption_components = [
             component
             for component in manifest.components
@@ -142,11 +163,11 @@ class VllmProvider:
                 raise ValueError(
                     "exactly one vllm.preemption-policy.v1 component is required"
                 )
-            generated["vllm_options"] = {
-                "--preemption-policy": _qualname_from_implementation_ref(
+            generated.setdefault("vllm_options", {})["--preemption-policy"] = (
+                _qualname_from_implementation_ref(
                     preemption_components[0].implementation_ref
                 )
-            }
+            )
         admission_components = [
             component
             for component in manifest.components
@@ -164,7 +185,7 @@ class VllmProvider:
             )
         if native_manifest is not None:
             generated["native_extension_manifest"] = native_manifest
-        warnings = ()
+        warnings: tuple[str, ...] = ()
         if manifest.kind == "scheduler_policy" and manifest.protocols:
             warnings = (
                 "in-process scheduler activation requires explicit host and "
@@ -211,15 +232,17 @@ class VllmProvider:
         detected_version = None
         with suppress(PackageNotFoundError):
             detected_version = version(manifest.host.name)
+        capabilities = detect_vllm_capabilities()
         compatible, evidence = assess_compatibility(
             manifest,
             configuration,
             detected_host_version=detected_version,
-            default_api_version="1.0",
+            default_api_version=capabilities.host_api_version or "1.0",
             # A matching vLLM distribution version does not prove that a
             # fork-only or draft extension protocol is actually present.
-            default_protocol_versions=_detect_protocol_versions(),
+            default_protocol_versions=capabilities.protocol_versions,
         )
+        evidence = capabilities.evidence + evidence
         required_profile = dict(manifest.activation.additional_config).get(
             _RUNTIME_QUALIFICATION_KEY
         )

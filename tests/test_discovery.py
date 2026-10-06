@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+from types import SimpleNamespace
+
+import pytest
+
+from vllm_hust_ext import discovery
+
+
+def test_discovery_knows_the_03_manifest_filename() -> None:
+    assert discovery.MANIFEST_FILENAMES[0] == "vllm-hust-extension-v0.3.json"
+
+
+class Distribution:
+    def __init__(
+        self,
+        name: str,
+        *,
+        editable: bool,
+        files: tuple[PurePosixPath, ...] = (),
+    ) -> None:
+        self.metadata = {"Name": name}
+        self.version = "1.0"
+        self._editable = editable
+        self.files = files
+
+    def read_text(self, name: str) -> str | None:
+        if name != "direct_url.json":
+            return None
+        return '{"dir_info":{"editable": true}}' if self._editable else None
+
+
+def registration(name: str, distribution: Distribution):
+    return SimpleNamespace(
+        name="org.vllm-hust.example",
+        value="example.manifests",
+        group=discovery.ENTRY_POINT_GROUP,
+        dist=distribution,
+    )
+
+
+def test_identical_wheel_and_editable_registrations_select_wheel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("same descriptor")
+    wheel = registration("wheel", Distribution("example-wheel", editable=False))
+    editable = registration("editable", Distribution("example-source", editable=True))
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest)
+
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=()),
+        ),
+    )
+    bundles = discovery.discover_bundles(
+        registrations=(editable, wheel), all_entry_points=()
+    )
+
+    assert len(bundles) == 1
+    assert bundles[0].distribution_name == "example-wheel"
+
+
+def test_different_duplicate_descriptors_remain_ambiguous(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    wheel_path = tmp_path / "wheel.json"
+    source_path = tmp_path / "source.json"
+    wheel_path.write_text("wheel descriptor")
+    source_path.write_text("source descriptor")
+    wheel = registration("wheel", Distribution("example-wheel", editable=False))
+    editable = registration("editable", Distribution("example-source", editable=True))
+    monkeypatch.setattr(
+        discovery,
+        "_manifest_path",
+        lambda item: wheel_path if item is wheel else source_path,
+    )
+
+    with pytest.raises(discovery.DiscoveryError, match="duplicate Bundle"):
+        discovery.discover_bundles(registrations=(wheel, editable), all_entry_points=())
+
+
+def test_declared_activation_entry_point_must_be_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.general_plugins", name="example")
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    with pytest.raises(discovery.DiscoveryError, match="uninstalled.*example"):
+        discovery.discover_bundles(
+            registrations=(bundle_registration,), all_entry_points=()
+        )
+
+
+def test_declared_activation_entry_point_matches_distribution_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.platform_plugins", name="platform")
+    installed = SimpleNamespace(
+        group=declared.group,
+        name=declared.name,
+        value="example.plugin:register",
+        dist=distribution,
+    )
+    distribution.files = (PurePosixPath("example/plugin.py"),)
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    bundles = discovery.discover_bundles(
+        registrations=(bundle_registration,), all_entry_points=(installed,)
+    )
+
+    assert bundles[0].entry_points == (installed,)
+
+
+def test_declared_activation_entry_point_target_must_be_packaged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("descriptor")
+    distribution = Distribution("example", editable=False)
+    bundle_registration = registration("bundle", distribution)
+    declared = SimpleNamespace(group="vllm.general_plugins", name="example")
+    installed = SimpleNamespace(
+        group=declared.group,
+        name=declared.name,
+        value="missing.plugin:register",
+        dist=distribution,
+    )
+    monkeypatch.setattr(discovery, "_manifest_path", lambda _item: manifest_path)
+    monkeypatch.setattr(
+        discovery,
+        "load_manifest",
+        lambda _path: SimpleNamespace(
+            bundle_id="org.vllm-hust.example",
+            activation=SimpleNamespace(entry_points=(declared,)),
+        ),
+    )
+
+    with pytest.raises(discovery.DiscoveryError, match="targets not packaged"):
+        discovery.discover_bundles(
+            registrations=(bundle_registration,), all_entry_points=(installed,)
+        )
+
+
+def test_inventory_quarantines_invalid_bundle_without_hiding_valid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    valid_path = tmp_path / "valid.json"
+    invalid_path = tmp_path / "invalid.json"
+    valid_path.write_text("valid")
+    invalid_path.write_text("invalid")
+    valid_distribution = Distribution("valid-dist", editable=False)
+    invalid_distribution = Distribution("invalid-dist", editable=False)
+    valid = SimpleNamespace(
+        name="org.vllm-hust.valid",
+        value="valid.manifests",
+        group=discovery.ENTRY_POINT_GROUP,
+        dist=valid_distribution,
+    )
+    invalid = SimpleNamespace(
+        name="org.vllm-hust.invalid",
+        value="invalid.manifests",
+        group=discovery.ENTRY_POINT_GROUP,
+        dist=invalid_distribution,
+    )
+    monkeypatch.setattr(
+        discovery,
+        "_manifest_path",
+        lambda item: valid_path if item is valid else invalid_path,
+    )
+
+    def load(path):
+        if path == invalid_path:
+            raise discovery.ManifestError("broken descriptor")
+        return SimpleNamespace(
+            bundle_id="org.vllm-hust.valid",
+            activation=SimpleNamespace(entry_points=()),
+        )
+
+    monkeypatch.setattr(discovery, "load_manifest", load)
+
+    bundles, diagnostics = discovery.discover_bundle_inventory(
+        registrations=(invalid, valid), all_entry_points=()
+    )
+
+    assert [bundle.bundle_id for bundle in bundles] == ["org.vllm-hust.valid"]
+    assert diagnostics == (
+        discovery.DiscoveryDiagnostic(
+            "org.vllm-hust.invalid",
+            "'org.vllm-hust.invalid' manifest is invalid: broken descriptor",
+        ),
+    )

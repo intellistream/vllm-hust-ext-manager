@@ -64,6 +64,9 @@ _CARRIERS = {
     "crd",
     "controller",
 }
+_RESOURCE_CLAIM_FIELDS = {"resource", "scope", "mode"}
+_RESOURCE_CLAIM_MODES = {"exclusive", "shared"}
+_RESOURCE = re.compile(r"^[a-z0-9][a-z0-9._:/-]*$")
 
 
 class ManifestError(ValueError):
@@ -130,6 +133,19 @@ class RequiredService:
 
 
 @dataclass(frozen=True, slots=True)
+class RequiredExtension:
+    extension_id: str
+    version_range: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceClaim:
+    resource: str
+    scope: str
+    mode: str
+
+
+@dataclass(frozen=True, slots=True)
 class BundleManifest:
     bundle_id: str
     bundle_version: str
@@ -150,6 +166,8 @@ class BundleManifest:
     protocols: tuple[ProtocolSpec, ...] = ()
     implementation: tuple[ImplementationCarrier, ...] = ()
     requires_services: tuple[RequiredService, ...] = ()
+    requires_extensions: tuple[RequiredExtension, ...] = ()
+    resource_claims: tuple[ResourceClaim, ...] = ()
     experimental: bool = True
 
 
@@ -446,6 +464,58 @@ def _parse_services(value: Any) -> tuple[RequiredService, ...]:
     return tuple(result)
 
 
+def _parse_extension_dependencies(value: Any) -> tuple[RequiredExtension, ...]:
+    if not isinstance(value, list):
+        raise ManifestError("requires_extensions must be an array")
+    result: list[RequiredExtension] = []
+    for index, raw in enumerate(value):
+        item = _object(raw, f"requires_extensions[{index}]")
+        if item.keys() != {"extension_id", "version_range"}:
+            raise ManifestError(
+                f"requires_extensions[{index}] requires extension_id and version_range"
+            )
+        extension_id = _string(
+            item["extension_id"], f"requires_extensions[{index}].extension_id"
+        )
+        if not _IDENTIFIER.fullmatch(extension_id):
+            raise ManifestError(f"requires_extensions[{index}].extension_id is invalid")
+        result.append(
+            RequiredExtension(
+                extension_id,
+                _specifier(
+                    item["version_range"],
+                    f"requires_extensions[{index}].version_range",
+                ),
+            )
+        )
+    ids = [dependency.extension_id for dependency in result]
+    if len(ids) != len(set(ids)):
+        raise ManifestError("requires_extensions must not contain duplicate IDs")
+    return tuple(result)
+
+
+def _parse_resource_claims(value: Any) -> tuple[ResourceClaim, ...]:
+    if not isinstance(value, list):
+        raise ManifestError("resource_claims must be an array")
+    result: list[ResourceClaim] = []
+    for index, raw in enumerate(value):
+        item = _object(raw, f"resource_claims[{index}]")
+        if item.keys() != _RESOURCE_CLAIM_FIELDS:
+            raise ManifestError(
+                f"resource_claims[{index}] requires resource, scope, and mode"
+            )
+        resource = _string(item["resource"], f"resource_claims[{index}].resource")
+        scope = _string(item["scope"], f"resource_claims[{index}].scope")
+        mode = _string(item["mode"], f"resource_claims[{index}].mode")
+        if not _RESOURCE.fullmatch(resource) or not _RESOURCE.fullmatch(scope):
+            raise ManifestError(f"resource_claims[{index}] has an invalid identifier")
+        _known((mode,), _RESOURCE_CLAIM_MODES, f"resource_claims[{index}].mode")
+        result.append(ResourceClaim(resource, scope, mode))
+    if len(result) != len(set(result)):
+        raise ManifestError("resource_claims must not contain duplicates")
+    return tuple(result)
+
+
 def _parse_experimental_manifest(payload: Any) -> BundleManifest:
     manifest = _object(payload, "manifest")
     fields = {
@@ -459,10 +529,17 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
         "protocols",
         "implementation",
         "requires_services",
+        "requires_extensions",
+        "resource_claims",
         "components",
         "activation",
     }
-    required = fields - {"components", "activation"}
+    required = fields - {
+        "components",
+        "activation",
+        "requires_extensions",
+        "resource_claims",
+    }
     unknown = manifest.keys() - fields
     missing = required - manifest.keys()
     if unknown or missing:
@@ -493,13 +570,22 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
             "activation": manifest.get("activation"),
         }
         components = _parse_legacy_manifest(legacy).components
+    schema_version = manifest["schema_version"]
+    if schema_version not in {"0.2-experimental", "0.3-experimental"}:
+        raise ManifestError("unsupported experimental schema_version")
+    if schema_version == "0.2-experimental" and "resource_claims" in manifest:
+        raise ManifestError("resource_claims requires schema_version 0.3-experimental")
+    if schema_version == "0.2-experimental" and "requires_extensions" in manifest:
+        raise ManifestError(
+            "requires_extensions requires schema_version 0.3-experimental"
+        )
     return BundleManifest(
         extension_id,
         version,
         ">=0",
         components,
         _parse_activation(manifest.get("activation")),
-        schema_version="0.2-experimental",
+        schema_version=schema_version,
         kind=kind,
         host=_parse_host(manifest["host"]),
         runtime=_parse_runtime(manifest["runtime"]),
@@ -507,6 +593,10 @@ def _parse_experimental_manifest(payload: Any) -> BundleManifest:
         protocols=_parse_protocols(manifest["protocols"]),
         implementation=_parse_implementation(manifest["implementation"]),
         requires_services=_parse_services(manifest["requires_services"]),
+        requires_extensions=_parse_extension_dependencies(
+            manifest.get("requires_extensions", [])
+        ),
+        resource_claims=_parse_resource_claims(manifest.get("resource_claims", [])),
     )
 
 
@@ -515,7 +605,7 @@ def parse_manifest(payload: Any) -> BundleManifest:
     schema_version = manifest.get("schema_version")
     if schema_version == "1.0":
         return _parse_legacy_manifest(manifest)
-    if schema_version == "0.2-experimental":
+    if schema_version in {"0.2-experimental", "0.3-experimental"}:
         return _parse_experimental_manifest(manifest)
     raise ManifestError("unsupported schema_version")
 
@@ -532,20 +622,21 @@ def load_manifest(path: Path) -> BundleManifest:
 def activation_blocker(manifest: BundleManifest) -> str | None:
     """Explain why a descriptor-only Python extension cannot be enabled."""
 
-    module_statuses = [
-        str(dict(carrier.attributes).get("status"))
-        for carrier in getattr(manifest, "implementation", ())
-        if carrier.type == "python_module"
-    ]
+    carriers = tuple(getattr(manifest, "implementation", ()))
+    statuses = [dict(carrier.attributes).get("status") for carrier in carriers]
     has_active_carrier = any(
-        carrier.type != "python_module"
-        or dict(carrier.attributes).get("status") == "active"
-        for carrier in getattr(manifest, "implementation", ())
+        status == "active" or (status is None and carrier.type != "python_module")
+        for carrier, status in zip(carriers, statuses, strict=True)
     )
-    if module_statuses and not has_active_carrier:
-        statuses = ", ".join(sorted(set(module_statuses)))
+    declared_inactive = [
+        str(status)
+        for status in statuses
+        if status in {"import_only", "legacy_unregistered"}
+    ]
+    if declared_inactive and not has_active_carrier:
+        status_names = ", ".join(sorted(set(declared_inactive)))
         return (
             "extension is descriptor-only and cannot be enabled "
-            f"(implementation status: {statuses})"
+            f"(implementation status: {status_names})"
         )
     return None

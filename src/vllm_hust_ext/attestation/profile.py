@@ -7,9 +7,9 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, NoReturn
 
-import jcs
+import jcs  # type: ignore[import-untyped]
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -21,7 +21,7 @@ from .model import PROFILE, SCHEMA, AttestationStatement
 TYPE = "application/ecpa-attestation+jws"
 ALGORITHM = "EdDSA"
 KNOWN_CRITICAL_HEADERS = frozenset({"ecpa_profile"})
-KNOWN_CRITICAL_CLAIMS = frozenset()
+KNOWN_CRITICAL_CLAIMS: frozenset[str] = frozenset()
 MAX_SAFE_INTEGER = 2**53 - 1
 DEFAULT_MAX_TTL = 300
 DEFAULT_MAX_OBSERVATION_AGE = 300
@@ -223,7 +223,7 @@ class TrustStore:
         return entry
 
 
-def _invalid(detail: str) -> None:
+def _invalid(detail: str) -> NoReturn:
     raise AttestationError(AttestationErrorCode.INVALID_STATEMENT, detail)
 
 

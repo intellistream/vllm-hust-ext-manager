@@ -1,4 +1,4 @@
-"""Non-invasive provider for official Mooncake services and vLLM connectors."""
+"""Non-invasive provider for Mooncake services and vLLM/Ascend connectors."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from vllm_hust_ext.providers.base import (
     assess_compatibility,
 )
 
-_CONNECTORS = {"MooncakeConnector", "MooncakeStoreConnector"}
+_CONNECTORS = {"MooncakeConnector", "MooncakeStoreConnector", "AscendStoreConnector"}
 _DISTRIBUTIONS = (
     "mooncake-transfer-engine",
     "mooncake-transfer-engine-cuda13",
@@ -53,14 +53,30 @@ class MooncakeProvider:
     def _connector_config(self, configuration: dict[str, Any]) -> dict[str, Any]:
         connector = configuration.get("connector", "MooncakeConnector")
         if connector not in _CONNECTORS:
-            raise ValueError(f"unsupported official Mooncake connector: {connector}")
+            raise ValueError(f"unsupported Mooncake connector: {connector}")
         role = configuration.get("kv_role", "kv_both")
         if role not in {"kv_producer", "kv_consumer", "kv_both"}:
             raise ValueError(f"unsupported Mooncake KV role: {role}")
         result: dict[str, Any] = {"kv_connector": connector, "kv_role": role}
+        if "kv_load_failure_policy" in configuration:
+            failure_policy = configuration["kv_load_failure_policy"]
+            if failure_policy not in {"fail", "recompute"}:
+                raise ValueError(
+                    f"unsupported KV load failure policy: {failure_policy}"
+                )
+            result["kv_load_failure_policy"] = failure_policy
         extra = configuration.get("kv_connector_extra_config", {})
         if not isinstance(extra, dict):
             raise ValueError("kv_connector_extra_config must be an object")
+        if connector == "AscendStoreConnector" and (
+            configuration.get("device_backend") != "ascend"
+            or configuration.get("transport_protocol") != "ascend"
+            or extra.get("backend") != "mooncake"
+        ):
+            raise ValueError(
+                "AscendStoreConnector requires device_backend=ascend, "
+                "transport_protocol=ascend and backend=mooncake"
+            )
         if extra:
             result["kv_connector_extra_config"] = extra
         return result
@@ -73,6 +89,12 @@ class MooncakeProvider:
         evidence: list[str] = []
         connector = configuration.get("connector", "MooncakeConnector")
         extra = configuration.get("kv_connector_extra_config", {})
+        if connector == "AscendStoreConnector":
+            try:
+                ascend_version = version("vllm-ascend")
+            except PackageNotFoundError:
+                return False, False, ("AscendStoreConnector requires vllm-ascend",)
+            evidence.append(f"detected vllm-ascend {ascend_version}")
         if connector == "MooncakeStoreConnector" and extra.get("load_async") is False:
             evidence.append(
                 "MooncakeStoreConnector requires load_async=true on the validated "
@@ -174,7 +196,8 @@ class MooncakeProvider:
                 "Mooncake service lifecycle remains owned by its external operator; "
                 "the manager will not start, stop, upgrade, or delete it.",
                 "For Ascend NPU caches, render the external Mooncake configuration "
-                "with transport_protocol=ascend and keep load_async enabled.",
+                "with transport_protocol=ascend. MooncakeStoreConnector requires "
+                "load_async enabled on the validated execution path.",
             ),
         )
 

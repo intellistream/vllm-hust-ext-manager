@@ -9,7 +9,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .ecpa_model import (
     Attestation,
@@ -314,7 +314,7 @@ class ActivationCoordinator:
         ).fetchone()
         if row is None:
             raise ContractError(ErrorCode.UNKNOWN_RESOURCE, plan_id)
-        return row
+        return cast(sqlite3.Row, row)
 
     def _transition(self, db: sqlite3.Connection, plan_id: str, target: State) -> None:
         current = State(self._row(plan_id)["state"])

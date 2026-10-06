@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from vllm_hust_ext.manifest import BundleManifest
+from vllm_hust_ext.manifest import BundleManifest, ResourceClaim
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,7 @@ class ProviderPlan:
     actions: tuple[PlanAction, ...]
     generated_config: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    resource_claims: tuple[ResourceClaim, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

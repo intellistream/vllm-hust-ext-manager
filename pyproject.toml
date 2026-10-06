@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["jsonschema>=4.0", "pytest>=8.0", "ruff>=0.12"]
+test = ["build>=1.2", "jsonschema>=4.0", "mypy>=1.11", "pytest>=8.0", "ruff>=0.12"]
 
 [project.scripts]
 vllm-hust-ext = "vllm_hust_ext.cli:main"
@@ -35,3 +35,8 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/vllm_hust_ext"]
+strict = true

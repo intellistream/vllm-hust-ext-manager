@@ -15,8 +15,14 @@
   },
   "lifecycle_owner": "external_operator",
   "protocols": [
-    {"name": "mooncake-store-rest", "version_range": null},
-    {"name": "vllm-kv-transfer-config", "version_range": null}
+    {
+      "name": "mooncake-store-rest",
+      "version_range": null
+    },
+    {
+      "name": "vllm-kv-transfer-config",
+      "version_range": null
+    }
   ],
   "implementation": [
     {
@@ -25,7 +31,10 @@
       "source_repository": "https://github.com/vLLM-HUST/mooncake-hust",
       "upstream_repository": "https://github.com/kvcache-ai/Mooncake",
       "module": "mooncake.mooncake_store_service",
-      "console_scripts": ["mooncake_master", "mc_store_rest_server"],
+      "console_scripts": [
+        "mooncake_master",
+        "mc_store_rest_server"
+      ],
       "validated_distribution": "mooncake-transfer-engine-non-cuda==0.3.12.post1",
       "validated_npu_distribution": "mooncake-transfer-engine-npu==0.3.11.post1",
       "validated_npu_transport": "ascend",
@@ -34,7 +43,19 @@
     {
       "type": "host_builtin",
       "host": "vllm",
-      "symbols": ["MooncakeConnector", "MooncakeStoreConnector"]
+      "symbols": [
+        "MooncakeConnector",
+        "MooncakeStoreConnector"
+      ]
+    },
+    {
+      "type": "host_builtin",
+      "host": "vllm-ascend",
+      "symbols": [
+        "AscendStoreConnector"
+      ],
+      "configuration_requirement": "backend=mooncake; device_backend=ascend; transport_protocol=ascend",
+      "qualification_scope": "Configuration carrier only; hybrid-model correctness and performance require separate evidence."
     }
   ],
   "requires_services": [
