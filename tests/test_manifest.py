@@ -115,3 +115,120 @@ def test_import_only_manifest_is_discoverable_but_not_activatable() -> None:
 
     assert blocker is not None
     assert "descriptor-only" in blocker
+
+
+@pytest.mark.parametrize("status", ["import_only", "legacy_unregistered"])
+def test_inactive_entry_point_is_not_activatable(status: str) -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["implementation"] = [
+        {
+            "type": "python_entry_point",
+            "group": "vllm.legacy_plugin",
+            "name": "example",
+            "status": status,
+        }
+    ]
+
+    blocker = activation_blocker(parse_manifest(payload))
+
+    assert blocker is not None
+    assert status in blocker
+
+
+def test_unqualified_registered_entry_point_remains_activatable() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["implementation"] = [
+        {
+            "type": "python_entry_point",
+            "group": "vllm.general_plugins",
+            "name": "example",
+        }
+    ]
+
+    assert activation_blocker(parse_manifest(payload)) is None
+
+
+def test_manifest_03_accepts_typed_resource_claims() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["schema_version"] = "0.3-experimental"
+    payload["resource_claims"] = [
+        {
+            "resource": "vllm.scheduler.preemption-policy",
+            "scope": "vllm-process",
+            "mode": "exclusive",
+        }
+    ]
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.schema_version == "0.3-experimental"
+    assert manifest.resource_claims[0].resource == ("vllm.scheduler.preemption-policy")
+
+
+def test_manifest_03_accepts_extension_dependencies() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["schema_version"] = "0.3-experimental"
+    payload["requires_extensions"] = [
+        {"extension_id": "org.vllm-hust.provider", "version_range": ">=1,<2"}
+    ]
+
+    manifest = parse_manifest(payload)
+
+    assert manifest.requires_extensions[0].extension_id == "org.vllm-hust.provider"
+    assert manifest.requires_extensions[0].version_range == ">=1,<2"
+
+
+def test_manifest_02_rejects_extension_dependencies_without_schema_migration() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["requires_extensions"] = []
+
+    with pytest.raises(ManifestError, match="requires schema_version 0.3"):
+        parse_manifest(payload)
+
+
+def test_manifest_02_rejects_resource_claims_without_schema_migration() -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["resource_claims"] = []
+
+    with pytest.raises(ManifestError, match="requires schema_version 0.3"):
+        parse_manifest(payload)
+
+
+@pytest.mark.parametrize("mode", ["owner", "write", ""])
+def test_manifest_03_rejects_unknown_resource_claim_mode(mode: str) -> None:
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "bidkv-v0.2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["schema_version"] = "0.3-experimental"
+    payload["resource_claims"] = [
+        {"resource": "vllm.scheduler", "scope": "process", "mode": mode}
+    ]
+
+    with pytest.raises(ManifestError):
+        parse_manifest(payload)

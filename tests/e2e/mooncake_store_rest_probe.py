@@ -113,9 +113,10 @@ def main() -> int:
         )
 
         try:
-            with master_log_path.open("wb") as master_log, service_log_path.open(
-                "wb"
-            ) as service_log:
+            with (
+                master_log_path.open("wb") as master_log,
+                service_log_path.open("wb") as service_log,
+            ):
                 master = subprocess.Popen(
                     [
                         os.fspath(master_binary),
@@ -164,9 +165,7 @@ def main() -> int:
                     body=payload,
                     content_type="application/json",
                 )
-                exist_status, exist_body = request(
-                    "GET", f"{base_url}/api/exist/{key}"
-                )
+                exist_status, exist_body = request("GET", f"{base_url}/api/exist/{key}")
                 get_status, get_body = request("GET", f"{base_url}/api/get/{key}")
                 # A read renews Mooncake's hard lease.  The REST remove endpoint
                 # intentionally does not expose force deletion, so honor the

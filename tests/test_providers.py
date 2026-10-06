@@ -10,6 +10,8 @@ from urllib.error import URLError
 
 import pytest
 
+from vllm_hust_ext import capabilities
+from vllm_hust_ext import providers as provider_registry
 from vllm_hust_ext.config import ExtensionConfig
 from vllm_hust_ext.core import (
     LifecycleState,
@@ -17,7 +19,12 @@ from vllm_hust_ext.core import (
     reject_conflicting_plans,
     status_for,
 )
-from vllm_hust_ext.manifest import BundleManifest, parse_manifest
+from vllm_hust_ext.manifest import (
+    ActivationEntryPoint,
+    BundleManifest,
+    ResourceClaim,
+    parse_manifest,
+)
 from vllm_hust_ext.providers import vllm as vllm_provider
 from vllm_hust_ext.providers.base import ProviderPlan
 from vllm_hust_ext.providers.mooncake import MooncakeProvider
@@ -38,6 +45,47 @@ def bundle(value: BundleManifest) -> SimpleNamespace:
 
 class _HTTPResponse(BytesIO):
     status = 200
+
+
+def test_provider_for_does_not_load_unrelated_external_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = SimpleNamespace(
+        name="broken",
+        load=lambda: (_ for _ in ()).throw(ModuleNotFoundError("optional host")),
+    )
+    healthy_provider = SimpleNamespace(name="healthy")
+    healthy = SimpleNamespace(name="healthy", load=lambda: lambda: healthy_provider)
+    monkeypatch.setattr(
+        provider_registry,
+        "entry_points",
+        lambda *, group: (broken, healthy),
+    )
+
+    assert provider_registry.provider_for("healthy") is healthy_provider
+    assert isinstance(provider_registry.provider_for("vllm"), VllmProvider)
+
+
+def test_provider_for_reports_selected_external_provider_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = SimpleNamespace(
+        name="broken",
+        load=lambda: (_ for _ in ()).throw(ModuleNotFoundError("optional host")),
+    )
+    monkeypatch.setattr(
+        provider_registry,
+        "entry_points",
+        lambda *, group: (broken,),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "host provider 'broken' failed to load: ModuleNotFoundError: optional host"
+        ),
+    ):
+        provider_registry.provider_for("broken")
 
 
 def test_bidkv_is_a_vllm_owned_scheduler_policy() -> None:
@@ -109,11 +157,14 @@ def test_pipeline_microbatch_uses_batch_admission_policy_contract() -> None:
 def test_vllm_detects_scheduler_policy_only_from_host_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = SimpleNamespace(value="vllm.scheduler.policy.v1")
     module = SimpleNamespace(
-        DomainContract=SimpleNamespace(SCHEDULER_POLICY_V1=contract)
+        get_extension_capabilities=lambda: {
+            "schema_version": "vllm.extension-capabilities/v1",
+            "host_api_version": "1.0",
+            "protocols": {"vllm.scheduler.policy": "1.0"},
+        }
     )
-    monkeypatch.setattr(vllm_provider, "import_module", lambda _name: module)
+    monkeypatch.setattr(capabilities, "import_module", lambda _name: module)
 
     assert vllm_provider._detect_protocol_versions() == {"vllm.scheduler.policy": "1.0"}
 
@@ -126,7 +177,7 @@ def test_vllm_detects_preemption_policy_from_versioned_module(
             return SimpleNamespace(PREEMPTION_POLICY_API_VERSION="1.0")
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {
         "vllm.preemption-policy": "1.0"
@@ -141,11 +192,130 @@ def test_vllm_detects_batch_admission_policy_from_versioned_module(
             return SimpleNamespace(BATCH_ADMISSION_POLICY_API_VERSION="1.1")
         raise ImportError(name)
 
-    monkeypatch.setattr(vllm_provider, "import_module", imported)
+    monkeypatch.setattr(capabilities, "import_module", imported)
 
     assert vllm_provider._detect_protocol_versions() == {
         "vllm.batch-admission-policy": "1.1"
     }
+
+
+def test_vllm_detects_request_and_kv_materialization_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def imported(name: str) -> SimpleNamespace:
+        if name == "vllm.plugins.request_processing":
+            return SimpleNamespace(REQUEST_PROCESSING_HOOK_API_VERSION="1.0")
+        if name == "vllm.v1.core.kv_materialization":
+            return SimpleNamespace(KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION="1.0")
+        raise ImportError(name)
+
+    monkeypatch.setattr(capabilities, "import_module", imported)
+
+    assert vllm_provider._detect_protocol_versions() == {
+        "vllm.request-processing-hook": "1.0",
+        "vllm.kv-materialization-runtime-control": "1.0",
+    }
+
+
+def test_vllm_plan_projects_general_and_platform_plugin_names() -> None:
+    value = manifest("bidkv-v0.2.json")
+    value = replace(
+        value,
+        activation=replace(
+            value.activation,
+            entry_points=(
+                ActivationEntryPoint("vllm.general_plugins", "arrival_control"),
+                ActivationEntryPoint("vllm.platform_plugins", "custom_platform"),
+            ),
+        ),
+    )
+
+    plan = VllmProvider().plan(value, {}, enabled=True)
+
+    assert plan.generated_config["vllm_plugins"] == [
+        "arrival_control",
+        "custom_platform",
+    ]
+
+
+@pytest.mark.parametrize("unsupported", ["2.0", "not-a-version", object()])
+def test_vllm_does_not_report_unknown_plugin_api_versions(
+    monkeypatch: pytest.MonkeyPatch, unsupported: object
+) -> None:
+    def imported(name: str) -> SimpleNamespace:
+        if name == "vllm.plugins.request_processing":
+            return SimpleNamespace(REQUEST_PROCESSING_HOOK_API_VERSION=unsupported)
+        if name == "vllm.v1.core.kv_materialization":
+            return SimpleNamespace(
+                KV_MATERIALIZATION_RUNTIME_CONTROL_API_VERSION=unsupported
+            )
+        raise ImportError(name)
+
+    monkeypatch.setattr(capabilities, "import_module", imported)
+
+    assert vllm_provider._detect_protocol_versions() == {}
+
+
+def test_vllm_registry_malformed_snapshot_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = SimpleNamespace(
+        get_extension_capabilities=lambda: {
+            "schema_version": "vllm.extension-capabilities/v99",
+            "host_api_version": "1.0",
+            "protocols": {"vllm.preemption-policy": "1.0"},
+        }
+    )
+    monkeypatch.setattr(capabilities, "import_module", lambda _name: module)
+
+    result = capabilities.detect_vllm_capabilities()
+
+    assert result.protocol_versions == {}
+    assert "unsupported host capability schema" in result.evidence[0]
+
+
+def test_vllm_registry_dependency_failure_does_not_use_legacy_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_dependency(_name: str) -> SimpleNamespace:
+        raise ModuleNotFoundError("No module named 'torch'", name="torch")
+
+    monkeypatch.setattr(capabilities, "import_module", missing_dependency)
+
+    result = capabilities.detect_vllm_capabilities()
+
+    assert result.protocol_versions == {}
+    assert result.evidence == ("host capability registry import failed: missing torch",)
+
+
+def test_resource_claims_reject_two_exclusive_scheduler_owners() -> None:
+    first = ProviderPlan(
+        "org.example.first",
+        "vllm",
+        (),
+        resource_claims=(
+            ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive"),
+        ),
+    )
+    second = ProviderPlan(
+        "org.example.second",
+        "vllm",
+        (),
+        resource_claims=(
+            ResourceClaim("vllm.scheduler.policy", "vllm-process", "exclusive"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="exclusive versus exclusive"):
+        reject_conflicting_plans((first, second))
+
+
+def test_resource_claims_allow_shared_observers() -> None:
+    claim = ResourceClaim("vllm.runtime.observer", "vllm-process", "shared")
+    first = ProviderPlan("org.example.first", "vllm", (), resource_claims=(claim,))
+    second = ProviderPlan("org.example.second", "vllm", (), resource_claims=(claim,))
+
+    reject_conflicting_plans((first, second))
 
 
 def test_vllm_provider_uses_manifest_host_distribution_for_version(
@@ -202,6 +372,27 @@ def test_vllm_provider_renders_configured_speculative_config() -> None:
     assert "native_extension_manifest" not in plan.generated_config
 
 
+def test_vllm_provider_allows_only_declared_environment_overrides() -> None:
+    value = manifest("bidkv-v0.2.json")
+
+    plan = VllmProvider().plan(
+        value,
+        {"environment": {"BIDKV_UTILITY_STRATEGY": "lru"}},
+        enabled=True,
+    )
+
+    assert plan.generated_config["environment"] == {
+        "BIDKV_UTILITY_ENABLE": "1",
+        "BIDKV_UTILITY_STRATEGY": "lru",
+    }
+    with pytest.raises(ValueError, match="must be declared"):
+        VllmProvider().plan(
+            value,
+            {"environment": {"UNDECLARED_SECRET": "value"}},
+            enabled=True,
+        )
+
+
 def test_vllm_provider_keeps_import_only_descriptor_inert() -> None:
     value = manifest("bidkv-v0.2.json")
     carrier = value.implementation[0]
@@ -246,6 +437,84 @@ def test_mooncake_plan_reuses_official_connector_without_owning_service() -> Non
         "check_service",
     }
     assert all(not action.mutating for action in plan.actions)
+
+
+def test_ascend_store_plan_preserves_connector_options() -> None:
+    configuration = {
+        "connector": "AscendStoreConnector",
+        "kv_load_failure_policy": "fail",
+        "device_backend": "ascend",
+        "transport_protocol": "ascend",
+        "kv_connector_extra_config": {"backend": "mooncake", "use_layerwise": False},
+    }
+    plan = MooncakeProvider().plan(
+        manifest("mooncake-v0.2.json"), configuration, enabled=True
+    )
+    assert plan.generated_config == {
+        "kv_transfer_config": {
+            "kv_connector": "AscendStoreConnector",
+            "kv_role": "kv_both",
+            "kv_load_failure_policy": "fail",
+            "kv_connector_extra_config": configuration["kv_connector_extra_config"],
+        }
+    }
+    assert all(not action.mutating for action in plan.actions)
+    for field in ("device_backend", "transport_protocol", "kv_connector_extra_config"):
+        invalid = dict(configuration)
+        invalid.pop(field)
+        with pytest.raises(ValueError, match="AscendStoreConnector requires"):
+            MooncakeProvider().plan(
+                manifest("mooncake-v0.2.json"), invalid, enabled=True
+            )
+
+    for policy in ("fail", "recompute"):
+        configured = dict(configuration, kv_load_failure_policy=policy)
+        result = MooncakeProvider().plan(
+            manifest("mooncake-v0.2.json"), configured, enabled=True
+        )
+        assert (
+            result.generated_config["kv_transfer_config"]["kv_load_failure_policy"]
+            == policy
+        )
+    with pytest.raises(ValueError, match="unsupported KV load failure policy"):
+        MooncakeProvider().plan(
+            manifest("mooncake-v0.2.json"),
+            dict(configuration, kv_load_failure_policy="ignore"),
+            enabled=True,
+        )
+
+
+def test_ascend_store_requires_host_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = {
+        "connector": "AscendStoreConnector",
+        "device_backend": "ascend",
+        "transport_protocol": "ascend",
+        "kv_connector_extra_config": {"backend": "mooncake"},
+    }
+
+    def missing(distribution: str) -> str:
+        raise PackageNotFoundError(distribution)
+
+    monkeypatch.setattr("vllm_hust_ext.providers.mooncake.version", missing)
+    compatible, configured, evidence = (
+        MooncakeProvider()._validate_runtime_configuration(
+            configuration, "mooncake-transfer-engine-npu"
+        )
+    )
+    assert not compatible and not configured
+    assert evidence == ("AscendStoreConnector requires vllm-ascend",)
+    monkeypatch.setattr(
+        "vllm_hust_ext.providers.mooncake.version", lambda _: "0.25.1rc1"
+    )
+    compatible, configured, evidence = (
+        MooncakeProvider()._validate_runtime_configuration(
+            configuration, "mooncake-transfer-engine-npu"
+        )
+    )
+    assert compatible and configured
+    assert "detected vllm-ascend 0.25.1rc1" in evidence
 
 
 def test_mooncake_unreachable_is_degraded_not_disabled(

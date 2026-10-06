@@ -1,0 +1,12 @@
+{
+  "connector": "AscendStoreConnector",
+  "kv_role": "kv_both",
+  "kv_load_failure_policy": "fail",
+  "device_backend": "ascend",
+  "transport_protocol": "ascend",
+  "health_url": "http://mooncake-master.example:9003/metrics",
+  "kv_connector_extra_config": {
+    "backend": "mooncake",
+    "use_layerwise": false
+  }
+}
