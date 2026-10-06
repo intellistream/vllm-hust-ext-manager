@@ -656,6 +656,78 @@ retains epoch, obligation, coverage, and commit authority.  This milestone uses
 test keys; a production host issuer, trust root/key lifecycle, and
 formal performance measurements remain future work.
 
+Figure~\ref{fig:coordinator-detail} zooms into the two boundaries already
+introduced in Figure~\ref{fig:architecture} and names the concrete modules
+behind each box in this section: the activation coordinator's generation
+fence and append-only WAL, the declared/observed process-inventory pair
+required by invariant I3, and the three authority domains that the typed
+host adapter currently dispatches to with unequal evidence depth.
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=8mm,
+    text width=25mm, inner sep=3pt},
+  wide/.style={box, text width=31mm},
+  gap/.style={box, text width=31mm, draw=black!60, dashed, fill=ecpablue!35},
+  flow/.style={-{Latex[length=2mm]}, thick},
+  evidence/.style={-{Latex[length=2mm]}, thick, dashed, color=blue!65!black},
+  tie/.style={dashed, thin, color=black!55}
+]
+\node[box, fill=ecpagreen]   (plan)     at (0,2.2)    {Immutable plan\\(Figure~\ref{fig:architecture})};
+\node[wide, fill=ecpaorange] (coord)    at (4.6,2.2)  {Activation coordinator\\prepare $\rightarrow$ launch $\rightarrow$ observe $\rightarrow$ commit\\{\footnotesize generation fence, append-only WAL}};
+\node[box, fill=ecpablue]    (declared) at (4.6,4.2)  {Process inventory\\\emph{declared} (plan targets)};
+\node[box, fill=ecpablue]    (observed) at (4.6,6.4)  {Process inventory\\\emph{observed} (host-side)};
+\node[wide, fill=ecpagray]   (adapter)  at (9.2,2.2) {Typed host adapter\\translate plan, never redefine it};
+\node[wide, fill=ecpablue]   (vllm)     at (13.8,4.0) {vLLM host authority\\scheduler, workers};
+\node[wide, fill=ecpagreen]  (moon)     at (13.8,2.2) {Mooncake service authority\\real lease/health check};
+\node[gap]                   (pstack)   at (13.8,0.4) {Production-stack authority\\render-only today};
+
+\node[box, fill=ecpared]    (traffic) at (0,-1.8)   {External traffic\\or closed route};
+\node[box, fill=ecpaorange] (gate)    at (4.6,-1.8) {ExposureGate\\admit one generation};
+\node[wide, fill=ecpagreen] (verify)  at (9.2,-1.8) {Evidence verifier\\host/provider events; identity, epoch, coverage};
+
+\draw[flow] (plan) -- (coord);
+\draw[flow] (coord) -- (declared);
+\draw[flow] (coord) -- (adapter);
+\draw[flow] (adapter) -- (vllm);
+\draw[flow] (adapter) -- (moon);
+\draw[flow] (adapter) -- (pstack);
+\draw[flow] (verify) -- (gate);
+\draw[flow] (gate) -- (traffic);
+
+\draw[tie] (declared) -- (observed)
+  node[midway, left, xshift=-2pt, font=\tiny, text width=15mm, align=right] {must agree before Effective (I3)};
+
+\draw[evidence] (vllm.east) -- (16.0,4.0) -- (16.0,-1.8) -- (verify.east);
+\draw[evidence] (moon.east) -- (16.4,2.2) -- (16.4,-2.1) -- (verify.south east);
+\draw[evidence] (observed.east) -- (6.9,6.4) -- (6.9,-1.8) -- (verify.north west);
+
+\node[draw, dashed, rounded corners=2pt,
+  fit=(plan)(coord)(declared)(observed)(traffic)(gate)(verify),
+  inner sep=5pt, label={[font=\footnotesize]above:ECPA host-neutral boundary}] {};
+\node[draw, dashed, rounded corners=2pt, fit=(adapter)(vllm)(moon)(pstack), inner sep=4pt,
+  label={[font=\footnotesize]below:host-specific boundary}] {};
+\end{tikzpicture}
+}
+\caption{Zooming into the host-neutral and host-specific boundaries of
+Figure~\ref{fig:architecture}.  The activation coordinator drives generation
+fencing and the append-only WAL internally; it also binds a \emph{declared}
+process inventory frozen in the plan, while a \emph{host-side observed}
+inventory is collected independently and must agree with it before any
+obligation can become Effective (invariant I3, authority locality).  The
+typed host adapter fans out to three authority domains with unequal evidence
+depth today: the vLLM host authority and the Mooncake service authority both
+return independent effect evidence (dashed arrows) into the evidence
+verifier, while the production-stack authority (hatched, same gap fill as
+Figure~\ref{fig:case-coverage}) renders configuration but returns no
+independent effect evidence yet -- it sits inside the host-specific boundary
+but outside today's evidence coverage.}
+\label{fig:coordinator-detail}
+\end{figure*}
+
 \section{Extension Corpus and Case Studies}
 Our external-validity population is the \ECPAWorkshopMods{} MODs rendered by the
 vLLM-HUST plugin page, frozen by website commit, metadata blob, and SHA-256
